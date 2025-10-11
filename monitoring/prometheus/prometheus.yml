@@ -1,0 +1,132 @@
+# Prometheus Configuration
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'scoutpro'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load rules
+rule_files:
+  - 'rules/*.yml'
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Player Service
+  - job_name: 'player-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['player-service:8000']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'player-service'
+
+  # Team Service
+  - job_name: 'team-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['team-service:8000']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'team-service'
+
+  # Match Service
+  - job_name: 'match-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['match-service:8000']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'match-service'
+
+  # Statistics Service
+  - job_name: 'statistics-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['statistics-service:8000']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'statistics-service'
+
+  # ML Service
+  - job_name: 'ml-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['ml-service:8000']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'ml-service'
+
+  # Search Service
+  - job_name: 'search-service'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['search-service:8000']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'search-service'
+
+  # WebSocket Server
+  - job_name: 'websocket-server'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['websocket-server:8080']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'websocket-server'
+
+  # NGINX Gateway
+  - job_name: 'nginx'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['nginx:80']
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: service
+        replacement: 'nginx'
+
+  # MongoDB
+  - job_name: 'mongodb'
+    static_configs:
+      - targets: ['mongodb-exporter:9216']
+
+  # Redis
+  - job_name: 'redis'
+    static_configs:
+      - targets: ['redis-exporter:9121']
+
+  # Kafka
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka-exporter:9308']
+
+  # PostgreSQL/TimescaleDB
+  - job_name: 'postgresql'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # Elasticsearch
+  - job_name: 'elasticsearch'
+    static_configs:
+      - targets: ['elasticsearch-exporter:9114']

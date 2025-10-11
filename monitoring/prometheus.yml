@@ -1,0 +1,33 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'player-service'
+    static_configs:
+      - targets: ['player-service:8000']
+    metrics_path: '/metrics'
+
+  - job_name: 'team-service'
+    static_configs:
+      - targets: ['team-service:8000']
+
+  - job_name: 'match-service'
+    static_configs:
+      - targets: ['match-service:8000']
+
+  - job_name: 'statistics-service'
+    static_configs:
+      - targets: ['statistics-service:8000']
+
+  - job_name: 'ml-service'
+    static_configs:
+      - targets: ['ml-service:8000']
+
+  - job_name: 'kafka'
+    static_configs:
+      - targets: ['kafka:9092']
