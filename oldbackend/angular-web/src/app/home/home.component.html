@@ -1,0 +1,85 @@
+<!--
+checkbox-list: https://www.freakyjolly.com/check-uncheck-all-checkbox-list-in-angular/
+file-upload: https://www.positronx.io/angular-file-upload-with-progress-bar-tutorial/
+decision tree visualization: https://fractalytics.io/visualization-scikit-learn-decision-trees-d3-js
+
+-->
+
+  <mat-vertical-stepper [linear]="true" #stepper>
+    <mat-step [stepControl]="firstFormGroup">
+      <form [formGroup]="firstFormGroup">
+        <ng-template matStepLabel>Give data path</ng-template>
+        <mat-form-field>
+          <mat-label>Name</mat-label>
+          <input matInput placeholder="Last name, First name" formControlName="firstCtrl" required>
+        </mat-form-field>
+        <!-- <div>
+          <button mat-button matStepperNext>Next</button>
+        </div> -->
+      </form>
+    </mat-step>
+    <mat-step [stepControl]="secondFormGroup">
+      <form [formGroup]="secondFormGroup">
+        <ng-template matStepLabel>Select desired parameters</ng-template>
+        <mat-accordion *ngFor="let category of categories">
+          <mat-expansion-panel (opened)="panelOpenState = true"
+                               (closed)="panelOpenState = false">
+            <mat-expansion-panel-header>
+              <mat-panel-title>
+                <mat-checkbox class="example-margin"
+                          [checked]="allComplete"
+                          [indeterminate]="someComplete()"
+                          (change)="setAll($event.checked)">
+              {{category.name}}
+            </mat-checkbox>
+              </mat-panel-title>
+              <!-- <mat-panel-description>
+                Currently I am {{panelOpenState ? 'open' : 'closed'}}
+              </mat-panel-description> -->
+            </mat-expansion-panel-header>
+            <ul>
+              <li *ngFor="let param of category.params">
+                <mat-checkbox [(ngModel)]="param.selected"
+                              [color]="param.color"
+                              (ngModelChange)="updateAllComplete()">
+                  {{param.name}}
+                </mat-checkbox>
+              </li>
+            </ul>
+          </mat-expansion-panel>
+        </mat-accordion>
+        <!-- <div>
+          <button mat-button matStepperPrevious>Back</button>
+          <button mat-button matStepperNext>Next</button>
+        </div> -->
+      </form>
+    </mat-step>
+    <mat-step [stepControl]="thirdFormGroup">
+      <form [formGroup]="thirdFormGroup">
+        <ng-template matStepLabel>Select algorithm</ng-template>
+        <mat-form-field appearance="fill">
+          <mat-label>Select</mat-label>
+          <mat-select>
+            <mat-option value="option">Decision Tree</mat-option>
+            <mat-option value="option">Logistic Regression</mat-option>
+            <mat-option value="option">Linear Regression</mat-option>
+          </mat-select>
+        </mat-form-field>
+        <!-- <div>
+          <button mat-button matStepperPrevious>Back</button>
+          <button mat-button matStepperNext>Next</button>
+        </div> -->
+      </form>
+    </mat-step>
+    <mat-step>
+      <ng-template matStepLabel>Start Process</ng-template>
+      <p>You are done with the configuratio, now click the button below to receive the results.</p>
+    
+      <button mat-raised-button color="primary">Visualize Results</button>
+
+      <!-- <div>
+        <button mat-button matStepperPrevious>Back</button>
+        <button mat-button (click)="stepper.reset()">Reset</button>
+      </div> -->
+    </mat-step>
+  </mat-vertical-stepper>

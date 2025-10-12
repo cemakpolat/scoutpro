@@ -1,0 +1,4 @@
+flask
+docker
+werkzeug
+flask_cors
