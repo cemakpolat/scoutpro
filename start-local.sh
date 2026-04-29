@@ -289,8 +289,8 @@ sleep 5
 
 # Start all microservices
 echo -e "${BLUE}🚀 Starting microservices...${NC}"
-docker-compose up -d player-service team-service match-service statistics-service ml-service
-docker-compose up -d live-ingestion-service search-service notification-service websocket-server
+docker-compose up -d player-service team-service match-service statistics-service data-sync-service ml-service
+docker-compose up -d live-ingestion-service search-service notification-service report-service export-service analytics-service websocket-server
 
 # Start monitoring stack
 echo -e "${BLUE}📊 Starting monitoring stack...${NC}"

@@ -107,8 +107,8 @@ echo -e "${BLUE}Step 4/5: Starting Supporting Services${NC}"
 echo "-------------------------------------------"
 
 # Start supporting services
-echo "Starting Statistics, ML, Search, and Notification services..."
-docker-compose up -d statistics-service ml-service search-service notification-service
+echo "Starting Statistics, Data Sync, ML, Search, Notification, Report, Export, and Analytics services..."
+docker-compose up -d statistics-service data-sync-service ml-service search-service notification-service report-service export-service analytics-service
 
 echo "Starting WebSocket server..."
 docker-compose up -d websocket-server
@@ -120,8 +120,13 @@ sleep 10
 echo ""
 echo "Verifying services..."
 wait_for_service "Statistics Service" "http://localhost:8004/health"
+wait_for_service "Data Sync Service" "http://localhost:8006/health" || echo "Data Sync Service may not expose /health"
 wait_for_service "ML Service" "http://localhost:8005/health"
 wait_for_service "Search Service" "http://localhost:8007/health"
+wait_for_service "Notification Service" "http://localhost:8008/health"
+wait_for_service "Report Service" "http://localhost:8009/health" || echo "Report Service may not expose /health"
+wait_for_service "Export Service" "http://localhost:8010/health" || echo "Export Service may not expose /health"
+wait_for_service "Analytics Service" "http://localhost:8012/health" || echo "Analytics Service may not expose /health"
 wait_for_service "WebSocket Server" "http://localhost:8080/health"
 
 echo ""

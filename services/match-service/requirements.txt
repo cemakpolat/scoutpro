@@ -19,5 +19,5 @@ pytest-cov==4.1.0
 mongoengine==0.27.0
 xmltodict==0.13.0
 lxml==4.9.3
-motor>=3.3.0
-pymongo>=4.0.0
+# motor already pinned above; pin pymongo to a compatible version
+pymongo==4.5.0

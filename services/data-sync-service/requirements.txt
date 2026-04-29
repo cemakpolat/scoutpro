@@ -1,0 +1,17 @@
+# Data Sync Service Dependencies
+
+# Core
+# Scheduling
+schedule>=1.1.0
+
+# YAML configuration
+pyyaml>=6.0
+
+# Database
+pymongo==4.5.0
+
+# Shared dependencies (from parent project)
+# These should be installed from the main ScoutPro requirements.txt
+motor>=3.3.0
+redis[hiredis]==5.0.1
+aiokafka==0.10.0

@@ -1,19 +1,26 @@
-import React from 'react';
-import { ArrowLeft, MapPin, Calendar, DollarSign, TrendingUp, Activity, Shield, Target, Zap, Users } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ArrowLeft, MapPin, Calendar, DollarSign, TrendingUp, Activity, Shield, Target, Zap, Users, Loader2, Download } from 'lucide-react';
+import apiService from '../services/api';
 
 interface Player {
-  id: number;
+  id: string | number;
   name: string;
   position: string;
-  team: string;
+  team?: string;
+  club?: string;
   age: number;
   nationality: string;
   marketValue: string;
   goals: number;
   assists: number;
   rating: number;
-  matches: number;
-  image: string;
+  matches?: number;
+  appearances?: number;
+  image?: string;
+  photo?: string;
+  passAccuracy?: number;
+  xG?: number;
+  xA?: number;
 }
 
 interface PlayerDetailProps {
@@ -21,24 +28,80 @@ interface PlayerDetailProps {
   onBack: () => void;
 }
 
-const PlayerDetail: React.FC<PlayerDetailProps> = ({ player, onBack }) => {
+const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBack }) => {
+  const [player, setPlayer] = useState(initialPlayer);
+  const [insights, setInsights] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    const fetchDetails = async () => {
+      setLoading(true);
+      try {
+        // Fetch advanced player insights from API
+        const insightsRes = await apiService.getPlayerInsightsAdvanced(String(player.id));
+        if (insightsRes.success && insightsRes.data) {
+          setInsights(insightsRes.data);
+        }
+        // Fetch full player data
+        const playerRes = await apiService.getPlayer(String(player.id));
+        if (playerRes.success && playerRes.data) {
+          setPlayer({ ...player, ...playerRes.data });
+        }
+      } catch (e) {
+        // Silently fall back to initial player data
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchDetails();
+  }, [initialPlayer.id]);
+
+  const handleDownloadReport = async () => {
+    setDownloading(true);
+    try {
+      const blob = await apiService.generatePlayerReport(String(player.id));
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `player-report-${player.name.replace(/\s+/g, '-')}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Failed to download report', e);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const matchesPlayed = player.matches || player.appearances || 1;
   return (
     <div className="min-h-screen p-6">
       <div className="max-w-6xl mx-auto">
         {/* Header */}
         <div className="mb-6">
-          <button
-            onClick={onBack}
-            className="flex items-center text-slate-400 hover:text-white mb-4 transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5 mr-2" />
-            Back to Players
-          </button>
+          <div className="flex items-center justify-between mb-4">
+            <button
+              onClick={onBack}
+              className="flex items-center text-slate-400 hover:text-white transition-colors"
+            >
+              <ArrowLeft className="w-5 h-5 mr-2" />
+              Back to Players
+            </button>
+            <button
+              onClick={handleDownloadReport}
+              disabled={downloading}
+              className="flex items-center space-x-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-slate-600 rounded-lg text-sm transition-colors"
+            >
+              {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+              <span>{downloading ? 'Generating...' : 'Download PDF'}</span>
+            </button>
+          </div>
 
           <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700 p-6">
             <div className="flex items-center space-x-6">
               <img
-                src={player.image}
+                src={player.image || player.photo || `https://ui-avatars.com/api/?name=${encodeURIComponent(player.name)}&size=96&background=334155&color=fff`}
                 alt={player.name}
                 className="w-24 h-24 rounded-full object-cover"
               />
@@ -51,7 +114,7 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player, onBack }) => {
                   </span>
                   <span className="flex items-center">
                     <Users className="w-4 h-4 mr-1" />
-                    {player.team}
+                    {player.team || player.club}
                   </span>
                   <span className="flex items-center">
                     <MapPin className="w-4 h-4 mr-1" />
@@ -120,25 +183,37 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player, onBack }) => {
             <div className="space-y-4">
               <div className="flex justify-between items-center">
                 <span className="text-slate-400">Matches Played</span>
-                <span className="font-semibold text-white">{player.matches}</span>
+                <span className="font-semibold text-white">{matchesPlayed}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-400">Goals per Match</span>
-                <span className="font-semibold text-white">{(player.goals / player.matches).toFixed(2)}</span>
+                <span className="font-semibold text-white">{(player.goals / matchesPlayed).toFixed(2)}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-400">Assists per Match</span>
-                <span className="font-semibold text-white">{(player.assists / player.matches).toFixed(2)}</span>
+                <span className="font-semibold text-white">{(player.assists / matchesPlayed).toFixed(2)}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-400">Goal Contributions</span>
                 <span className="font-semibold text-white">{player.goals + player.assists}</span>
               </div>
+              {player.passAccuracy != null && (
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Pass Accuracy</span>
+                  <span className="font-semibold text-white">{player.passAccuracy}%</span>
+                </div>
+              )}
+              {player.xG != null && (
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">xG</span>
+                  <span className="font-semibold text-white">{player.xG}</span>
+                </div>
+              )}
             </div>
           </div>
 
           <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700 p-6">
-            <h3 className="text-lg font-semibold text-white mb-4">Recent Form</h3>
+            <h3 className="text-lg font-semibold text-white mb-4">Recent Form & Insights</h3>
             <div className="space-y-3">
               <div className="flex items-center justify-between p-3 bg-slate-700 rounded-lg">
                 <span className="text-sm text-slate-400">Last 5 matches</span>
@@ -164,6 +239,24 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player, onBack }) => {
                 <span className="font-semibold text-green-400">Excellent</span>
               </div>
             </div>
+
+            {/* API-driven insights */}
+            {insights && insights.insights && insights.insights.length > 0 && (
+              <div className="mt-4 space-y-2">
+                <h4 className="text-sm font-medium text-slate-400 mb-2">AI Insights</h4>
+                {insights.insights.map((ins: any, i: number) => (
+                  <div key={i} className="p-3 bg-slate-700 rounded-lg">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm font-medium text-white">{ins.title}</span>
+                      <span className={`text-xs px-2 py-0.5 rounded ${
+                        ins.impact === 'high' ? 'bg-red-600/30 text-red-300' : 'bg-yellow-600/30 text-yellow-300'
+                      }`}>{ins.impact}</span>
+                    </div>
+                    <p className="text-xs text-slate-400">{ins.description}</p>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       </div>

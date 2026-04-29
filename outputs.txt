@@ -1,0 +1,166 @@
+Attaching to scoutpro-analytics-service, scoutpro-api-gateway, scoutpro-data-sync-service, scoutpro-elasticsearch, scoutpro-export-service, scoutpro-kafka, scoutpro-kafka-ui, scoutpro-live-ingestion, scoutpro-match-service, scoutpro-minio, scoutpro-ml-service, scoutpro-mlflow, scoutpro-mongo, scoutpro-nginx, scoutpro-notification-service, scoutpro-player-service, scoutpro-redis, scoutpro-report-service, scoutpro-search-service, scoutpro-statistics-service, scoutpro-team-service, scoutpro-timescaledb, scoutpro-video-service, scoutpro-websocket-server, scoutpro-zookeeper
+scoutpro-nginx  | /docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+scoutpro-nginx  | /docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+scoutpro-nginx  | 10-listen-on-ipv6-by-default.sh: info: Getting the checksum of /etc/nginx/conf.d/default.conf
+scoutpro-nginx  | 10-listen-on-ipv6-by-default.sh: info: Enabled listen on IPv6 in /etc/nginx/conf.d/default.conf
+scoutpro-nginx  | /docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Configuration complete; ready for start up
+scoutpro-nginx  | /docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+scoutpro-nginx  | /docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+scoutpro-nginx  | 10-listen-on-ipv6-by-default.sh: info: IPv6 listen already enabled
+scoutpro-nginx  | /docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Configuration complete; ready for start up
+scoutpro-nginx  | /docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+scoutpro-nginx  | /docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+scoutpro-nginx  | 10-listen-on-ipv6-by-default.sh: info: IPv6 listen already enabled
+scoutpro-nginx  | /docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Configuration complete; ready for start up
+scoutpro-nginx  | /docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+scoutpro-nginx  | /docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+scoutpro-nginx  | 10-listen-on-ipv6-by-default.sh: info: IPv6 listen already enabled
+scoutpro-nginx  | /docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Configuration complete; ready for start up
+scoutpro-nginx  | /docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+scoutpro-nginx  | /docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+scoutpro-nginx  | 10-listen-on-ipv6-by-default.sh: info: IPv6 listen already enabled
+scoutpro-nginx  | /docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Configuration complete; ready for start up
+scoutpro-nginx  | /docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+scoutpro-nginx  | /docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+scoutpro-nginx  | 10-listen-on-ipv6-by-default.sh: info: IPv6 listen already enabled
+scoutpro-nginx  | /docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Configuration complete; ready for start up
+scoutpro-nginx  | /docker-entrypoint.sh: /docker-entrypoint.d/ is not empty, will attempt to perform configuration
+scoutpro-nginx  | /docker-entrypoint.sh: Looking for shell scripts in /docker-entrypoint.d/
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/10-listen-on-ipv6-by-default.sh
+scoutpro-nginx  | 10-listen-on-ipv6-by-default.sh: info: IPv6 listen already enabled
+scoutpro-nginx  | /docker-entrypoint.sh: Sourcing /docker-entrypoint.d/15-local-resolvers.envsh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/20-envsubst-on-templates.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Launching /docker-entrypoint.d/30-tune-worker-processes.sh
+scoutpro-nginx  | /docker-entrypoint.sh: Configuration complete; ready for start up
+scoutpro-kafka           | [2026-04-28 22:18:59,036] INFO [Controller id=1] Processing automatic preferred replica leader election (kafka.controller.KafkaController)
+scoutpro-kafka           | [2026-04-28 22:18:59,037] TRACE [Controller id=1] Checking need to trigger auto leader balancing (kafka.controller.KafkaController)
+scoutpro-kafka           | [2026-04-28 22:18:59,041] DEBUG [Controller id=1] Topics not in preferred replica for broker 1 HashMap() (kafka.controller.KafkaController)
+scoutpro-kafka           | [2026-04-28 22:18:59,042] TRACE [Controller id=1] Leader imbalance ratio for broker 1 is 0.0 (kafka.controller.KafkaController)
+scoutpro-mlflow          | Registry store URI not provided. Using backend store URI.
+[Kscoutpro-nginx exited with code 1
+[Kscoutpro-nginx exited with code 1
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.647+00:00"},"s":"I",  "c":"NETWORK",  "id":22943,   "ctx":"listener","msg":"Connection accepted","attr":{"remote":"127.0.0.1:37334","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"ef6e13d4-60cd-41d5-b702-1677eff9e01f"}},"connectionId":61,"connectionCount":52}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.657+00:00"},"s":"I",  "c":"NETWORK",  "id":51800,   "ctx":"conn61","msg":"client metadata","attr":{"remote":"127.0.0.1:37334","client":"conn61","negotiatedCompressors":[],"doc":{"application":{"name":"mongosh 2.8.2"},"driver":{"name":"nodejs|mongosh","version":"7.1.0|2.8.2"},"platform":"Node.js v24.14.1, LE","os":{"name":"linux","architecture":"arm64","version":"4.14.355-280.714.amzn2.aarch64","type":"Linux"},"env":{"container":{"runtime":"docker"}}}}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.658+00:00"},"s":"I",  "c":"ACCESS",   "id":10483900,"ctx":"conn61","msg":"Connection not authenticating","attr":{"client":"127.0.0.1:37334","doc":{"application":{"name":"mongosh 2.8.2"},"driver":{"name":"nodejs|mongosh","version":"7.1.0|2.8.2"},"platform":"Node.js v24.14.1, LE","os":{"name":"linux","architecture":"arm64","version":"4.14.355-280.714.amzn2.aarch64","type":"Linux"},"env":{"container":{"runtime":"docker"}}}}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.660+00:00"},"s":"I",  "c":"NETWORK",  "id":22943,   "ctx":"listener","msg":"Connection accepted","attr":{"remote":"127.0.0.1:37344","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"a6ecb9f5-ca2e-4875-b64d-a96dc4b8a72b"}},"connectionId":62,"connectionCount":53}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.661+00:00"},"s":"I",  "c":"NETWORK",  "id":51800,   "ctx":"conn62","msg":"client metadata","attr":{"remote":"127.0.0.1:37344","client":"conn62","negotiatedCompressors":[],"doc":{"application":{"name":"mongosh 2.8.2"},"driver":{"name":"nodejs|mongosh","version":"7.1.0|2.8.2"},"platform":"Node.js v24.14.1, LE","os":{"name":"linux","architecture":"arm64","version":"4.14.355-280.714.amzn2.aarch64","type":"Linux"},"env":{"container":{"runtime":"docker"}}}}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.661+00:00"},"s":"I",  "c":"ACCESS",   "id":10483900,"ctx":"conn62","msg":"Connection not authenticating","attr":{"client":"127.0.0.1:37344","doc":{"application":{"name":"mongosh 2.8.2"},"driver":{"name":"nodejs|mongosh","version":"7.1.0|2.8.2"},"platform":"Node.js v24.14.1, LE","os":{"name":"linux","architecture":"arm64","version":"4.14.355-280.714.amzn2.aarch64","type":"Linux"},"env":{"container":{"runtime":"docker"}}}}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.666+00:00"},"s":"I",  "c":"NETWORK",  "id":6788700, "ctx":"conn62","msg":"Received first command on ingress connection since session start or auth handshake","attr":{"elapsedMillis":5}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.717+00:00"},"s":"I",  "c":"NETWORK",  "id":22943,   "ctx":"listener","msg":"Connection accepted","attr":{"remote":"127.0.0.1:37360","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"68f75eb1-06e7-4465-aa57-a9a576f1b1c6"}},"connectionId":63,"connectionCount":54}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.717+00:00"},"s":"I",  "c":"NETWORK",  "id":22943,   "ctx":"listener","msg":"Connection accepted","attr":{"remote":"127.0.0.1:37364","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"deef6e47-252c-412d-9387-e9904741f944"}},"connectionId":64,"connectionCount":55}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.718+00:00"},"s":"I",  "c":"NETWORK",  "id":51800,   "ctx":"conn63","msg":"client metadata","attr":{"remote":"127.0.0.1:37360","client":"conn63","negotiatedCompressors":[],"doc":{"application":{"name":"mongosh 2.8.2"},"driver":{"name":"nodejs|mongosh","version":"7.1.0|2.8.2"},"platform":"Node.js v24.14.1, LE","os":{"name":"linux","architecture":"arm64","version":"4.14.355-280.714.amzn2.aarch64","type":"Linux"},"env":{"container":{"runtime":"docker"}}}}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.718+00:00"},"s":"I",  "c":"ACCESS",   "id":10483900,"ctx":"conn63","msg":"Connection not authenticating","attr":{"client":"127.0.0.1:37360","doc":{"application":{"name":"mongosh 2.8.2"},"driver":{"name":"nodejs|mongosh","version":"7.1.0|2.8.2"},"platform":"Node.js v24.14.1, LE","os":{"name":"linux","architecture":"arm64","version":"4.14.355-280.714.amzn2.aarch64","type":"Linux"},"env":{"container":{"runtime":"docker"}}}}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.718+00:00"},"s":"I",  "c":"NETWORK",  "id":51800,   "ctx":"conn64","msg":"client metadata","attr":{"remote":"127.0.0.1:37364","client":"conn64","negotiatedCompressors":[],"doc":{"application":{"name":"mongosh 2.8.2"},"driver":{"name":"nodejs|mongosh","version":"7.1.0|2.8.2"},"platform":"Node.js v24.14.1, LE","os":{"name":"linux","architecture":"arm64","version":"4.14.355-280.714.amzn2.aarch64","type":"Linux"},"env":{"container":{"runtime":"docker"}}}}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.718+00:00"},"s":"I",  "c":"ACCESS",   "id":10483900,"ctx":"conn64","msg":"Connection not authenticating","attr":{"client":"127.0.0.1:37364","doc":{"application":{"name":"mongosh 2.8.2"},"driver":{"name":"nodejs|mongosh","version":"7.1.0|2.8.2"},"platform":"Node.js v24.14.1, LE","os":{"name":"linux","architecture":"arm64","version":"4.14.355-280.714.amzn2.aarch64","type":"Linux"},"env":{"container":{"runtime":"docker"}}}}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.719+00:00"},"s":"I",  "c":"NETWORK",  "id":22943,   "ctx":"listener","msg":"Connection accepted","attr":{"remote":"127.0.0.1:37370","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"4282c674-5e69-4ea7-a981-a50a173da2f8"}},"connectionId":65,"connectionCount":56}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.720+00:00"},"s":"I",  "c":"NETWORK",  "id":51800,   "ctx":"conn65","msg":"client metadata","attr":{"remote":"127.0.0.1:37370","client":"conn65","negotiatedCompressors":[],"doc":{"application":{"name":"mongosh 2.8.2"},"driver":{"name":"nodejs|mongosh","version":"7.1.0|2.8.2"},"platform":"Node.js v24.14.1, LE","os":{"name":"linux","architecture":"arm64","version":"4.14.355-280.714.amzn2.aarch64","type":"Linux"},"env":{"container":{"runtime":"docker"}}}}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.720+00:00"},"s":"I",  "c":"ACCESS",   "id":10483900,"ctx":"conn65","msg":"Connection not authenticating","attr":{"client":"127.0.0.1:37370","doc":{"application":{"name":"mongosh 2.8.2"},"driver":{"name":"nodejs|mongosh","version":"7.1.0|2.8.2"},"platform":"Node.js v24.14.1, LE","os":{"name":"linux","architecture":"arm64","version":"4.14.355-280.714.amzn2.aarch64","type":"Linux"},"env":{"container":{"runtime":"docker"}}}}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.792+00:00"},"s":"I",  "c":"NETWORK",  "id":22944,   "ctx":"conn61","msg":"Connection ended","attr":{"remote":"127.0.0.1:37334","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"ef6e13d4-60cd-41d5-b702-1677eff9e01f"}},"connectionId":61,"connectionCount":55}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.792+00:00"},"s":"I",  "c":"NETWORK",  "id":22944,   "ctx":"conn63","msg":"Connection ended","attr":{"remote":"127.0.0.1:37360","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"68f75eb1-06e7-4465-aa57-a9a576f1b1c6"}},"connectionId":63,"connectionCount":54}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.792+00:00"},"s":"I",  "c":"NETWORK",  "id":22944,   "ctx":"conn64","msg":"Connection ended","attr":{"remote":"127.0.0.1:37364","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"deef6e47-252c-412d-9387-e9904741f944"}},"connectionId":64,"connectionCount":53}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.792+00:00"},"s":"I",  "c":"NETWORK",  "id":22944,   "ctx":"conn65","msg":"Connection ended","attr":{"remote":"127.0.0.1:37370","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"4282c674-5e69-4ea7-a981-a50a173da2f8"}},"connectionId":65,"connectionCount":52}}
+scoutpro-mongo           | {"t":{"$date":"2026-04-28T22:19:18.998+00:00"},"s":"I",  "c":"NETWORK",  "id":22944,   "ctx":"conn62","msg":"Connection ended","attr":{"remote":"127.0.0.1:37344","isLoadBalanced":false,"uuid":{"uuid":{"$uuid":"a6ecb9f5-ca2e-4875-b64d-a96dc4b8a72b"}},"connectionId":62,"connectionCount":51}}
+scoutpro-live-ingestion  | INFO:     127.0.0.1:34552 - "GET /health HTTP/1.1" 200 OK
+scoutpro-search-service  | INFO:     127.0.0.1:34562 - "GET /health HTTP/1.1" 200 OK
+scoutpro-notification-service  | INFO:     127.0.0.1:34578 - "GET /health HTTP/1.1" 200 OK
+scoutpro-websocket-server      | INFO:     127.0.0.1:45680 - "GET /health HTTP/1.1" 200 OK
+scoutpro-export-service        | INFO:     127.0.0.1:34938 - "GET /health HTTP/1.1" 200 OK
+Gracefully Stopping... press Ctrl+C again to force
+[K Container scoutpro-export-service  [32mStopping[0m
+[K Container scoutpro-video-service  [32mStopping[0m
+[K Container scoutpro-analytics-service  [32mStopping[0m
+[K Container scoutpro-nginx  [32mStopping[0m
+[K Container scoutpro-search-service  [32mStopping[0m
+[K Container scoutpro-live-ingestion  [32mStopping[0m
+[K Container scoutpro-websocket-server  [32mStopping[0m
+[K Container scoutpro-kafka-ui  [32mStopping[0m
+[K Container scoutpro-match-service  [32mStopping[0m
+[K Container scoutpro-notification-service  [32mStopping[0m
+[K Container scoutpro-player-service  [32mStopping[0m
+[K Container scoutpro-team-service  [32mStopping[0m
+[K Container scoutpro-data-sync-service  [32mStopping[0m
+[K Container scoutpro-ml-service  [32mStopping[0m
+[K Container scoutpro-statistics-service  [32mStopping[0m
+[K Container scoutpro-report-service  [32mStopping[0m
+[K Container scoutpro-nginx  [32mStopped[0m
+[K Container scoutpro-api-gateway  [32mStopping[0m
+[K Container scoutpro-ml-service  [32mStopped[0m
+[K Container scoutpro-mlflow  [32mStopping[0m
+[Kscoutpro-ml-service exited with code 0
+[K Container scoutpro-video-service  [32mStopped[0m
+[Kscoutpro-video-service exited with code 0
+[K Container scoutpro-report-service  [32mStopped[0m
+[Kscoutpro-report-service exited with code 0
+[K Container scoutpro-notification-service  [32mStopped[0m
+[Kscoutpro-notification-service exited with code 0
+[K Container scoutpro-live-ingestion  [32mStopped[0m
+[Kscoutpro-live-ingestion exited with code 0
+[K Container scoutpro-websocket-server  [32mStopped[0m
+[Kscoutpro-websocket-server exited with code 0
+[K Container scoutpro-api-gateway  [32mStopped[0m
+[Kscoutpro-api-gateway exited with code 137
+[K Container scoutpro-match-service  [32mStopped[0m
+[Kscoutpro-match-service exited with code 137
+[K Container scoutpro-data-sync-service  [32mStopped[0m
+[Kscoutpro-data-sync-service exited with code 137
+[K Container scoutpro-export-service  [32mStopped[0m
+[Kscoutpro-export-service exited with code 137
+[K Container scoutpro-kafka-ui  [32mStopped[0m
+[Kscoutpro-kafka-ui exited with code 137
+[K Container scoutpro-statistics-service  [32mStopped[0m
+[Kscoutpro-statistics-service exited with code 137
+[K Container scoutpro-team-service  [32mStopped[0m
+[Kscoutpro-team-service exited with code 137
+[K Container scoutpro-search-service  [32mStopped[0m
+[K Container scoutpro-elasticsearch  [32mStopping[0m
+[Kscoutpro-search-service exited with code 137
+[Kscoutpro-redis exited with code 137
+[Kscoutpro-analytics-service exited with code 137
+[K Container scoutpro-analytics-service  [32mStopped[0m
+[Kscoutpro-mongo exited with code 137
+[Kscoutpro-zookeeper exited with code 137
+[Kscoutpro-kafka exited with code 137
+[Kscoutpro-minio exited with code 137
+[K Container scoutpro-mlflow  [32mStopped[0m
+[K Container scoutpro-timescaledb  [32mStopping[0m
+[K Container scoutpro-minio  [32mStopping[0m
+[Kscoutpro-mlflow exited with code 137
+[K Container scoutpro-minio  [32mStopped[0m
+[K Container scoutpro-player-service  [32mStopped[0m
+[K Container scoutpro-redis  [32mStopping[0m
+[K Container scoutpro-kafka  [32mStopping[0m
+[K Container scoutpro-mongo  [32mStopping[0m
+[K Container scoutpro-redis  [32mStopped[0m
+[Kscoutpro-player-service exited with code 137
+[K Container scoutpro-mongo  [32mStopped[0m
+[K Container scoutpro-kafka  [32mStopped[0m
+[K Container scoutpro-zookeeper  [32mStopping[0m
+[K Container scoutpro-zookeeper  [32mStopped[0m
+[K Container scoutpro-timescaledb  [32mStopped[0m
+[Kscoutpro-timescaledb exited with code 137
+[K Container scoutpro-elasticsearch  [32mStopped[0m
+[Kscoutpro-elasticsearch exited with code 137

@@ -1,14 +1,31 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   Layers, Play, Pause, RotateCcw, Zap, Target, Activity,
   Users, ArrowRight, ArrowUp, ArrowDown, Circle, Square,
-  Triangle, Hexagon, Settings, Eye, Download, Share2
+  Triangle, Hexagon, Settings, Eye, Download, Share2, Loader2
 } from 'lucide-react';
+import apiService from '../services/api';
+import { useData } from '../context/DataContext';
 
 const TacticalAnalyzer: React.FC = () => {
   const [selectedFormation, setSelectedFormation] = useState('4-3-3');
   const [analysisMode, setAnalysisMode] = useState('live');
   const [selectedPhase, setSelectedPhase] = useState('attack');
+  const [loading, setLoading] = useState(true);
+  const [apiTactical, setApiTactical] = useState<any>(null);
+
+  const { players: contextPlayers, teams } = useData();
+
+  // Fetch tactical data from API
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      apiService.getTacticalPatterns().catch(() => null),
+      apiService.getTeamRankings('points', 5).catch(() => null),
+    ]).then(([patterns, rankings]) => {
+      setApiTactical({ patterns: patterns?.data, rankings: rankings?.data });
+    }).finally(() => setLoading(false));
+  }, []);
 
   const formations = [
     { id: '4-3-3', name: '4-3-3', popularity: 34, effectiveness: 87 },
@@ -18,47 +35,38 @@ const TacticalAnalyzer: React.FC = () => {
     { id: '3-4-3', name: '3-4-3', popularity: 8, effectiveness: 85 }
   ];
 
-  const tacticalPatterns = [
-    {
-      name: 'High Pressing',
-      frequency: 78,
-      success: 67,
-      zones: ['Final Third', 'Midfield'],
-      impact: 'High',
-      trend: 'increasing'
-    },
-    {
-      name: 'Counter-Attack',
-      frequency: 45,
-      success: 73,
-      zones: ['Defensive Third', 'Wide Areas'],
-      impact: 'Medium',
-      trend: 'stable'
-    },
-    {
-      name: 'Possession Play',
-      frequency: 89,
-      success: 62,
-      zones: ['Midfield', 'Wide Areas'],
-      impact: 'High',
-      trend: 'increasing'
-    },
-    {
-      name: 'Set Piece Routine',
-      frequency: 23,
-      success: 34,
-      zones: ['Penalty Area'],
-      impact: 'Medium',
-      trend: 'decreasing'
-    }
-  ];
+  // Build tactical patterns from API data or fallback
+  const tacticalPatterns = apiTactical?.patterns?.length > 0
+    ? apiTactical.patterns.slice(0, 4).map((p: any) => ({
+        name: p.name || p.pattern || 'Pattern',
+        frequency: p.frequency || p.usage || 50,
+        success: p.successRate || p.success || 60,
+        zones: p.zones || ['Midfield'],
+        impact: (p.successRate || p.success || 60) > 65 ? 'High' : 'Medium',
+        trend: p.trend || 'stable',
+      }))
+    : [
+        { name: 'High Pressing', frequency: 78, success: 67, zones: ['Final Third', 'Midfield'], impact: 'High', trend: 'increasing' },
+        { name: 'Counter-Attack', frequency: 45, success: 73, zones: ['Defensive Third', 'Wide Areas'], impact: 'Medium', trend: 'stable' },
+        { name: 'Possession Play', frequency: 89, success: 62, zones: ['Midfield', 'Wide Areas'], impact: 'High', trend: 'increasing' },
+        { name: 'Set Piece Routine', frequency: 23, success: 34, zones: ['Penalty Area'], impact: 'Medium', trend: 'decreasing' },
+      ];
 
-  const playerMovements = [
-    { player: 'Mbappé', from: [20, 30], to: [80, 25], type: 'run', success: true },
-    { player: 'Neymar', from: [40, 60], to: [65, 45], type: 'pass', success: true },
-    { player: 'Messi', from: [60, 70], to: [75, 30], type: 'dribble', success: false },
-    { player: 'Verratti', from: [45, 50], to: [55, 40], type: 'pass', success: true }
-  ];
+  // Build player movements from context players or fallback
+  const playerMovements = contextPlayers.length > 0
+    ? contextPlayers.slice(0, 4).map((p: any, i: number) => ({
+        player: p.name?.split(' ').pop() || `Player ${i + 1}`,
+        from: [20 + i * 15, 30 + i * 10],
+        to: [60 + i * 10, 25 + i * 8],
+        type: i % 2 === 0 ? 'run' : 'pass',
+        success: i % 3 !== 2,
+      }))
+    : [
+        { player: 'Player 1', from: [20, 30], to: [80, 25], type: 'run', success: true },
+        { player: 'Player 2', from: [40, 60], to: [65, 45], type: 'pass', success: true },
+        { player: 'Player 3', from: [60, 70], to: [75, 30], type: 'dribble', success: false },
+        { player: 'Player 4', from: [45, 50], to: [55, 40], type: 'pass', success: true },
+      ];
 
   const heatmapData = [
     { zone: 'Left Wing', intensity: 85, effectiveness: 72 },

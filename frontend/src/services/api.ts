@@ -27,9 +27,9 @@ class ApiService {
   private useMockData: boolean;
 
   constructor() {
-    this.baseUrl = import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api';
+    this.baseUrl = import.meta.env.VITE_API_URL || '/api/v1';
     this.apiKey = import.meta.env.VITE_API_KEY || '';
-    this.useMockData = import.meta.env.VITE_USE_MOCK_DATA === 'true' || false;
+    this.useMockData = import.meta.env.VITE_USE_MOCK_DATA === 'true';
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
@@ -279,6 +279,26 @@ class ApiService {
       return {
         success: true,
         data: liveMatches,
+        meta: { timestamp: new Date().toISOString(), source: 'mock-fallback' }
+      };
+    }
+    return response;
+  }
+
+  async getMatchEvents(matchId: string): Promise<ApiResponse<any[]>> {
+    if (this.useMockData) {
+      return {
+        success: true,
+        data: [],
+        meta: { timestamp: new Date().toISOString(), source: 'mock' }
+      };
+    }
+
+    const response = await this.request<any[]>(`/matches/${matchId}/events`);
+    if (!response.success) {
+      return {
+        success: true,
+        data: [],
         meta: { timestamp: new Date().toISOString(), source: 'mock-fallback' }
       };
     }
@@ -635,6 +655,221 @@ class ApiService {
       method: 'POST',
       body: JSON.stringify({ algorithmId, datasetId, config })
     });
+  }
+
+  // ============ NEW SERVICES (2025-10-19) ============
+
+  // Report Service endpoints (Port 8009)
+  async generatePlayerReport(playerId: string, format: 'pdf' | 'excel' = 'pdf'): Promise<Blob> {
+    const response = await fetch(`${this.baseUrl}/v2/reports/player/${playerId}?format=${format}`);
+    if (!response.ok) {
+      throw new Error(`Failed to generate report: ${response.statusText}`);
+    }
+    return response.blob();
+  }
+
+  async generateTeamReport(teamId: string, format: 'pdf' | 'excel' = 'pdf'): Promise<Blob> {
+    const response = await fetch(`${this.baseUrl}/v2/reports/team/${teamId}?format=${format}`);
+    if (!response.ok) {
+      throw new Error(`Failed to generate report: ${response.statusText}`);
+    }
+    return response.blob();
+  }
+
+  async generateMatchReport(matchId: string, format: 'pdf' | 'excel' = 'pdf'): Promise<Blob> {
+    const response = await fetch(`${this.baseUrl}/v2/reports/match/${matchId}?format=${format}`);
+    if (!response.ok) {
+      throw new Error(`Failed to generate report: ${response.statusText}`);
+    }
+    return response.blob();
+  }
+
+  async generateAsyncReport(type: string, entityId: string, format: string): Promise<ApiResponse<{ job_id: string }>> {
+    return this.request<{ job_id: string }>('/v2/reports/generate', {
+      method: 'POST',
+      body: JSON.stringify({ type, entity_id: entityId, format })
+    });
+  }
+
+  async getReportStatus(reportId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/reports/${reportId}/status`);
+  }
+
+  async downloadReport(reportId: string): Promise<Blob> {
+    const response = await fetch(`${this.baseUrl}/v2/reports/${reportId}/download`);
+    if (!response.ok) {
+      throw new Error(`Failed to download report: ${response.statusText}`);
+    }
+    return response.blob();
+  }
+
+  async listReports(): Promise<ApiResponse<any[]>> {
+    return this.request<any[]>('/v2/reports/list');
+  }
+
+  async deleteReport(reportId: string): Promise<ApiResponse<void>> {
+    return this.request<void>(`/v2/reports/${reportId}`, { method: 'DELETE' });
+  }
+
+  // Export Service endpoints (Port 8010)
+  async exportPlayers(format: 'csv' | 'json' | 'excel' = 'csv', filters?: any): Promise<Blob> {
+    const params = new URLSearchParams({ format });
+    if (filters) {
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value) params.append(key, String(value));
+      });
+    }
+    const response = await fetch(`${this.baseUrl}/v2/exports/players?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(`Failed to export players: ${response.statusText}`);
+    }
+    return response.blob();
+  }
+
+  async exportTeams(format: 'csv' | 'json' | 'excel' = 'csv'): Promise<Blob> {
+    const response = await fetch(`${this.baseUrl}/v2/exports/teams?format=${format}`);
+    if (!response.ok) {
+      throw new Error(`Failed to export teams: ${response.statusText}`);
+    }
+    return response.blob();
+  }
+
+  async exportMatches(format: 'csv' | 'json' | 'excel' = 'csv', filters?: any): Promise<Blob> {
+    const params = new URLSearchParams({ format });
+    if (filters) {
+      Object.entries(filters).forEach(([key, value]) => {
+        if (value) params.append(key, String(value));
+      });
+    }
+    const response = await fetch(`${this.baseUrl}/v2/exports/matches?${params.toString()}`);
+    if (!response.ok) {
+      throw new Error(`Failed to export matches: ${response.statusText}`);
+    }
+    return response.blob();
+  }
+
+  async exportStatistics(format: 'csv' | 'json' | 'excel' = 'csv'): Promise<Blob> {
+    const response = await fetch(`${this.baseUrl}/v2/exports/statistics?format=${format}`);
+    if (!response.ok) {
+      throw new Error(`Failed to export statistics: ${response.statusText}`);
+    }
+    return response.blob();
+  }
+
+  async exportCustom(data: any[], format: 'csv' | 'json' | 'excel', columns?: string[]): Promise<Blob> {
+    const response = await fetch(`${this.baseUrl}/v2/exports/custom`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ data, format, columns })
+    });
+    if (!response.ok) {
+      throw new Error(`Failed to export custom data: ${response.statusText}`);
+    }
+    return response.blob();
+  }
+
+  async getExportTemplate(entityType: 'players' | 'teams' | 'matches'): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/exports/templates/${entityType}`);
+  }
+
+  // Video Service endpoints (Port 8011)
+  async uploadVideo(file: File, matchId?: string, metadata?: any): Promise<ApiResponse<{ video_id: string }>> {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (matchId) formData.append('match_id', matchId);
+    if (metadata) formData.append('metadata', JSON.stringify(metadata));
+
+    const response = await fetch(`${this.baseUrl}/v2/videos/upload`, {
+      method: 'POST',
+      body: formData
+    });
+
+    if (!response.ok) {
+      return {
+        success: false,
+        error: {
+          code: response.status.toString(),
+          message: `Failed to upload video: ${response.statusText}`
+        }
+      };
+    }
+
+    const data = await response.json();
+    return {
+      success: true,
+      data,
+      meta: { timestamp: new Date().toISOString(), source: 'api' }
+    };
+  }
+
+  async getVideoMetadata(videoId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/videos/${videoId}`);
+  }
+
+  async getVideoStreamUrl(videoId: string): string {
+    return `${this.baseUrl}/v2/videos/${videoId}/stream`;
+  }
+
+  async analyzeVideo(videoId: string, analysisType: string = 'full'): Promise<ApiResponse<{ job_id: string }>> {
+    return this.request<{ job_id: string }>(`/v2/videos/${videoId}/analyze`, {
+      method: 'POST',
+      body: JSON.stringify({ analysis_type: analysisType })
+    });
+  }
+
+  async listVideos(matchId?: string): Promise<ApiResponse<any[]>> {
+    const url = matchId ? `/v2/videos?match_id=${matchId}` : '/v2/videos';
+    return this.request<any[]>(url);
+  }
+
+  async deleteVideo(videoId: string): Promise<ApiResponse<void>> {
+    return this.request<void>(`/v2/videos/${videoId}`, { method: 'DELETE' });
+  }
+
+  // Analytics Service endpoints (Port 8012) - Advanced BI Dashboard
+  async getDashboardOverview(): Promise<ApiResponse<any>> {
+    return this.request<any>('/v2/analytics/dashboard/overview');
+  }
+
+  async getTeamDashboard(teamId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/dashboard/team/${teamId}`);
+  }
+
+  async getPlayerDashboard(playerId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/dashboard/player/${playerId}`);
+  }
+
+  async getLeagueTrends(leagueId?: string): Promise<ApiResponse<any>> {
+    const url = leagueId ? `/v2/analytics/trends/league?league_id=${leagueId}` : '/v2/analytics/trends/league';
+    return this.request<any>(url);
+  }
+
+  async getPlayerRankings(metric: string, limit: number = 20, leagueId?: string): Promise<ApiResponse<any[]>> {
+    const params = new URLSearchParams({ metric, limit: limit.toString() });
+    if (leagueId) params.append('league_id', leagueId);
+    return this.request<any[]>(`/v2/analytics/rankings/players?${params.toString()}`);
+  }
+
+  async getTeamRankings(metric: string, limit: number = 20, leagueId?: string): Promise<ApiResponse<any[]>> {
+    const params = new URLSearchParams({ metric, limit: limit.toString() });
+    if (leagueId) params.append('league_id', leagueId);
+    return this.request<any[]>(`/v2/analytics/rankings/teams?${params.toString()}`);
+  }
+
+  async getTeamInsights(teamId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/insights/team/${teamId}`);
+  }
+
+  async getPlayerInsightsAdvanced(playerId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/insights/player/${playerId}`);
+  }
+
+  async comparePlayers(playerIds: string[]): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/comparison/players?ids=${playerIds.join(',')}`);
+  }
+
+  async compareTeams(teamIds: string[]): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/comparison/teams?ids=${teamIds.join(',')}`);
   }
 }
 

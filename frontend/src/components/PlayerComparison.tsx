@@ -19,6 +19,8 @@ import {
 import { comparisonService } from '../services/comparisonService';
 import { exportService } from '../services/exportService';
 import { ComparisonCategory, SimilarPlayer } from '../types/comparison';
+import { useData } from '../context/DataContext';
+import apiService from '../services/api';
 
 const PlayerComparison: React.FC = () => {
   const [selectedPlayers, setSelectedPlayers] = useState<any[]>([]);
@@ -27,6 +29,7 @@ const PlayerComparison: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [similarPlayers, setSimilarPlayers] = useState<SimilarPlayer[]>([]);
   const [showSimilar, setShowSimilar] = useState(false);
+  const [apiComparisonData, setApiComparisonData] = useState<any>(null);
   const [radarAttributes, setRadarAttributes] = useState<string[]>([
     'passing',
     'dribbling',
@@ -36,58 +39,19 @@ const PlayerComparison: React.FC = () => {
     'tackling',
   ]);
 
-  // Mock players database
-  const availablePlayers = [
-    {
-      id: 'p1',
-      name: 'Kylian Mbappé',
-      position: 'Forward',
-      age: 25,
-      club: 'Real Madrid',
-      nationality: 'France',
-      image: 'https://images.pexels.com/photos/3621104/pexels-photo-3621104.jpeg?auto=compress&cs=tinysrgb&w=100',
-    },
-    {
-      id: 'p2',
-      name: 'Erling Haaland',
-      position: 'Forward',
-      age: 24,
-      club: 'Manchester City',
-      nationality: 'Norway',
-    },
-    {
-      id: 'p3',
-      name: 'Vinicius Junior',
-      position: 'Forward',
-      age: 24,
-      club: 'Real Madrid',
-      nationality: 'Brazil',
-    },
-    {
-      id: 'p4',
-      name: 'Jude Bellingham',
-      position: 'Midfielder',
-      age: 21,
-      club: 'Real Madrid',
-      nationality: 'England',
-    },
-    {
-      id: 'p5',
-      name: 'Pedri',
-      position: 'Midfielder',
-      age: 22,
-      club: 'Barcelona',
-      nationality: 'Spain',
-    },
-    {
-      id: 'p6',
-      name: 'Kevin De Bruyne',
-      position: 'Midfielder',
-      age: 33,
-      club: 'Manchester City',
-      nationality: 'Belgium',
-    },
-  ];
+  // Use real player data from context
+  const { players } = useData();
+
+  // Map real players for selection
+  const availablePlayers = players.map((p: any) => ({
+    id: String(p.id),
+    name: p.name,
+    position: p.position,
+    age: p.age,
+    club: p.club,
+    nationality: p.nationality,
+    image: p.photo || p.image || `https://ui-avatars.com/api/?name=${encodeURIComponent(p.name)}&size=100&background=334155&color=fff`,
+  }));
 
   const filteredPlayers = availablePlayers.filter(
     p =>
@@ -98,8 +62,17 @@ const PlayerComparison: React.FC = () => {
 
   useEffect(() => {
     if (selectedPlayers.length >= 2) {
+      // Use local comparison service
       const data = comparisonService.comparePlayers(selectedPlayers);
       setComparisonData(data);
+      
+      // Also fetch API comparison data
+      const ids = selectedPlayers.map(p => p.id);
+      apiService.comparePlayers(ids).then(res => {
+        if (res.success && res.data) {
+          setApiComparisonData(res.data);
+        }
+      }).catch(() => {});
     }
   }, [selectedPlayers]);
 

@@ -19,3 +19,4 @@ pytest-asyncio==0.21.1
 # Legacy Opta API dependencies
 mongoengine==0.27.0
 psycopg2-binary
+motor>=3.3.0

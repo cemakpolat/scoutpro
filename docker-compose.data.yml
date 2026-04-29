@@ -1,0 +1,158 @@
+version: '3.8'
+
+services:
+  # ============ DATABASES & INFRASTRUCTURE ============
+  mongo:
+    image: mongo:7.0
+    container_name: scoutpro-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=scoutpro123
+      - MONGO_INITDB_DATABASE=scoutpro
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+      - ./init-scripts/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/scoutpro --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: scoutpro-timescaledb
+    ports:
+      - "5433:5432"
+    environment:
+      - POSTGRES_DB=scoutpro
+      - POSTGRES_USER=scoutpro
+      - POSTGRES_PASSWORD=scoutpro123
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+      - ./init-scripts/init-timescale.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scoutpro -d scoutpro"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    container_name: scoutpro-redis
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes --requirepass scoutpro123
+    volumes:
+      - redis-data:/data
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "--raw", "incr", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ============ MESSAGE BROKER ============
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: scoutpro-zookeeper
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
+
+  kafka:
+    image: confluentinc/cp-kafka:7.5.0
+    container_name: scoutpro-kafka
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,PLAINTEXT_HOST://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: scoutpro-kafka-ui
+    ports:
+      - "8090:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=scoutpro-cluster
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+    depends_on:
+      - kafka
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
+
+  # ============ OBJECT STORAGE ============
+  minio:
+    image: minio/minio:latest
+    container_name: scoutpro-minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin123
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+networks:
+  scoutpro-network:
+    name: scoutpro-network
+    driver: bridge
+
+volumes:
+  mongo-data:
+  mongo-config:
+  timescale-data:
+  redis-data:
+  minio-data:
+  kafka-data:

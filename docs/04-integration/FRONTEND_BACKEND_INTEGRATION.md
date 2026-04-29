@@ -10,6 +10,7 @@ This guide explains how the ScoutPro frontend connects to the backend microservi
 
 The backend consists of multiple microservices running in Docker containers:
 
+**Core Services**:
 | Service | Port | Description |
 |---------|------|-------------|
 | **NGINX (API Gateway)** | 80 | Routes requests to appropriate microservices |
@@ -22,6 +23,14 @@ The backend consists of multiple microservices running in Docker containers:
 | **Search Service** | 8007 | Full-text search functionality |
 | **Notification Service** | 8008 | User notifications |
 | **WebSocket Server** | 8080 | Real-time updates via WebSocket |
+
+**New Services** (Added 2025-10-19):
+| Service | Port | Description |
+|---------|------|-------------|
+| **Report Service** | 8009 | PDF/Excel report generation |
+| **Export Service** | 8010 | CSV/JSON/Excel data exports |
+| **Video Service** | 8011 | Video upload, streaming, and analysis |
+| **Analytics Service** | 8012 | BI dashboards and advanced insights |
 
 ### Frontend API Routes
 
@@ -130,6 +139,100 @@ await apiService.markNotificationRead(notificationId);
 const marketTrends = await apiService.getMarketTrends();
 const predictions = await apiService.getTransferPredictions();
 const patterns = await apiService.getTacticalPatterns();
+```
+
+### Report Endpoints (NEW - 2025-10-19)
+
+**Frontend**: `GET /api/v2/reports`
+**NGINX Routes To**: `http://report-service:8009/api/v2/reports`
+**Service Port**: 8009
+
+```typescript
+// Generate player report (PDF/Excel)
+const report = await fetch('http://localhost/api/v2/reports/player/player_1?format=pdf');
+const blob = await report.blob();
+
+// Generate team report
+const teamReport = await fetch('http://localhost/api/v2/reports/team/team_1?format=excel');
+
+// Async report generation
+const job = await fetch('http://localhost/api/v2/reports/generate', {
+  method: 'POST',
+  body: JSON.stringify({ type: 'player', id: 'player_1', format: 'pdf' })
+});
+```
+
+### Export Endpoints (NEW - 2025-10-19)
+
+**Frontend**: `GET /api/v2/exports`
+**NGINX Routes To**: `http://export-service:8010/api/v2/exports`
+**Service Port**: 8010
+
+```typescript
+// Export players to CSV
+const csv = await fetch('http://localhost/api/v2/exports/players?format=csv');
+const data = await csv.text();
+
+// Export teams to Excel
+const excel = await fetch('http://localhost/api/v2/exports/teams?format=excel');
+const blob = await excel.blob();
+
+// Custom export
+const custom = await fetch('http://localhost/api/v2/exports/custom', {
+  method: 'POST',
+  body: JSON.stringify({
+    data: [...],
+    format: 'csv',
+    columns: ['name', 'position', 'rating']
+  })
+});
+```
+
+### Video Endpoints (NEW - 2025-10-19)
+
+**Frontend**: `GET /api/v2/videos`
+**NGINX Routes To**: `http://video-service:8011/api/v2/videos`
+**Service Port**: 8011
+
+```typescript
+// Upload video
+const formData = new FormData();
+formData.append('file', videoFile);
+formData.append('match_id', 'match_1');
+
+const upload = await fetch('http://localhost/api/v2/videos/upload', {
+  method: 'POST',
+  body: formData
+});
+
+// Stream video
+const video = await fetch('http://localhost/api/v2/videos/video_1/stream');
+
+// Analyze video
+const analysis = await fetch('http://localhost/api/v2/videos/video_1/analyze', {
+  method: 'POST'
+});
+```
+
+### Analytics Endpoints (NEW - 2025-10-19)
+
+**Frontend**: `GET /api/v2/analytics`
+**NGINX Routes To**: `http://analytics-service:8012/api/v2/analytics`
+**Service Port**: 8012
+
+```typescript
+// Get dashboard overview
+const overview = await fetch('http://localhost/api/v2/analytics/dashboard/overview');
+const data = await overview.json();
+
+// Get team analytics
+const teamAnalytics = await fetch('http://localhost/api/v2/analytics/dashboard/team/team_1');
+
+// Get player rankings
+const rankings = await fetch('http://localhost/api/v2/analytics/rankings/players?metric=goals');
+
+// Compare players
+const comparison = await fetch('http://localhost/api/v2/analytics/comparison/players?ids=p1,p2,p3');
 ```
 
 ## WebSocket Connection
@@ -265,6 +368,24 @@ location /api/teams { proxy_pass http://team-service/teams; }
 location /api/matches { proxy_pass http://match-service/matches; }
 location /api/ml { proxy_pass http://ml-service/ml; }
 location /api/analytics { proxy_pass http://statistics-service/analytics; }
+
+# V2 API (New Services - 2025-10-19)
+location /api/v2/reports {
+    proxy_pass http://report-service;
+    proxy_read_timeout 180s;  # 3min for report generation
+}
+location /api/v2/exports {
+    proxy_pass http://export-service;
+    proxy_read_timeout 120s;  # 2min for data exports
+}
+location /api/v2/videos {
+    proxy_pass http://video-service;
+    proxy_read_timeout 300s;  # 5min for video operations
+    client_max_body_size 500M;  # Large video uploads
+}
+location /api/v2/analytics {
+    proxy_pass http://analytics-service;
+}
 
 # WebSocket
 location /socket.io {

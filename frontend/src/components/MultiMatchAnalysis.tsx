@@ -1,28 +1,41 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   BarChart3, Calendar, Filter, Download, Play, Pause, 
   TrendingUp, Users, Target, Activity, Zap, Eye,
-  ChevronDown, ChevronUp, RefreshCw, Settings
+  ChevronDown, ChevronUp, RefreshCw, Settings, Loader2
 } from 'lucide-react';
+import { useData } from '../context/DataContext';
+import apiService from '../services/api';
 
 const MultiMatchAnalysis: React.FC = () => {
-  const [selectedMatches, setSelectedMatches] = useState<number[]>([1, 2, 3]);
+  const [selectedMatches, setSelectedMatches] = useState<string[]>([]);
   const [analysisType, setAnalysisType] = useState('comparative');
   const [timeframe, setTimeframe] = useState('last-month');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisResults, setAnalysisResults] = useState<any>(null);
 
-  const availableMatches = [
-    { id: 1, home: 'Manchester City', away: 'Arsenal', date: '2024-01-20', score: '2-1', competition: 'Premier League' },
-    { id: 2, home: 'Barcelona', away: 'Real Madrid', date: '2024-01-18', score: '1-3', competition: 'La Liga' },
-    { id: 3, home: 'Liverpool', away: 'Chelsea', date: '2024-01-15', score: '0-0', competition: 'Premier League' },
-    { id: 4, home: 'Bayern Munich', away: 'Dortmund', date: '2024-01-12', score: '3-2', competition: 'Bundesliga' },
-    { id: 5, home: 'PSG', away: 'Marseille', date: '2024-01-10', score: '4-1', competition: 'Ligue 1' },
-    { id: 6, home: 'Juventus', away: 'AC Milan', date: '2024-01-08', score: '1-2', competition: 'Serie A' },
-    { id: 7, home: 'Atletico Madrid', away: 'Valencia', date: '2024-01-05', score: '2-0', competition: 'La Liga' },
-    { id: 8, home: 'Inter Milan', away: 'Napoli', date: '2024-01-03', score: '1-1', competition: 'Serie A' },
-  ];
+  // Fetch real matches from context
+  const { matches } = useData();
 
-  const analysisResults = {
+  // Map real matches for the component
+  const availableMatches = matches.map((m: any) => ({
+    id: m.id,
+    home: m.homeTeam,
+    away: m.awayTeam,
+    date: m.date,
+    score: `${m.homeScore}-${m.awayScore}`,
+    competition: m.competition || 'League'
+  }));
+
+  // Auto-select first 3 matches if none selected
+  useEffect(() => {
+    if (availableMatches.length > 0 && selectedMatches.length === 0) {
+      setSelectedMatches(availableMatches.slice(0, 3).map((m: any) => m.id));
+    }
+  }, [availableMatches.length]);
+
+  // Default analysis results (used when no API data)
+  const defaultResults = {
     patterns: [
       { pattern: 'High Pressing Effectiveness', frequency: '78%', impact: 'High', trend: 'increasing' },
       { pattern: 'Counter-Attack Success', frequency: '45%', impact: 'Medium', trend: 'stable' },
@@ -35,15 +48,12 @@ const MultiMatchAnalysis: React.FC = () => {
       'Formation changes after 60th minute increase win probability by 12%',
       'Home advantage worth approximately 0.3 xG per match',
     ],
-    playerPerformance: [
-      { name: 'Kylian Mbappé', matches: 3, avgRating: 8.7, goals: 4, assists: 2, consistency: 94 },
-      { name: 'Erling Haaland', matches: 2, avgRating: 8.9, goals: 3, assists: 1, consistency: 91 },
-      { name: 'Pedri', matches: 4, avgRating: 8.2, goals: 1, assists: 5, consistency: 88 },
-      { name: 'Kevin De Bruyne', matches: 3, avgRating: 8.5, goals: 2, assists: 4, consistency: 92 },
-    ]
+    playerPerformance: [] as any[]
   };
 
-  const toggleMatchSelection = (matchId: number) => {
+  const results = analysisResults || defaultResults;
+
+  const toggleMatchSelection = (matchId: string) => {
     setSelectedMatches(prev => 
       prev.includes(matchId) 
         ? prev.filter(id => id !== matchId)
@@ -51,9 +61,38 @@ const MultiMatchAnalysis: React.FC = () => {
     );
   };
 
-  const runAnalysis = () => {
+  const runAnalysis = async () => {
     setIsAnalyzing(true);
-    setTimeout(() => setIsAnalyzing(false), 3000);
+    try {
+      const [overview, trends] = await Promise.all([
+        apiService.getDashboardOverview().catch(() => null),
+        apiService.getLeagueTrends().catch(() => null),
+      ]);
+      if (overview || trends) {
+        const patterns = (trends as any)?.trends?.slice(0, 4).map((t: any) => ({
+          pattern: t.name || t.league || 'Pattern',
+          frequency: `${t.avgGoals || t.matchCount || 0}`,
+          impact: (t.avgGoals || 0) > 2.5 ? 'High' : (t.avgGoals || 0) > 1.5 ? 'Medium' : 'Low',
+          trend: (t.avgGoals || 0) > 2 ? 'increasing' : 'stable',
+        })) || defaultResults.patterns;
+        setAnalysisResults({
+          patterns: patterns.length > 0 ? patterns : defaultResults.patterns,
+          keyInsights: defaultResults.keyInsights,
+          playerPerformance: (overview as any)?.topPlayers?.slice(0, 6).map((p: any) => ({
+            name: p.name || 'Player',
+            matches: p.appearances || 0,
+            avgRating: p.rating || 0,
+            goals: p.goals || 0,
+            assists: p.assists || 0,
+            consistency: Math.round((p.rating || 7) * 11),
+          })) || defaultResults.playerPerformance,
+        });
+      }
+    } catch (err) {
+      console.warn('Multi-match analysis API failed, using defaults', err);
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   return (
@@ -200,7 +239,7 @@ const MultiMatchAnalysis: React.FC = () => {
               Pattern Recognition
             </h3>
             <div className="space-y-4">
-              {analysisResults.patterns.map((pattern, index) => (
+              {results.patterns.map((pattern: any, index: number) => (
                 <div key={index} className="p-4 bg-slate-700 rounded-lg">
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-semibold">{pattern.pattern}</span>
@@ -236,7 +275,7 @@ const MultiMatchAnalysis: React.FC = () => {
               Key Insights
             </h3>
             <div className="space-y-4">
-              {analysisResults.keyInsights.map((insight, index) => (
+              {results.keyInsights.map((insight: any, index: number) => (
                 <div key={index} className="p-4 bg-slate-700 rounded-lg">
                   <div className="flex items-start space-x-3">
                     <div className="w-6 h-6 bg-yellow-600 rounded-full flex items-center justify-center text-xs font-bold">
@@ -272,7 +311,7 @@ const MultiMatchAnalysis: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {analysisResults.playerPerformance.map((player, index) => (
+                {results.playerPerformance.map((player: any, index: number) => (
                   <tr key={index} className="border-b border-slate-700 hover:bg-slate-700">
                     <td className="py-3 px-2 font-semibold">{player.name}</td>
                     <td className="py-3 px-2">{player.matches}</td>

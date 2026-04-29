@@ -1,95 +1,104 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   DollarSign, TrendingUp, TrendingDown, AlertTriangle, Clock,
   Users, Target, Zap, Calendar, MapPin, Star, Eye, Filter,
-  Search, Download, Bell, CheckCircle, XCircle, RefreshCw
+  Search, Download, Bell, CheckCircle, XCircle, RefreshCw, Loader2
 } from 'lucide-react';
 import { exportService } from '../services/exportService';
+import { useData } from '../context/DataContext';
+import apiService from '../services/api';
 
 const TransferHub: React.FC = () => {
   const [selectedTab, setSelectedTab] = useState('market-watch');
   const [priceRange, setPriceRange] = useState([0, 200]);
+  const [loading, setLoading] = useState(true);
+  const [apiMarketTrends, setApiMarketTrends] = useState<any>(null);
+  const [apiPredictions, setApiPredictions] = useState<any>(null);
 
-  const transferRumors = [
-    {
-      player: 'Kylian Mbappé',
-      currentClub: 'PSG',
-      targetClub: 'Real Madrid',
-      probability: 85,
-      value: '€180M',
-      status: 'hot',
-      deadline: '2024-06-30',
-      sources: ['L\'Équipe', 'Marca', 'Sky Sports']
-    },
-    {
-      player: 'Erling Haaland',
-      currentClub: 'Manchester City',
-      targetClub: 'Real Madrid',
-      probability: 23,
-      value: '€170M',
-      status: 'cold',
-      deadline: '2025-06-30',
-      sources: ['AS', 'The Guardian']
-    },
-    {
-      player: 'Pedri',
-      currentClub: 'Barcelona',
-      targetClub: 'Manchester City',
-      probability: 67,
-      value: '€100M',
-      status: 'warm',
-      deadline: '2024-08-31',
-      sources: ['Sport', 'Manchester Evening News']
-    }
-  ];
+  const { players: contextPlayers } = useData();
 
-  const marketTrends = [
-    { position: 'Striker', avgValue: '€67M', change: '+15%', trend: 'up' },
-    { position: 'Winger', avgValue: '€45M', change: '+8%', trend: 'up' },
-    { position: 'Midfielder', avgValue: '€38M', change: '-3%', trend: 'down' },
-    { position: 'Defender', avgValue: '€32M', change: '+2%', trend: 'stable' },
-    { position: 'Goalkeeper', avgValue: '€28M', change: '-5%', trend: 'down' }
-  ];
+  // Fetch market data from API
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      apiService.getMarketTrends().catch(() => null),
+      apiService.getTransferPredictions().catch(() => null),
+    ]).then(([trends, predictions]) => {
+      if (trends) setApiMarketTrends(trends);
+      if (predictions) setApiPredictions(predictions);
+    }).finally(() => setLoading(false));
+  }, []);
 
-  const contractExpirations = [
-    { player: 'Lionel Messi', club: 'Inter Miami', expires: '2024-12-31', value: '€25M', status: 'expiring' },
-    { player: 'Luka Modrić', club: 'Real Madrid', expires: '2024-06-30', value: '€15M', status: 'critical' },
-    { player: 'Sergio Busquets', club: 'Inter Miami', expires: '2024-12-31', value: '€8M', status: 'expiring' },
-    { player: 'Thiago Silva', club: 'Chelsea', expires: '2024-06-30', value: '€5M', status: 'critical' }
-  ];
+  // Build transfer rumors from API predictions or fallback
+  const transferRumors = apiPredictions?.data?.length > 0
+    ? apiPredictions.data.slice(0, 5).map((p: any) => ({
+        player: p.playerName || p.name || 'Unknown Player',
+        currentClub: p.currentClub || p.fromClub || 'Unknown',
+        targetClub: p.targetClub || p.toClub || 'TBD',
+        probability: p.probability || p.confidence || 50,
+        value: p.estimatedFee || p.value || '€0M',
+        status: (p.probability || 50) > 70 ? 'hot' : (p.probability || 50) > 40 ? 'warm' : 'cold',
+        deadline: p.deadline || '2026-06-30',
+        sources: p.sources || ['ScoutPro AI'],
+      }))
+    : [
+        { player: 'Transfer Target 1', currentClub: 'Club A', targetClub: 'Club B', probability: 75, value: '€60M', status: 'hot', deadline: '2026-06-30', sources: ['ScoutPro Analysis'] },
+        { player: 'Transfer Target 2', currentClub: 'Club C', targetClub: 'Club D', probability: 45, value: '€35M', status: 'warm', deadline: '2026-08-31', sources: ['Market Analysis'] },
+      ];
 
-  const valuationPredictions = [
-    {
-      player: 'Jude Bellingham',
-      current: '€120M',
-      predicted: '€150M',
-      confidence: 94,
-      factors: ['Age', 'Performance', 'Market Demand'],
-      timeframe: '12 months'
-    },
-    {
-      player: 'Pedri',
-      current: '€100M',
-      predicted: '€135M',
-      confidence: 89,
-      factors: ['Potential', 'Club Success', 'International Performance'],
-      timeframe: '18 months'
-    },
-    {
-      player: 'Gavi',
-      current: '€90M',
-      predicted: '€120M',
-      confidence: 87,
-      factors: ['Development', 'Playing Time', 'Tactical Fit'],
-      timeframe: '24 months'
-    }
-  ];
+  // Build market trends from API or fallback
+  const marketTrends = apiMarketTrends?.data?.length > 0
+    ? apiMarketTrends.data.slice(0, 5).map((t: any) => ({
+        position: t.position || t.name || 'Unknown',
+        avgValue: t.avgValue || `€${t.averageValue || 0}M`,
+        change: t.change || `${t.changePercent > 0 ? '+' : ''}${t.changePercent || 0}%`,
+        trend: (t.changePercent || 0) > 0 ? 'up' : (t.changePercent || 0) < 0 ? 'down' : 'stable',
+      }))
+    : [
+        { position: 'Striker', avgValue: '€67M', change: '+15%', trend: 'up' },
+        { position: 'Winger', avgValue: '€45M', change: '+8%', trend: 'up' },
+        { position: 'Midfielder', avgValue: '€38M', change: '-3%', trend: 'down' },
+        { position: 'Defender', avgValue: '€32M', change: '+2%', trend: 'stable' },
+        { position: 'Goalkeeper', avgValue: '€28M', change: '-5%', trend: 'down' },
+      ];
+
+  // Build contract expirations from context players or fallback
+  const contractExpirations = contextPlayers.length > 0
+    ? contextPlayers
+        .filter((p: any) => p.contractEnd || p.contractExpiry)
+        .slice(0, 6)
+        .map((p: any) => ({
+          player: p.name,
+          club: p.club || p.team || 'Unknown',
+          expires: p.contractEnd || p.contractExpiry || '2026-06-30',
+          value: p.marketValue || `€${p.value || 10}M`,
+          status: new Date(p.contractEnd || p.contractExpiry || '2026-12-31') < new Date('2026-06-30') ? 'critical' : 'expiring',
+        }))
+    : [
+        { player: 'Player A', club: 'Club X', expires: '2026-06-30', value: '€25M', status: 'critical' },
+        { player: 'Player B', club: 'Club Y', expires: '2026-12-31', value: '€15M', status: 'expiring' },
+      ];
+
+  // Valuation predictions - built from API or fallback (fixes the crash bug)
+  const valuationPredictions = apiPredictions?.data?.length > 0
+    ? apiPredictions.data.slice(0, 4).map((p: any) => ({
+        player: p.playerName || p.name || 'Player',
+        current: p.currentValue || p.value || '€50M',
+        predicted: p.predictedValue || p.estimatedFee || '€65M',
+        confidence: p.confidence || p.probability || 75,
+        timeframe: p.timeframe || '12 months',
+        factors: p.factors || ['Performance', 'Age', 'Market Demand'],
+      }))
+    : [
+        { player: 'Top Prospect 1', current: '€80M', predicted: '€110M', confidence: 88, timeframe: '12 months', factors: ['Age', 'Performance', 'Demand'] },
+        { player: 'Top Prospect 2', current: '€60M', predicted: '€85M', confidence: 82, timeframe: '12 months', factors: ['Form', 'Contract', 'League'] },
+      ];
 
   const transferAlerts = [
-    { type: 'rumor', message: 'New rumor: Mbappé to Real Madrid gaining momentum', time: '5 min ago' },
-    { type: 'contract', message: 'Modrić contract expires in 6 months', time: '1 hour ago' },
-    { type: 'value', message: 'Bellingham value increased by €10M', time: '2 hours ago' },
-    { type: 'deadline', message: 'Transfer window closes in 15 days', time: '1 day ago' }
+    { type: 'rumor', message: `${transferRumors[0]?.player || 'Transfer'} rumor gaining momentum`, time: '5 min ago' },
+    { type: 'contract', message: `${contractExpirations[0]?.player || 'Player'} contract expiring soon`, time: '1 hour ago' },
+    { type: 'value', message: 'Market values updated from latest data', time: '2 hours ago' },
+    { type: 'deadline', message: 'Transfer window updates available', time: '1 day ago' },
   ];
 
   const handleExport = async () => {

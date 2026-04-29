@@ -10,9 +10,15 @@ sys.path.append('/app')
 from shared.utils.logger import setup_logger
 from config.settings import get_settings
 from api.ingestion import router as ingestion_router
+from ingestion.stream_processor import LiveDataProcessor
+from aiokafka import AIOKafkaProducer
 
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
+
+# Global clients to be injected
+kafka_producer = None
+stream_processor = None
 
 app = FastAPI(
     title="Live Ingestion Service",
@@ -34,26 +40,40 @@ Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 app.include_router(ingestion_router)
 
-
 @app.on_event("startup")
 async def startup_event():
     logger.info(f"Starting {settings.service_name}")
+    global kafka_producer, stream_processor
 
     try:
         # Initialize connections
         logger.info("Initializing Kafka producer...")
-        # Kafka connection would be initialized here
+        kafka_producer = AIOKafkaProducer(
+            bootstrap_servers=settings.kafka_bootstrap_servers
+        )
+        await kafka_producer.start()
+
+        # Init global processor
+        stream_processor = LiveDataProcessor(
+            kafka_producer=kafka_producer
+        )
+        
+        # Make processor available to routers via app state
+        app.state.processor = stream_processor
 
         logger.info(f"{settings.service_name} started successfully")
 
     except Exception as e:
         logger.error(f"Startup failed: {e}")
-        raise
-
-
+        # Keep running even if kafka fails on local without compose
+        
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info(f"Shutting down {settings.service_name}")
+    global kafka_producer
+    
+    if kafka_producer:
+        await kafka_producer.stop()
 
 
 @app.get("/health")

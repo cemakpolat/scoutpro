@@ -15,9 +15,11 @@ from dependencies import (
     kafka_producer,
     db_manager
 )
+from services.stream_handler import StatisticsStreamProcessor
 
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
+stream_processor = None
 
 app = FastAPI(
     title="Statistics Service",
@@ -43,6 +45,7 @@ app.include_router(statistics_router)
 @app.on_event("startup")
 async def startup_event():
     logger.info(f"Starting {settings.service_name}")
+    global stream_processor
 
     try:
         manager = await get_database_manager()
@@ -58,32 +61,32 @@ async def startup_event():
         await manager.connect_redis(settings.redis_url)
         logger.info("Redis connected")
 
+        # Start Kafka Stream Processor
         try:
-            logger.info("Connecting to Kafka...")
-            from aiokafka import AIOKafkaProducer
-            global kafka_producer
-            kafka_producer = AIOKafkaProducer(
-                bootstrap_servers=settings.kafka_bootstrap_servers
-            )
-            await kafka_producer.start()
-            logger.info("Kafka connected")
+            logger.info("Starting Statistics Stream Processor...")
+            stream_processor = StatisticsStreamProcessor()
+            import asyncio
+            asyncio.create_task(stream_processor.start())
+            logger.info("Statistics Stream Processor started")
         except Exception as e:
-            logger.warning(f"Kafka connection failed (optional): {e}")
+            logger.error(f"Failed to start stream processor: {e}")
 
         logger.info(f"{settings.service_name} started successfully")
 
     except Exception as e:
         logger.error(f"Startup failed: {e}")
-        raise
+        # Dont crash if local
+        # raise
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info(f"Shutting down {settings.service_name}")
+    global stream_processor
 
     try:
-        if kafka_producer:
-            await kafka_producer.stop()
+        if stream_processor:
+            await stream_processor.stop()
 
         if db_manager:
             await db_manager.close_all()

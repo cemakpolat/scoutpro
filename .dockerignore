@@ -1,0 +1,33 @@
+.git
+.gitignore
+.vscode
+.venv
+.vite
+.DS_Store
+
+# Large datasets
+/data
+
+# Frontend artifacts
+/frontend/node_modules
+/frontend/dist
+
+# Logs
+*.log
+
+# Python caches
+**/__pycache__
+**/*.pyc
+
+# Old/archived sources
+/oldbackend
+/archive
+
+# Monitoring/logging stacks not needed for build context
+/monitoring
+/logging
+/infrastructure
+
+# Local env files
+.env
+.env.*

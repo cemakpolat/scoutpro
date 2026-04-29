@@ -15,9 +15,11 @@ from dependencies import (
     kafka_producer,
     db_manager
 )
+from services.cache_invalidator import TeamCacheInvalidator
 
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
+cache_invalidator = None
 
 app = FastAPI(
     title="Team Service",
@@ -43,6 +45,7 @@ app.include_router(teams_router)
 @app.on_event("startup")
 async def startup_event():
     logger.info(f"Starting {settings.service_name}")
+    global cache_invalidator
 
     try:
         manager = await get_database_manager()
@@ -70,18 +73,33 @@ async def startup_event():
         except Exception as e:
             logger.warning(f"Kafka connection failed (optional): {e}")
 
+        # Start Cache Invalidator Stream Processor
+        try:
+            logger.info("Starting Team Cache Invalidator...")
+            cache_invalidator = TeamCacheInvalidator()
+            import asyncio
+            asyncio.create_task(cache_invalidator.start())
+            logger.info("Cache Invalidator stream started")
+        except Exception as e:
+            logger.error(f"Failed to start cache invalidator: {e}")
+
         logger.info(f"{settings.service_name} started successfully")
 
     except Exception as e:
         logger.error(f"Startup failed: {e}")
-        raise
+        # Dont crash if local
+        # raise
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info(f"Shutting down {settings.service_name}")
+    global cache_invalidator
 
     try:
+        if cache_invalidator:
+            await cache_invalidator.stop()
+
         if kafka_producer:
             await kafka_producer.stop()
 

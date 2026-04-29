@@ -1,19 +1,56 @@
-import React from 'react';
-import { TrendingUp, Target, Activity } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { TrendingUp, Target, Activity, Loader2 } from 'lucide-react';
+import { useData } from '../context/DataContext';
+import apiService from '../services/api';
 
 const PerformancePrediction: React.FC = () => {
+  const { players: contextPlayers } = useData();
+  const [predictions, setPredictions] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    apiService.getPlayerRankings('rating', 5).then((res: any) => {
+      const ranked = res?.data || res?.players || [];
+      if (Array.isArray(ranked) && ranked.length > 0) {
+        setPredictions(ranked.map((p: any) => ({
+          name: p.name,
+          rating: p.rating || 7.5,
+          goals: p.goals ? (p.goals / Math.max(p.appearances || 1, 1)).toFixed(1) : '0.5',
+          assists: p.assists ? (p.assists / Math.max(p.appearances || 1, 1)).toFixed(1) : '0.3',
+          motm: Math.round((p.rating || 7.5) * 9),
+        })));
+      }
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, []);
+
+  // Fallback to context players if API predictions empty
+  const playerPredictions = predictions.length > 0 ? predictions :
+    contextPlayers.slice(0, 5).map((p: any) => ({
+      name: p.name,
+      rating: p.rating || 7.5,
+      goals: (p.goals ? p.goals / Math.max(p.appearances || 1, 1) : 0.5).toFixed(1),
+      assists: (p.assists ? p.assists / Math.max(p.appearances || 1, 1) : 0.3).toFixed(1),
+      motm: Math.round((p.rating || 7.5) * 9),
+    }));
+
+  // Final fallback for empty state
+  const displayPredictions = playerPredictions.length > 0 ? playerPredictions : [
+    { name: 'Player 1', rating: 8.0, goals: '0.8', assists: '0.4', motm: 72 },
+    { name: 'Player 2', rating: 7.8, goals: '0.6', assists: '0.5', motm: 70 },
+  ];
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
       <div className="bg-slate-800 rounded-xl p-6">
         <h3 className="text-xl font-semibold mb-6">Next Match Predictions</h3>
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="h-8 w-8 animate-spin text-blue-400" />
+          </div>
+        ) : (
         <div className="space-y-4">
-          {[
-            { name: 'Lionel Messi', rating: 8.9, goals: 1.2, assists: 0.8, motm: 85 },
-            { name: 'Kylian Mbappé', rating: 8.7, goals: 1.5, assists: 0.4, motm: 78 },
-            { name: 'Erling Haaland', rating: 8.5, goals: 1.8, assists: 0.2, motm: 72 },
-            { name: 'Kevin De Bruyne', rating: 8.4, goals: 0.3, assists: 1.4, motm: 68 },
-            { name: 'Pedri', rating: 8.2, goals: 0.2, assists: 0.9, motm: 65 },
-          ].map((player, index) => (
+          {displayPredictions.map((player: any, index: number) => (
             <div key={index} className="p-4 bg-slate-700 rounded-lg">
               <div className="flex justify-between items-center mb-3">
                 <div className="font-semibold">{player.name}</div>
@@ -36,6 +73,7 @@ const PerformancePrediction: React.FC = () => {
             </div>
           ))}
         </div>
+        )}
       </div>
 
       <div className="bg-slate-800 rounded-xl p-6">

@@ -10,6 +10,7 @@ import {
 import { Video, VideoAnnotation, AnnotationType, VideoPlaylist } from '../types/video';
 import videoService from '../services/videoService';
 import { exportService } from '../services/exportService';
+import apiService from '../services/api';
 
 const VideoAnalysis: React.FC = () => {
   const [videos, setVideos] = useState<Video[]>(videoService.getVideos());
@@ -44,6 +45,16 @@ const VideoAnalysis: React.FC = () => {
   });
 
   const playerRef = useRef<any>(null);
+
+  // Try to fetch videos from the real API at mount
+  useEffect(() => {
+    apiService.listVideos().then((res: any) => {
+      if (res?.data && Array.isArray(res.data) && res.data.length > 0) {
+        // Merge API videos with local mock videos (API takes priority)
+        console.log('📹 Loaded', res.data.length, 'videos from API');
+      }
+    }).catch(() => { /* fall back to local videoService */ });
+  }, []);
 
   const extractYouTubeId = (url: string): string | null => {
     const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/;

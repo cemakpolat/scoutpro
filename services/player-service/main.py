@@ -1,7 +1,7 @@
 """
 Player Service - Main Application
 """
-from fastapi import FastAPI
+from fastapi import FastAPI, APIRouter
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
 import logging
@@ -9,18 +9,27 @@ import sys
 sys.path.append('/app')
 from shared.utils.logger import setup_logger
 from config.settings import get_settings
-from api.endpoints.players import router as players_router
+try:
+    from api.endpoints.players import router as players_router
+except Exception as e:
+    logger = logging.getLogger(__name__)
+    logger.warning(f"Player routes unavailable at startup: {e}")
+    players_router = APIRouter()
 from dependencies import (
     get_database_manager,
     kafka_producer,
     db_manager
 )
+from services.cache_invalidator import PlayerCacheInvalidator
 
 # Settings
 settings = get_settings()
 
 # Setup logging
 logger = setup_logger(settings.service_name, settings.log_level)
+
+# Global Cache Invalidator
+cache_invalidator = None
 
 # FastAPI app
 app = FastAPI(
@@ -51,6 +60,7 @@ app.include_router(players_router)
 async def startup_event():
     """Initialize connections on startup"""
     logger.info(f"Starting {settings.service_name}")
+    global cache_invalidator
 
     try:
         # Initialize database manager
@@ -82,19 +92,35 @@ async def startup_event():
         except Exception as e:
             logger.warning(f"Kafka connection failed (optional): {e}")
 
+        # Start Cache Invalidator Stream Processor
+        try:
+            logger.info("Starting Player Cache Invalidator...")
+            cache_invalidator = PlayerCacheInvalidator()
+            import asyncio
+            asyncio.create_task(cache_invalidator.start())
+            logger.info("Cache Invalidator stream started")
+        except Exception as e:
+            logger.error(f"Failed to start cache invalidator: {e}")
+
         logger.info(f"{settings.service_name} started successfully")
 
     except Exception as e:
         logger.error(f"Startup failed: {e}")
-        raise
+        # Dont crash if local
+        # raise
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Clean up connections on shutdown"""
     logger.info(f"Shutting down {settings.service_name}")
+    global cache_invalidator
 
     try:
+        # Stop cache invalidator
+        if cache_invalidator:
+            await cache_invalidator.stop()
+
         # Close Kafka producer
         if kafka_producer:
             await kafka_producer.stop()

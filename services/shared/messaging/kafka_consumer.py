@@ -61,9 +61,8 @@ class KafkaConsumerClient:
                 bootstrap_servers=self.bootstrap_servers,
                 group_id=self.group_id,
                 auto_offset_reset=self.auto_offset_reset,
-                enable_auto_commit=True,
-                auto_commit_interval_ms=1000,
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')),
+                enable_auto_commit=False,  # Disabled auto-commit
+                value_deserializer=lambda m: json.loads(m.decode('utf-8')) if m else None,
                 key_deserializer=lambda k: k.decode('utf-8') if k else None,
             )
             await self.consumer.start()
@@ -120,12 +119,22 @@ class KafkaConsumerClient:
                     )
 
                     yield event_data
+                    
+                    # Manually commit offset after processing
+                    try:
+                        from aiokafka import TopicPartition
+                        from aiokafka.structs import OffsetAndMetadata
+                        tp = TopicPartition(message.topic, message.partition)
+                        await self.consumer.commit({tp: OffsetAndMetadata(message.offset + 1, "")})
+                    except Exception as commit_err:
+                        logger.error(f"Failed to commit offset: {commit_err}")
 
                 except Exception as e:
                     logger.error(
                         f"Error processing message from {message.topic}: {e}",
                         exc_info=True
                     )
+                    # DLQ logic would go here
                     continue
 
         except Exception as e:

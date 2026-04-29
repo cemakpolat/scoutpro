@@ -80,18 +80,32 @@ docker-compose ps
 ```
 
 **Services Started**:
-- ✅ MongoDB (port 27017)
-- ✅ Redis (port 6379)
-- ✅ Kafka + Zookeeper (ports 9092, 2181)
-- ✅ Elasticsearch (port 9200)
-- ✅ NGINX Gateway (port 80)
+
+**Application Services (13)**:
 - ✅ Player Service (port 8001)
 - ✅ Team Service (port 8002)
 - ✅ Match Service (port 8003)
 - ✅ Statistics Service (port 8004)
 - ✅ ML Service (port 8005)
+- ✅ Live Ingestion Service (port 8006)
 - ✅ Search Service (port 8007)
+- ✅ Notification Service (port 8008)
+- ✅ **Report Service** (port 8009) ← NEW
+- ✅ **Export Service** (port 8010) ← NEW
+- ✅ **Video Service** (port 8011) ← NEW
+- ✅ **Analytics Service** (port 8012) ← NEW
 - ✅ WebSocket Server (port 8080)
+
+**Infrastructure**:
+- ✅ NGINX Gateway (port 80)
+- ✅ MongoDB (port 27017)
+- ✅ Redis (port 6379)
+- ✅ Kafka + Zookeeper (ports 9092, 2181)
+- ✅ Elasticsearch (port 9200)
+- ✅ TimescaleDB (port 5432)
+- ✅ MinIO (port 9000)
+
+**Monitoring**:
 - ✅ Prometheus (port 9090)
 - ✅ Grafana (port 3000)
 - ✅ Jaeger (port 16686)
@@ -326,9 +340,16 @@ npm run dev
 | **Prometheus** | http://localhost:9090 | Metrics collection |
 | **Jaeger** | http://localhost:16686 | Distributed tracing |
 | **Kafka UI** | http://localhost:8090 | Kafka topics & messages |
-| **API Docs** | http://localhost:8001/docs | Player Service API |
-| **API Docs** | http://localhost:8002/docs | Team Service API |
-| **API Docs** | http://localhost:8003/docs | Match Service API |
+| **API Docs - Player** | http://localhost:8001/docs | Player Service API |
+| **API Docs - Team** | http://localhost:8002/docs | Team Service API |
+| **API Docs - Match** | http://localhost:8003/docs | Match Service API |
+| **API Docs - Statistics** | http://localhost:8004/docs | Statistics Service API |
+| **API Docs - ML** | http://localhost:8005/docs | ML Service API |
+| **API Docs - Search** | http://localhost:8007/docs | Search Service API |
+| **API Docs - Report** | http://localhost:8009/docs | Report Service API (NEW) |
+| **API Docs - Export** | http://localhost:8010/docs | Export Service API (NEW) |
+| **API Docs - Video** | http://localhost:8011/docs | Video Service API (NEW) |
+| **API Docs - Analytics** | http://localhost:8012/docs | Analytics Service API (NEW) |
 
 ### View Logs
 
@@ -380,6 +401,15 @@ curl http://localhost/api/matches | jq .
 
 # Get live matches
 curl http://localhost/api/matches/live | jq .
+
+# Export players data (NEW)
+curl "http://localhost/api/v2/exports/players?format=csv" --output players.csv
+
+# Get analytics dashboard (NEW)
+curl http://localhost/api/v2/analytics/dashboard/overview | jq .
+
+# Generate player report (NEW)
+curl "http://localhost/api/v2/reports/player/player_1?format=pdf" --output report.pdf
 ```
 
 ### Test WebSocket Connection
@@ -557,5 +587,6 @@ For more details, see:
 
 ---
 
-**Last Updated**: 2025-10-09
-**Version**: 1.0
+**Last Updated**: 2025-10-19
+**Version**: 2.0
+**Services**: 13 microservices (4 new services added: Report, Export, Video, Analytics)

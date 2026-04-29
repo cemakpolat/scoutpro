@@ -6,7 +6,7 @@ from typing import Dict, Any, List
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingRegressor
-import mlflow
+from sklearn.exceptions import NotFittedError
 import joblib
 from pathlib import Path
 
@@ -19,20 +19,24 @@ class PlayerPerformancePredictor:
     def __init__(self, model_path: str = None):
         self.model = None
         self.model_path = model_path
+        self.is_fitted = False
 
     def load_model(self):
         """Load trained model"""
         try:
             if self.model_path and Path(self.model_path).exists():
                 self.model = joblib.load(self.model_path)
+                self.is_fitted = True
                 logger.info(f"Loaded model from {self.model_path}")
             else:
-                # Use default model
+                # Initialize empty model
                 self.model = GradientBoostingRegressor(n_estimators=100)
-                logger.info("Using default model")
+                self.is_fitted = False
+                logger.info("Using uninitialized default model")
         except Exception as e:
             logger.error(f"Error loading model: {e}")
             self.model = GradientBoostingRegressor(n_estimators=100)
+            self.is_fitted = False
 
     def predict(self, features: Dict[str, Any]) -> Dict[str, Any]:
         """Predict player performance"""
@@ -40,22 +44,30 @@ class PlayerPerformancePredictor:
             if not self.model:
                 self.load_model()
 
+            if not features:
+                raise ValueError("No features provided for prediction.")
+
             # Convert features to DataFrame
             df = pd.DataFrame([features])
 
             # Make prediction
-            prediction = self.model.predict(df)
+            try:
+                prediction = self.model.predict(df)
+                return {
+                    "predicted_rating": float(prediction[0]),
+                    "confidence": 0.85, 
+                    "features_used": list(features.keys())
+                }
+            except NotFittedError:
+                logger.warning("PlayerPerformancePredictor model is not fitted.")
+                return {
+                    "error": "Model is not trained yet",
+                    "status": "pending_training"
+                }
 
-            return {
-                "predicted_rating": float(prediction[0]),
-                "confidence": 0.85,  # Placeholder
-                "features_used": list(features.keys())
-            }
         except Exception as e:
             logger.error(f"Prediction error: {e}")
             return {
-                "predicted_rating": 0.0,
-                "confidence": 0.0,
                 "error": str(e)
             }
 
@@ -66,31 +78,54 @@ class MatchOutcomePredictor:
     def __init__(self, model_path: str = None):
         self.model = None
         self.model_path = model_path
+        self.is_fitted = False
 
     def load_model(self):
         """Load trained model"""
         try:
             if self.model_path and Path(self.model_path).exists():
                 self.model = joblib.load(self.model_path)
+                self.is_fitted = True
             else:
                 self.model = RandomForestClassifier(n_estimators=100)
+                self.is_fitted = False
         except Exception as e:
             logger.error(f"Error loading model: {e}")
             self.model = RandomForestClassifier(n_estimators=100)
+            self.is_fitted = False
 
     def predict(self, features: Dict[str, Any]) -> Dict[str, Any]:
         """Predict match outcome"""
         try:
             if not self.model:
                 self.load_model()
+                
+            if not features:
+                raise ValueError("No features provided for prediction.")
+                
+            df = pd.DataFrame([features])
+            
+            try:
+                probabilities = self.model.predict_proba(df)[0]
+                classes = self.model.classes_
+                
+                # Assuming classes are [away_win, draw, home_win] or similar
+                # This depends on how it is trained, we will return dynamic mapping
+                prob_map = {str(c): float(p) for c, p in zip(classes, probabilities)}
+                
+                prediction = self.model.predict(df)[0]
+                
+                return {
+                    "probabilities": prob_map,
+                    "predicted_outcome": str(prediction)
+                }
+            except NotFittedError:
+                logger.warning("MatchOutcomePredictor model is not fitted.")
+                return {
+                    "error": "Model is not trained yet",
+                    "status": "pending_training"
+                }
 
-            # For demonstration, return probabilities
-            return {
-                "home_win_probability": 0.45,
-                "draw_probability": 0.25,
-                "away_win_probability": 0.30,
-                "predicted_outcome": "home_win"
-            }
         except Exception as e:
             logger.error(f"Prediction error: {e}")
             return {
@@ -109,7 +144,9 @@ class PlayerSimilarityFinder:
     ) -> List[Dict[str, Any]]:
         """Find most similar players based on statistics"""
         try:
-            # Simple cosine similarity for demonstration
+            if not player_stats or not candidate_players:
+                return []
+                
             similarities = []
 
             for candidate in candidate_players:
@@ -130,7 +167,6 @@ class PlayerSimilarityFinder:
 
     def _calculate_similarity(self, stats1: Dict[str, Any], stats2: Dict[str, Any]) -> float:
         """Calculate similarity score between two player stat dictionaries"""
-        # Simple implementation - use cosine similarity or other metrics
         common_keys = set(stats1.keys()) & set(stats2.keys())
 
         if not common_keys:

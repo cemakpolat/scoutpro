@@ -36,25 +36,47 @@ class ExportService {
       let blob: Blob;
       let mimeType: string;
 
-      switch (options.format) {
-        case 'pdf':
-          blob = await this.exportToPDF(options as PDFExportOptions);
-          mimeType = 'application/pdf';
-          break;
-        case 'excel':
-          blob = await this.exportToExcel(options as ExcelExportOptions);
-          mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-          break;
-        case 'csv':
-          blob = await this.exportToCSV(options as CSVExportOptions);
-          mimeType = 'text/csv';
-          break;
-        case 'json':
-          blob = await this.exportToJSON(options);
-          mimeType = 'application/json';
-          break;
-        default:
-          throw new Error(`Unsupported export format: ${options.format}`);
+      const useMockData = import.meta.env.VITE_USE_MOCK_DATA === 'true';
+
+      if (!useMockData) {
+        const baseUrl = import.meta.env.VITE_API_URL || '/api/v1';
+        // Send data to the backend export service instead of formatting locally
+        const response = await fetch(`${baseUrl}/exports/custom`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            data: options.data,
+            format: options.format,
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error('Backend export failed: ' + response.statusText);
+        }
+
+        blob = await response.blob();
+        mimeType = response.headers.get('Content-Type') || 'application/octet-stream';
+      } else {
+        switch (options.format) {
+          case 'pdf':
+            blob = await this.exportToPDF(options as PDFExportOptions);
+            mimeType = 'application/pdf';
+            break;
+          case 'excel':
+            blob = await this.exportToExcel(options as ExcelExportOptions);
+            mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+            break;
+          case 'csv':
+            blob = await this.exportToCSV(options as CSVExportOptions);
+            mimeType = 'text/csv';
+            break;
+          case 'json':
+            blob = await this.exportToJSON(options);
+            mimeType = 'application/json';
+            break;
+          default:
+            throw new Error(`Unsupported export format: ${options.format}`);
+        }
       }
 
       // Create download URL

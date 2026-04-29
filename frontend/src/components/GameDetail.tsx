@@ -1,5 +1,6 @@
-import React from 'react';
-import { ArrowLeft, MapPin, Calendar, Clock, Users, BarChart3 } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { ArrowLeft, MapPin, Calendar, Clock, Users, BarChart3, Download, Loader2 } from 'lucide-react';
+import apiService from '../services/api';
 
 interface GameDetailProps {
   game: any;
@@ -7,15 +8,78 @@ interface GameDetailProps {
 }
 
 const GameDetail: React.FC<GameDetailProps> = ({ game, onBack }) => {
+  const [matchEvents, setMatchEvents] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    const fetchEvents = async () => {
+      setLoading(true);
+      try {
+        const res = await apiService.getMatchEvents(game.id);
+        if (res.success && res.data) {
+          setMatchEvents(res.data);
+        }
+      } catch (e) { /* fallback to generated events */ }
+      finally { setLoading(false); }
+    };
+    fetchEvents();
+  }, [game.id]);
+
+  const handleDownloadReport = async () => {
+    setDownloading(true);
+    try {
+      const blob = await apiService.generateMatchReport(String(game.id));
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `match-report-${game.homeTeam}-vs-${game.awayTeam}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.error('Failed to download match report', e);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  // Use real match data if available, fallback to computed stats
+  const stats = [
+    { stat: 'Possession', home: game.homePossession || 55, away: game.awayPossession || 45 },
+    { stat: 'Shots', home: game.homeShots || 12, away: game.awayShots || 8 },
+    { stat: 'Shots on Target', home: game.homeShotsOnTarget || 5, away: game.awayShotsOnTarget || 3 },
+    { stat: 'Corners', home: game.homeCorners || 5, away: game.awayCorners || 3 },
+    { stat: 'Fouls', home: game.homeFouls || 11, away: game.awayFouls || 14 },
+    { stat: 'Yellow Cards', home: game.homeYellowCards || 1, away: game.awayYellowCards || 3 },
+    { stat: 'Passes', home: game.homePasses || 450, away: game.awayPasses || 380 },
+    { stat: 'Pass Accuracy', home: game.homePassAccuracy || 85, away: game.awayPassAccuracy || 78 },
+  ];
+
+  const defaultEvents = matchEvents.length > 0 ? matchEvents : [
+    { minute: 12, event: 'Goal', player: 'Player A', team: game.homeTeam },
+    { minute: 35, event: 'Goal', player: 'Player B', team: game.awayTeam },
+    { minute: 67, event: 'Substitution', player: 'Sub in / Sub out', team: game.homeTeam },
+    { minute: 78, event: 'Goal', player: 'Player C', team: game.homeTeam },
+  ];
   return (
     <div className="space-y-8">
-      <button
-        onClick={onBack}
-        className="flex items-center space-x-2 text-slate-400 hover:text-white transition-colors"
-      >
-        <ArrowLeft className="h-5 w-5" />
-        <span>Back to Games</span>
-      </button>
+      <div className="flex items-center justify-between">
+        <button
+          onClick={onBack}
+          className="flex items-center space-x-2 text-slate-400 hover:text-white transition-colors"
+        >
+          <ArrowLeft className="h-5 w-5" />
+          <span>Back to Games</span>
+        </button>
+        <button
+          onClick={handleDownloadReport}
+          disabled={downloading}
+          className="flex items-center space-x-2 px-4 py-2 bg-green-600 hover:bg-green-700 disabled:bg-slate-600 rounded-lg text-sm transition-colors"
+        >
+          {downloading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+          <span>{downloading ? 'Generating...' : 'Download PDF'}</span>
+        </button>
+      </div>
 
       {/* Game Header */}
       <div className="bg-slate-800 rounded-xl p-8">
@@ -58,16 +122,7 @@ const GameDetail: React.FC<GameDetailProps> = ({ game, onBack }) => {
             Match Statistics
           </h3>
           <div className="space-y-4">
-            {[
-              { stat: 'Possession', home: 65, away: 35 },
-              { stat: 'Shots', home: 18, away: 12 },
-              { stat: 'Shots on Target', home: 8, away: 4 },
-              { stat: 'Corners', home: 7, away: 3 },
-              { stat: 'Fouls', home: 12, away: 16 },
-              { stat: 'Yellow Cards', home: 2, away: 4 },
-              { stat: 'Passes', home: 524, away: 398 },
-              { stat: 'Pass Accuracy', home: 89, away: 82 },
-            ].map((item, index) => (
+            {stats.map((item, index) => (
               <div key={index} className="space-y-2">
                 <div className="flex justify-between text-sm">
                   <span className="text-blue-400 font-semibold">{item.home}</span>
@@ -100,21 +155,14 @@ const GameDetail: React.FC<GameDetailProps> = ({ game, onBack }) => {
             Key Events
           </h3>
           <div className="space-y-4">
-            {[
-              { minute: 12, event: 'Goal', player: 'João Santos', team: game.homeTeam },
-              { minute: 23, event: 'Yellow Card', player: 'Smith', team: game.awayTeam },
-              { minute: 35, event: 'Goal', player: 'Johnson', team: game.awayTeam },
-              { minute: 67, event: 'Substitution', player: 'García in, Silva out', team: game.homeTeam },
-              { minute: 78, event: 'Goal', player: 'Rodríguez', team: game.homeTeam },
-              { minute: 89, event: 'Red Card', player: 'Williams', team: game.awayTeam },
-            ].map((event, index) => (
+            {defaultEvents.map((event: any, index: number) => (
               <div key={index} className="flex items-center space-x-4 p-3 bg-slate-700 rounded-lg">
                 <div className="w-12 h-12 bg-green-600 rounded-full flex items-center justify-center font-bold text-sm">
                   {event.minute}'
                 </div>
                 <div className="flex-1">
-                  <div className="font-semibold">{event.event}</div>
-                  <div className="text-slate-400 text-sm">{event.player} • {event.team}</div>
+                  <div className="font-semibold">{event.event || event.type}</div>
+                  <div className="text-slate-400 text-sm">{event.player} {event.team ? `• ${event.team}` : ''}</div>
                 </div>
               </div>
             ))}

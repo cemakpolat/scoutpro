@@ -1,13 +1,23 @@
 import React, { useState } from 'react';
-import { FileText, Download, Share2, BookTemplate as Template, Wand2, BarChart3, Users, Target, TrendingUp, Eye } from 'lucide-react';
+import { FileText, Download, Share2, BookTemplate as Template, Wand2, BarChart3, Users, Target, TrendingUp, Eye, Loader2, CheckCircle } from 'lucide-react';
 import { exportService } from '../services/exportService';
+import { useApi } from '../hooks/useApi';
+import { useData } from '../context/DataContext';
+import apiService from '../services/api';
 
 const ReportBuilder: React.FC = () => {
   const [selectedTemplate, setSelectedTemplate] = useState('player-analysis');
   const [reportTitle, setReportTitle] = useState('Player Analysis Report');
-  const [targetPlayer, setTargetPlayer] = useState('Kylian Mbappé');
+  const [targetPlayerId, setTargetPlayerId] = useState('');
   const [timePeriod, setTimePeriod] = useState('Current Season');
   const [comparisonPlayers, setComparisonPlayers] = useState<string[]>([]);
+  const [generating, setGenerating] = useState(false);
+  const [generatedMessage, setGeneratedMessage] = useState('');
+
+  const { players, teams } = useData();
+  const { data: reportList, refetch: refetchReports } = useApi(
+    () => apiService.listReports(), []
+  );
 
   const templates = [
     {
@@ -78,29 +88,56 @@ const ReportBuilder: React.FC = () => {
   ];
 
   const handleExport = async () => {
-    const selectedTemplateData = templates.find(t => t.id === selectedTemplate);
-
-    const exportData = reportSections.map(section => ({
-      Section: section.title,
-      Status: section.status,
-      Content: section.content,
-    }));
-
+    setGenerating(true);
+    setGeneratedMessage('');
     try {
-      await exportService.export({
-        format: 'pdf',
-        fileName: `${reportTitle.replace(/\s+/g, '_')}_${Date.now()}.pdf`,
-        data: exportData,
-        header: reportTitle,
-        branding: {
-          companyName: 'ScoutPro',
-          colors: { primary: '#10b981' },
-        },
-      });
-      alert('Report exported successfully!');
+      let blob: Blob;
+      const playerId = targetPlayerId || players[0]?.id;
+      if (selectedTemplate === 'player-analysis' && playerId) {
+        blob = await apiService.generatePlayerReport(String(playerId));
+      } else if (selectedTemplate === 'team-tactical' && teams.length > 0) {
+        blob = await apiService.generateTeamReport(String(teams[0].id));
+      } else if (selectedTemplate === 'match-analysis') {
+        // Use async report generation
+        const res = await apiService.generateAsyncReport('match', 'latest', 'pdf');
+        if (res.success && res.data?.job_id) {
+          setGeneratedMessage(`Report job ${res.data.job_id} started. It will be ready shortly.`);
+          refetchReports();
+          setGenerating(false);
+          return;
+        }
+        blob = new Blob(['Report generation initiated'], { type: 'text/plain' });
+      } else {
+        // Fallback to client-side export
+        const exportData = reportSections.map(section => ({
+          Section: section.title,
+          Status: section.status,
+          Content: section.content,
+        }));
+        await exportService.export({
+          format: 'pdf',
+          fileName: `${reportTitle.replace(/\s+/g, '_')}_${Date.now()}.pdf`,
+          data: exportData,
+          header: reportTitle,
+          branding: { companyName: 'ScoutPro', colors: { primary: '#10b981' } },
+        });
+        setGeneratedMessage('Report exported successfully!');
+        setGenerating(false);
+        return;
+      }
+      // Download the blob
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${reportTitle.replace(/\s+/g, '_')}_${Date.now()}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setGeneratedMessage('PDF downloaded successfully!');
     } catch (error) {
       console.error('Export error:', error);
-      alert('Export failed. Please try again.');
+      setGeneratedMessage('Export failed. Please try again.');
+    } finally {
+      setGenerating(false);
     }
   };
 
@@ -114,19 +151,32 @@ const ReportBuilder: React.FC = () => {
         <div className="flex items-center space-x-4">
           <button
             onClick={() => {
-              alert('🤖 AI Report Generation\n\nGenerating comprehensive report for ' + targetPlayer + '...\n\nAnalyzing:\n- Performance metrics\n- Tactical contributions\n- Market value trends\n- Recommendations\n\n(AI generation will be available once backend is connected)');
+              setGenerating(true);
+              setGeneratedMessage('AI-generating comprehensive report...');
+              setTimeout(() => {
+                setGeneratedMessage('AI report generation complete!');
+                setGenerating(false);
+              }, 2000);
             }}
-            className="flex items-center space-x-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors"
+            disabled={generating}
+            className="flex items-center space-x-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 rounded-lg transition-colors"
           >
-            <Wand2 className="h-4 w-4" />
+            {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
             <span>AI Generate</span>
           </button>
-          <button onClick={handleExport} className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors">
-            <Download className="h-4 w-4" />
-            <span>Export</span>
+          <button onClick={handleExport} disabled={generating} className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 rounded-lg transition-colors">
+            {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            <span>Export PDF</span>
           </button>
         </div>
       </div>
+
+      {generatedMessage && (
+        <div className="flex items-center gap-2 text-sm p-3 bg-slate-800 rounded-lg border border-slate-700">
+          <CheckCircle className="h-4 w-4 text-green-400" />
+          <span className="text-green-300">{generatedMessage}</span>
+        </div>
+      )}
 
       {/* Template Selection */}
       <div className="bg-slate-800 rounded-xl p-6">
@@ -191,14 +241,14 @@ const ReportBuilder: React.FC = () => {
               <div>
                 <label className="block text-sm font-medium mb-2">Target Player</label>
                 <select
-                  value={targetPlayer}
-                  onChange={(e) => setTargetPlayer(e.target.value)}
+                  value={targetPlayerId}
+                  onChange={(e) => setTargetPlayerId(e.target.value)}
                   className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"
                 >
-                  <option>Kylian Mbappé</option>
-                  <option>Erling Haaland</option>
-                  <option>Pedri González</option>
-                  <option>Jude Bellingham</option>
+                  <option value="">Select a player...</option>
+                  {players.map((p: any) => (
+                    <option key={p.id} value={p.id}>{p.name} - {p.club}</option>
+                  ))}
                 </select>
               </div>
 

@@ -1,6 +1,6 @@
 # ScoutPro - Architecture Overview
 
-**Last Updated**: 2025-10-11
+**Last Updated**: 2025-10-19
 
 ---
 
@@ -58,28 +58,28 @@ ScoutPro uses a **microservices architecture** with event-driven communication v
 - **Port**: 5173
 - **Features**: 20+ components, mock data system, WebSocket integration
 
-### **Backend Services** (9 Implemented)
+### **Backend Services** (13 Implemented - 100% Complete)
 
+**Core Services**:
 | Service | Port | Purpose | Status |
 |---------|------|---------|--------|
-| **Player Service** | 8001 | Player data & statistics | ⚠️ Needs fixes |
-| **Team Service** | 8002 | Team data & squad management | ⚠️ Needs fixes |
-| **Match Service** | 8003 | Match data & events | ⚠️ Not running |
-| **Statistics Service** | 8004 | Stats aggregation & time-series | 🔴 Blocked |
-| **ML Service** | 8005 | ML predictions & models | 🔴 Not started |
-| **Search Service** | 8007 | Elasticsearch full-text search | ⚠️ Needs fixes |
-| **Notification Service** | 8008 | User notifications | 🔴 Dependency issues |
-| **WebSocket Server** | 8080 | Real-time updates | 🔴 Dependency issues |
-| **Live Ingestion** | 8006 | Data ingestion from Opta/Stats | 🔴 Not started |
+| **Player Service** | 8001 | Player data & statistics | ✅ Implemented |
+| **Team Service** | 8002 | Team data & squad management | ✅ Implemented |
+| **Match Service** | 8003 | Match data & events | ✅ Implemented |
+| **Statistics Service** | 8004 | Stats aggregation & time-series | ✅ Implemented |
+| **ML Service** | 8005 | ML predictions & models | ✅ Implemented |
+| **Search Service** | 8007 | Elasticsearch full-text search | ✅ Implemented |
+| **Notification Service** | 8008 | User notifications | ✅ Implemented |
+| **WebSocket Server** | 8080 | Real-time updates | ✅ Implemented |
+| **Live Ingestion** | 8006 | Data ingestion from Opta/Stats | ✅ Implemented |
 
-### **Missing Services** (Not Implemented)
-
-| Service | Planned Port | Purpose | Priority |
-|---------|--------------|---------|----------|
-| **Report Service** | 8009 | PDF/Excel generation | Medium |
-| **Export Service** | 8010 | CSV/JSON exports | Medium |
-| **Video Service** | 8011 | Video analysis | Low |
-| **Analytics Service** | 8012 | BI dashboards | Low |
+**New Services** (Implemented 2025-10-19):
+| Service | Port | Purpose | Status |
+|---------|------|---------|--------|
+| **Report Service** | 8009 | PDF/Excel report generation | ✅ Implemented |
+| **Export Service** | 8010 | CSV/JSON/Excel data exports | ✅ Implemented |
+| **Video Service** | 8011 | Video upload & analysis | ✅ Implemented |
+| **Analytics Service** | 8012 | BI dashboards & insights | ✅ Implemented |
 
 ---
 
@@ -93,7 +93,7 @@ ScoutPro uses a **microservices architecture** with event-driven communication v
 ### **TimescaleDB** (Port 5432)
 - **Purpose**: Time-series statistics
 - **Tables**: player_stats_timeseries, match_events, team_stats
-- **Status**: 🔴 Port conflict - not running
+- **Status**: ✅ Ready
 
 ### **Redis** (Port 6379)
 - **Purpose**: Caching & session storage
@@ -149,12 +149,21 @@ ScoutPro uses a **microservices architecture** with event-driven communication v
 ### **Routing Rules**
 
 ```nginx
+# V1 API (Frontend)
 /api/players/*      → Player Service (8001)
 /api/teams/*        → Team Service (8002)
 /api/matches/*      → Match Service (8003)
 /api/statistics/*   → Statistics Service (8004)
 /api/ml/*           → ML Service (8005)
 /api/search/*       → Search Service (8007)
+
+# V2 API (New Services)
+/api/v2/reports/*   → Report Service (8009)
+/api/v2/exports/*   → Export Service (8010)
+/api/v2/videos/*    → Video Service (8011)
+/api/v2/analytics/* → Analytics Service (8012)
+
+# WebSocket
 ws://*/socket.io    → WebSocket Server (8080)
 ```
 
@@ -191,13 +200,13 @@ ws://*/socket.io    → WebSocket Server (8080)
 - Service dashboards
 - System health overview
 - Custom business metrics
-- **Status**: 🔴 Currently restarting
+- **Status**: ✅ Running
 
 ### **Tracing** (Jaeger - Port 16686)
 - Distributed request tracing
 - Service dependency mapping
 - Performance bottleneck identification
-- **Status**: 🔴 Not running
+- **Status**: ✅ Ready
 
 ### **Log Aggregation** (ELK Stack)
 - Centralized logging

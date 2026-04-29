@@ -37,7 +37,8 @@ class SearchService {
       if (options.fuzzyMatch) params.append('fuzzy', 'true');
       if (options.filters) params.append('filters', JSON.stringify(options.filters));
 
-      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/search?${params}`);
+      const baseUrl = import.meta.env.VITE_API_URL || '/api/v1';
+      const response = await fetch(`${baseUrl}/search?${params}`);
       if (!response.ok) throw new Error('Search failed');
 
       const data = await response.json();

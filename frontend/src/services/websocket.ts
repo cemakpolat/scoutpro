@@ -12,7 +12,7 @@ class WebSocketService {
   private url: string;
 
   constructor() {
-    this.url = import.meta.env.VITE_WS_URL || 'ws://localhost:3001';
+    this.url = import.meta.env.VITE_WS_URL || 'ws://localhost:3001/ws';
   }
 
   connect(): Promise<void> {

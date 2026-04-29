@@ -1,8 +1,9 @@
 """
 Live Ingestion API Endpoints
 """
-from fastapi import APIRouter, HTTPException
-from typing import Dict, Any
+from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
+from typing import Dict, Any, List
+from pydantic import BaseModel
 import sys
 sys.path.append('/app')
 from shared.models.base import APIResponse
@@ -12,6 +13,38 @@ router = APIRouter(prefix="/api/v2/ingestion", tags=["ingestion"])
 # Track active ingestion tasks
 active_tasks = {}
 
+class EventsPayload(BaseModel):
+    events: List[Dict[str, Any]]
+    
+async def process_batch_background(events: List[Dict[str, Any]], request: Request, match_id: str):
+    processor = getattr(request.app.state, "processor", None)
+    if processor:
+        try:
+            # Transform statsbomb row format to the required internal format if necessary, 
+            # or directly pass raw to process_live_update.
+            payload = {
+                "match_id": match_id,
+                "events": events,
+                "stats": {}
+            }
+            await processor.process_live_update(payload)
+        except Exception as e:
+            print(f"Failed background processing: {e}")
+
+@router.post("/events/{match_id}", response_model=APIResponse, status_code=202)
+async def ingest_events(match_id: str, payload: EventsPayload, request: Request, background_tasks: BackgroundTasks):
+    """Receive a batch of physical match events (e.g. parsed from CSV/XML)"""
+    if len(payload.events) == 0:
+        return APIResponse(success=False, message="No events provided")
+    
+    # Store ingestion processing as background task
+    background_tasks.add_task(process_batch_background, payload.events, request, match_id)
+    
+    return APIResponse(
+        success=True,
+        data={"match_id": match_id, "processed_events": len(payload.events)},
+        message=f"Queued {len(payload.events)} events for processing"
+    )
 
 @router.post("/start/{match_id}", response_model=APIResponse)
 async def start_ingestion(match_id: str):

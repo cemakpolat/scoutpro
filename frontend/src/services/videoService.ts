@@ -2,8 +2,9 @@ import { Video, VideoAnnotation, VideoPlaylist, VideoClip, VideoFilter } from '.
 import { mockVideos, mockPlaylists } from '../data/mockVideos';
 
 class VideoService {
-  private videos: Video[] = [...mockVideos];
-  private playlists: VideoPlaylist[] = [...mockPlaylists];
+  private useMockData = import.meta.env.VITE_USE_MOCK_DATA === 'true';
+  private videos: Video[] = this.useMockData ? [...mockVideos] : [];
+  private playlists: VideoPlaylist[] = this.useMockData ? [...mockPlaylists] : [];
   private clips: VideoClip[] = [];
 
   // Get all videos

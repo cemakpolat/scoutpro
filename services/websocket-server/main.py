@@ -10,6 +10,7 @@ sys.path.append('/app')
 from shared.utils.logger import setup_logger
 from config.settings import get_settings
 from websocket.manager import ConnectionManager
+import asyncio
 
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)

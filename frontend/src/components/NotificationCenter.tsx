@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { Bell, X, Check, AlertTriangle, TrendingUp, Activity, Users } from 'lucide-react';
+import apiService from '../services/api';
 
 interface NotificationCenterProps {
   notifications: any[];
@@ -13,6 +14,8 @@ const NotificationCenter: React.FC<NotificationCenterProps> = ({ notifications, 
     setNotifications(notifications.map(n => 
       n.id === id ? { ...n, read: true } : n
     ));
+    // Fire-and-forget API call
+    apiService.markNotificationRead(String(id)).catch(() => {});
   };
 
   const markAllAsRead = () => {

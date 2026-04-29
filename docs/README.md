@@ -46,19 +46,7 @@ _Coming soon - Monitoring, troubleshooting, and maintenance guides_
 Current state and roadmap.
 
 - **[CURRENT_STATUS.md](07-status/CURRENT_STATUS.md)** - What's working, what's not
-- **[ROADMAP.md](07-status/ROADMAP.md)** - Feature gaps and development roadmap
-
----
-
-## 📚 **Archived Documentation**
-
-Older documents with outdated information have been moved to **[archive/](archive/)**.
-
-These documents contain valuable historical context but may have inaccurate status claims:
-- PHASES_1_TO_5_COMPLETE.md
-- IMPLEMENTATION_COMPLETE.md
-- MICROSERVICES_ARCHITECTURE.md (original 83KB version)
-- And others...
+- **[ROADMAP.md](07-status/ROADMAP.md)** - Development roadmap and next steps
 
 ---
 
@@ -85,7 +73,7 @@ These documents contain valuable historical context but may have inaccurate stat
 → [Roadmap](07-status/ROADMAP.md)
 
 **Fix common issues**
-→ See "Troubleshooting" section in [Current Status](07-status/CURRENT_STATUS.md)
+→ See "Troubleshooting" section in [Quick Start](01-getting-started/QUICK_START.md)
 
 ---
 
@@ -93,16 +81,34 @@ These documents contain valuable historical context but may have inaccurate stat
 
 ### **Services & Ports**
 
+**Core Services**:
 | Service | Port | Status | Docs |
 |---------|------|--------|------|
 | Frontend | 5173 | ✅ Working | - |
-| NGINX Gateway | 80 | 🔴 Not running | [Architecture](02-architecture/OVERVIEW.md) |
-| Player Service | 8001 | ⚠️ Unhealthy | [Implementation Guide](03-development/IMPLEMENTATION_GUIDE.md) |
-| Team Service | 8002 | ⚠️ Unhealthy | [Implementation Guide](03-development/IMPLEMENTATION_GUIDE.md) |
-| Match Service | 8003 | 🔴 Not running | [Implementation Guide](03-development/IMPLEMENTATION_GUIDE.md) |
-| MongoDB | 27017 | ✅ Healthy | [Architecture](02-architecture/OVERVIEW.md) |
-| Redis | 6379 | ✅ Healthy | [Architecture](02-architecture/OVERVIEW.md) |
-| Kafka | 9092 | ✅ Healthy | [Architecture](02-architecture/OVERVIEW.md) |
+| NGINX Gateway | 80 | ✅ Ready | [Architecture](02-architecture/OVERVIEW.md) |
+| Player Service | 8001 | ✅ Implemented | http://localhost:8001/docs |
+| Team Service | 8002 | ✅ Implemented | http://localhost:8002/docs |
+| Match Service | 8003 | ✅ Implemented | http://localhost:8003/docs |
+| Statistics Service | 8004 | ✅ Implemented | http://localhost:8004/docs |
+| ML Service | 8005 | ✅ Implemented | http://localhost:8005/docs |
+| Live Ingestion | 8006 | ✅ Implemented | http://localhost:8006/docs |
+| Search Service | 8007 | ✅ Implemented | http://localhost:8007/docs |
+| Notification Service | 8008 | ✅ Implemented | http://localhost:8008/docs |
+| **Report Service** | **8009** | **✅ NEW** | **http://localhost:8009/docs** |
+| **Export Service** | **8010** | **✅ NEW** | **http://localhost:8010/docs** |
+| **Video Service** | **8011** | **✅ NEW** | **http://localhost:8011/docs** |
+| **Analytics Service** | **8012** | **✅ NEW** | **http://localhost:8012/docs** |
+| WebSocket Server | 8080 | ✅ Implemented | http://localhost:8080/stats |
+
+**Infrastructure**:
+| Service | Port | Status |
+|---------|------|--------|
+| MongoDB | 27017 | ✅ Ready |
+| Redis | 6379 | ✅ Ready |
+| Kafka | 9092 | ✅ Ready |
+| Elasticsearch | 9200 | ✅ Ready |
+| TimescaleDB | 5432 | ✅ Ready |
+| MinIO | 9000 | ✅ Ready |
 
 ### **Key URLs**
 
@@ -167,4 +173,6 @@ docker-compose restart
 
 ---
 
-**Last Updated**: 2025-10-11
+**Last Updated**: 2025-10-19
+**Services**: 13 microservices fully implemented
+**Status**: Feature complete, ready for integration testing

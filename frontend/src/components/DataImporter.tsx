@@ -1,17 +1,27 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Upload, Download, FileText, CheckCircle, AlertCircle,
   X, Play, Pause, RefreshCw, Eye, Settings, Database,
   ArrowRight, File, Table, List, BarChart3
 } from 'lucide-react';
 import { ImportJob, ImportTemplate, ImportType } from '../types/import';
+import apiService from '../services/api';
 
 const DataImporter: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'import' | 'history' | 'templates'>('import');
   const [selectedType, setSelectedType] = useState<ImportType>('players');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [showPreview, setShowPreview] = useState(false);
+  const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch import history from API on mount (fall back to mock data)
+  useEffect(() => {
+    apiService.getDashboardOverview().then((res: any) => {
+      // Use overview as a signal that backend is available
+      console.log('📦 DataImporter: Backend connected');
+    }).catch(() => {});
+  }, []);
 
   // Mock data
   const mockJobs: ImportJob[] = [

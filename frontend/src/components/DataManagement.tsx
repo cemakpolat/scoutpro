@@ -1,64 +1,80 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Database, Upload, Download, RefreshCw, Filter, Search, CheckCircle, AlertTriangle, XCircle, Clock, BarChart3, FileText, Zap, Settings, Eye, Trash2, CreditCard as Edit, Plus } from 'lucide-react';
+import apiService from '../services/api';
+import { useData } from '../context/DataContext';
 
 const DataManagement: React.FC = () => {
   const [selectedDataset, setSelectedDataset] = useState('player-stats');
   const [isProcessing, setIsProcessing] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
+  const [overviewStats, setOverviewStats] = useState<any>(null);
+
+  const { players, matches, teams } = useData();
+
+  // Fetch dashboard stats for real data counts
+  useEffect(() => {
+    apiService.getDashboardOverview().then((res: any) => {
+      if (res?.data) setOverviewStats(res.data);
+    }).catch(() => {});
+  }, []);
+
+  const totalPlayers = overviewStats?.summary?.totalPlayers || players.length || 0;
+  const totalMatches = overviewStats?.summary?.totalMatches || matches.length || 0;
+  const totalTeams = overviewStats?.summary?.totalTeams || teams.length || 0;
 
   const datasets = [
     {
       id: 'player-stats',
       name: 'Player Statistics',
-      size: '2.4GB',
-      records: '2,847,392',
+      size: `${(totalPlayers * 0.85).toFixed(0)}KB`,
+      records: totalPlayers.toLocaleString(),
       lastUpdated: '2 hours ago',
-      status: 'healthy',
-      sources: ['Opta', 'StatsBomb', 'Wyscout'],
+      status: 'healthy' as const,
+      sources: ['API Gateway', 'MongoDB'],
       quality: 98.2,
       completeness: 94.7
     },
     {
       id: 'match-events',
       name: 'Match Events',
-      size: '1.8GB',
-      records: '1,234,567',
+      size: `${(totalMatches * 3.2).toFixed(0)}KB`,
+      records: totalMatches.toLocaleString(),
       lastUpdated: '1 hour ago',
-      status: 'healthy',
-      sources: ['ChyronHego', 'DataStadium'],
+      status: 'healthy' as const,
+      sources: ['API Gateway', 'MongoDB'],
       quality: 96.8,
       completeness: 92.3
     },
     {
+      id: 'team-data',
+      name: 'Team Data',
+      size: `${(totalTeams * 4.5).toFixed(0)}KB`,
+      records: totalTeams.toLocaleString(),
+      lastUpdated: '30 minutes ago',
+      status: 'healthy' as const,
+      sources: ['API Gateway'],
+      quality: 97.5,
+      completeness: 95.1
+    },
+    {
       id: 'transfer-data',
       name: 'Transfer Market',
-      size: '456MB',
-      records: '89,234',
+      size: '456KB',
+      records: '89',
       lastUpdated: '30 minutes ago',
-      status: 'warning',
-      sources: ['Transfermarkt', 'CIES'],
+      status: 'warning' as const,
+      sources: ['Market API'],
       quality: 94.1,
       completeness: 87.9
     },
     {
-      id: 'injury-data',
-      name: 'Injury Records',
-      size: '234MB',
-      records: '45,678',
-      lastUpdated: '6 hours ago',
-      status: 'error',
-      sources: ['PhysioRoom', 'Club Reports'],
-      quality: 89.3,
-      completeness: 76.4
-    },
-    {
       id: 'tactical-data',
       name: 'Tactical Analysis',
-      size: '3.1GB',
-      records: '567,890',
+      size: '312KB',
+      records: '567',
       lastUpdated: '45 minutes ago',
-      status: 'healthy',
-      sources: ['InStat', 'Metrica Sports'],
+      status: 'healthy' as const,
+      sources: ['Analytics Engine'],
       quality: 97.5,
       completeness: 91.8
     }
@@ -137,7 +153,7 @@ const DataManagement: React.FC = () => {
         <div className="bg-slate-800 rounded-xl p-6">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-2xl font-bold text-white">4.7M</div>
+              <div className="text-2xl font-bold text-white">{(totalPlayers + totalMatches + totalTeams).toLocaleString()}</div>
               <div className="text-slate-400 text-sm">Total Records</div>
             </div>
             <FileText className="h-8 w-8 text-green-400" />

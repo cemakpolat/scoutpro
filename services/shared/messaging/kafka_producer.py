@@ -104,6 +104,13 @@ class KafkaProducerClient:
             if headers:
                 kafka_headers = [(k, v.encode('utf-8')) for k, v in headers.items()]
 
+            # Enforce partitioning on match_id if key is not already provided
+            if key is None and isinstance(enriched_event, dict):
+                if "match_id" in enriched_event:
+                    key = str(enriched_event["match_id"])
+                elif "matchID" in enriched_event:
+                    key = str(enriched_event["matchID"])
+
             # Send to Kafka
             future = await self.producer.send(
                 topic,
@@ -151,6 +158,14 @@ class KafkaProducerClient:
 
         for event in events:
             key = key_extractor(event) if key_extractor else None
+            
+            # Use raw message partitioning
+            if key is None and isinstance(event, dict):
+                if "match_id" in event:
+                    key = str(event["match_id"])
+                elif "matchID" in event:
+                    key = str(event["matchID"])
+
             if await self.send_event(topic, event, key=key):
                 success_count += 1
 

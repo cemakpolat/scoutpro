@@ -9,15 +9,16 @@ RUN apt-get update && apt-get install -y \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy shared libraries
+# Copy shared libraries (merge root shared + services shared)
 COPY ./shared /app/shared
+COPY ./services/shared /app/shared
 
 # Install Python dependencies
-COPY live-ingestion-service/requirements.txt .
+COPY ./services/live-ingestion-service/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY live-ingestion-service/ .
+COPY ./services/live-ingestion-service/ .
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \

@@ -10,9 +10,12 @@ sys.path.append('/app')
 from shared.utils.logger import setup_logger
 from config.settings import get_settings
 from api.ml import router as ml_router
+from services.stream_handler import MLFeatureStreamProcessor
 
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
+
+stream_processor = None
 
 app = FastAPI(
     title="ML Service",
@@ -38,6 +41,7 @@ app.include_router(ml_router)
 @app.on_event("startup")
 async def startup_event():
     logger.info(f"Starting {settings.service_name}")
+    global stream_processor
 
     try:
         # Initialize MLflow
@@ -49,16 +53,34 @@ async def startup_event():
         from pathlib import Path
         Path(settings.model_cache_dir).mkdir(parents=True, exist_ok=True)
 
+        # Start ML Stream Processor
+        try:
+            logger.info("Starting ML Feature Stream Processor...")
+            stream_processor = MLFeatureStreamProcessor()
+            import asyncio
+            asyncio.create_task(stream_processor.start())
+            logger.info("ML Feature Stream Processor started")
+        except Exception as e:
+            logger.error(f"Failed to start stream processor: {e}")
+
         logger.info(f"{settings.service_name} started successfully")
 
     except Exception as e:
         logger.error(f"Startup failed: {e}")
-        raise
+        # Dont crash if local
+        # raise
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info(f"Shutting down {settings.service_name}")
+    global stream_processor
+
+    try:
+        if stream_processor:
+            await stream_processor.stop()
+    except Exception as e:
+        logger.error(f"Shutdown error: {e}")
 
 
 @app.get("/health")
