@@ -88,6 +88,19 @@ router.get('/', (req, res) => {
   });
 });
 
+// POST /insights/players/sequences — bulk coverage check for multiple player IDs.
+// The analytics-service does not implement this endpoint; return a safe empty payload
+// so callers degrade gracefully instead of crashing the gateway connection.
+router.post('/insights/players/sequences', (req, res) => {
+  const playerIds = Array.isArray(req.body?.player_ids) ? req.body.player_ids : [];
+  res.json({
+    success: true,
+    data: {
+      items: playerIds.map(id => ({ player_id: String(id), hasCoverage: false })),
+    },
+  });
+});
+
 // Cache-aware proxy middleware for expensive endpoints
 router.get('/insights/player/:player_id/sequences', async (req, res, next) => {
   const cacheKey = buildCacheKey('GET', `/insights/player/${req.params.player_id}/sequences`, req.query, null);

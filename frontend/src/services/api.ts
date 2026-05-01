@@ -183,6 +183,15 @@ class ApiService {
     return this.request<Match[]>(`/matches${queryString ? `?${queryString}` : ''}`);
   }
 
+  async searchMatches(query: string, limit: number = 30): Promise<ApiResponse<Match[]>> {
+    const params = new URLSearchParams();
+    if (query.trim()) {
+      params.set('q', query.trim());
+    }
+    params.set('limit', String(limit));
+    return this.request<Match[]>(`/matches/search?${params.toString()}`);
+  }
+
   async getMatch(id: string): Promise<ApiResponse<Match>> {
     return this.request<Match>(`/matches/${id}`);
   }

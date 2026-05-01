@@ -1,0 +1,84 @@
+# ----------------------------------------------------------------
+# docker-compose.seed.yml
+#
+# One-off data seeder service.  Overlay on top of the main
+# docker-compose.yml so it can reach the same infrastructure.
+#
+# Usage (after infra is running):
+#   docker compose -f docker-compose.yml -f docker-compose.seed.yml \
+#       run --rm data-seeder
+#
+# Or use the convenience wrapper:
+#   ./seed-data.sh
+# ----------------------------------------------------------------
+
+services:
+  data-seeder:
+    build:
+      context: .
+      dockerfile: Dockerfile.seed
+    container_name: scoutpro-data-seeder
+    restart: "no"
+
+    environment:
+      # ── MongoDB ──────────────────────────────────────────────
+      - MONGODB_HOST=mongo
+      - MONGODB_PORT=27017
+      - MONGODB_DATABASE=scoutpro
+      # Full URI used by enrichment scripts and pymongo wait check
+      - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
+      # enrich_matches_and_events.py uses MONGO_URI
+      - MONGO_URI=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
+
+      # ── TimescaleDB ──────────────────────────────────────────
+      - TIMESCALEDB_HOST=timescaledb
+      - TIMESCALEDB_PORT=5432
+
+      # ── Redis ────────────────────────────────────────────────
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_URL=redis://:scoutpro123@redis:6379
+
+      # ── Kafka ────────────────────────────────────────────────
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+
+      # ── Service identity ─────────────────────────────────────
+      - SERVICE_NAME=data-seeder
+
+      # ── Data provider (mock serving ./data/) ─────────────────
+      - OPTA_BASE_URL=http://data-provider:7000
+      - STATSBOMB_BASE_URL=http://data-provider:7000
+
+      # ── Sync scope (matches data/opta/2019/ contents) ────────
+      - COMPETITION_ID=115
+      - SEASON_ID=2019
+
+      # ── Enrichment: F40 squad file location ──────────────────
+      - F40_PATH=/app/data/opta/2019/f40_115_2019
+
+      # ── Stub keys (not used in offline mode) ─────────────────
+      - OPTA_API_KEY=dummy_key
+      - OPTA_WEBSOCKET_URL=ws://localhost:8080
+      - STATSBOMB_API_KEY=dummy_key
+      - SENDGRID_API_KEY=dummy_key_development_only
+      - FIREBASE_CREDENTIALS={}
+
+    volumes:
+      # Mount local data/ folder read-only so enrichment scripts
+      # can access F40 and other raw files directly.
+      - ./data:/app/data:ro
+
+    depends_on:
+      mongo:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      data-provider:
+        condition: service_healthy
+
+    networks:
+      - scoutpro-network

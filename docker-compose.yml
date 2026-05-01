@@ -45,6 +45,8 @@ services:
         condition: service_started
     networks:
       - scoutpro-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   # ============ CORE MICROSERVICES ============

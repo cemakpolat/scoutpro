@@ -24,16 +24,26 @@ const toNumber = (value: unknown): number => {
 
 const analysisMatchFilters: MatchFilters & { limit: number } = {
   status: ['finished'],
-  limit: 200,
+  limit: 50,
 };
 
-const formatDate = (value?: string): string => {
-  if (!value) {
-    return 'No date';
+// Extracts a plain date string from either a regular string or an Opta XML-style
+// object: { "@value": "2020-07-26 16:00:00", "@attributes": { "TBC": "1" } }
+const extractRawDateString = (value: unknown): string => {
+  if (!value) return '';
+  if (typeof value === 'object' && value !== null && '@value' in (value as Record<string, unknown>)) {
+    const inner = (value as Record<string, unknown>)['@value'];
+    return typeof inner === 'string' ? inner : '';
   }
+  return typeof value === 'string' ? value : '';
+};
 
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString();
+const formatDate = (value: unknown): string => {
+  const raw = extractRawDateString(value);
+  if (!raw) return 'No date';
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? raw : parsed.toLocaleDateString();
 };
 
 const compareAnalysisMatches = (
@@ -86,27 +96,143 @@ type AnalysisMatchRecord = {
   awayScore: number;
 };
 
+type AnalysisEvent = Record<string, unknown> & {
+  match_id?: string | number;
+  matchID?: string | number;
+  player_id?: string | number | null;
+  team_id?: string | number | null;
+  type_name?: string;
+  action_type?: string;
+  is_goal?: boolean;
+  is_successful?: boolean;
+  is_assist?: boolean;
+  is_key_pass?: boolean;
+  progressive_pass?: boolean;
+  entered_final_third?: boolean;
+  entered_box?: boolean;
+  high_regain?: boolean;
+  analytical_xg?: number | string;
+  shot_distance?: number | string;
+};
+
+type AppliedAnalysisSnapshot = {
+  matchIds: string[];
+  analysisType: string;
+  events: AnalysisEvent[];
+};
+
+type PatternCard = {
+  pattern: string;
+  frequency: string;
+  impact: 'High' | 'Medium';
+  trend: 'increasing' | 'decreasing' | 'stable';
+};
+
+type PlayerOutputRow = {
+  id: string;
+  uiKey: string;
+  name: string;
+  rank: number;
+  matches: number;
+  goals: number;
+  shots: number;
+  completedPasses: number;
+  actionSuccessRate: number;
+};
+
+const toAnalysisMatchRecord = (match: any, index: number, teams: any[]): AnalysisMatchRecord | null => {
+  const status = normalizeMatchStatus(match.status, match.date, match.homeScore, match.awayScore);
+  const reliableLive = hasReliableLiveContext(match, teams);
+
+  if (status === 'live' && !reliableLive) {
+    return null;
+  }
+
+  return {
+    id: String(match.id),
+    uiKey: `${match.id || 'match'}-${index}`,
+    home: resolveTeamName(match.homeTeam || match.home_team, match.homeTeamId || match.home_team_id, teams, 'Home'),
+    away: resolveTeamName(match.awayTeam || match.away_team, match.awayTeamId || match.away_team_id, teams, 'Away'),
+    date: formatDate(match.date),
+    rawDate: extractRawDateString(match.date),
+    status,
+    competition: match.competition || 'Turkish Süper Lig',
+    homeScore: toNumber(match.homeScore),
+    awayScore: toNumber(match.awayScore),
+  };
+};
+
+const mergeMatchRecords = (existing: AnalysisMatchRecord[], incoming: AnalysisMatchRecord[]): AnalysisMatchRecord[] => {
+  const byId = new Map<string, AnalysisMatchRecord>();
+
+  [...existing, ...incoming].forEach((match) => {
+    byId.set(match.id, match);
+  });
+
+  return Array.from(byId.values()).sort(compareAnalysisMatches);
+};
+
+const toIdString = (value: unknown): string => (value === null || value === undefined ? '' : String(value));
+
+const getEventMatchId = (event: AnalysisEvent): string => toIdString(event.match_id ?? event.matchID);
+
+const getEventPlayerId = (event: AnalysisEvent): string => toIdString(event.player_id);
+
+const isShotEvent = (event: AnalysisEvent): boolean => {
+  const typeName = String(event.type_name || '').toLowerCase();
+  return Boolean(
+    event.analytical_xg !== undefined
+      || event.shot_distance !== undefined
+      || ['goal', 'miss', 'attempt_saved', 'blocked_shot', 'chance_missed', 'post'].includes(typeName)
+  );
+};
+
+const average = (values: number[]): number => {
+  if (values.length === 0) {
+    return 0;
+  }
+
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+};
+
+const getSeriesTrend = (series: number[]): 'increasing' | 'decreasing' | 'stable' => {
+  if (series.length < 2) {
+    return 'stable';
+  }
+
+  const midpoint = Math.ceil(series.length / 2);
+  const firstHalf = average(series.slice(0, midpoint));
+  const secondHalf = average(series.slice(midpoint));
+
+  if (secondHalf > firstHalf * 1.15) {
+    return 'increasing';
+  }
+
+  if (secondHalf < firstHalf * 0.85) {
+    return 'decreasing';
+  }
+
+  return 'stable';
+};
+
 const MultiMatchAnalysis: React.FC = () => {
   const [selectedMatches, setSelectedMatches] = useState<string[]>([]);
   const [analysisType, setAnalysisType] = useState('comparative');
   const [showMatchPicker, setShowMatchPicker] = useState(false);
   const [matchSearchQuery, setMatchSearchQuery] = useState('');
-  const [appliedAnalysis, setAppliedAnalysis] = useState<{ matchIds: string[]; analysisType: string } | null>(null);
+  const [matchPickerResults, setMatchPickerResults] = useState<AnalysisMatchRecord[]>([]);
+  const [matchPickerLoading, setMatchPickerLoading] = useState(false);
+  const [matchPickerError, setMatchPickerError] = useState<string | null>(null);
+  const [matchCache, setMatchCache] = useState<AnalysisMatchRecord[]>([]);
+  const [appliedAnalysis, setAppliedAnalysis] = useState<AppliedAnalysisSnapshot | null>(null);
+  const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  const { matches, teams } = useData();
+  const { matches, teams, players } = useData();
   const { data: analysisMatchesData, loading: analysisMatchesLoading, refetch: refetchAnalysisMatches } = useApi(
     () => apiService.getMatches(analysisMatchFilters),
-    [],
-  );
-  const { data: overviewData, loading: overviewLoading, refetch: refetchOverview } = useApi(
-    () => apiService.getDashboardOverview(),
-    [],
-  );
-  const { data: trendData, loading: trendsLoading, refetch: refetchTrends } = useApi(
-    () => apiService.getLeagueTrends(),
     [],
   );
 
@@ -114,27 +240,7 @@ const MultiMatchAnalysis: React.FC = () => {
     () => {
       const matchPool = analysisMatchesData && analysisMatchesData.length > 0 ? analysisMatchesData : matches;
       const normalizedMatches = matchPool
-        .map((match: any, index: number) => {
-          const status = normalizeMatchStatus(match.status, match.date, match.homeScore, match.awayScore);
-          const reliableLive = hasReliableLiveContext(match, teams);
-
-          if (status === 'live' && !reliableLive) {
-            return null;
-          }
-
-          return {
-            id: String(match.id),
-            uiKey: `${match.id || 'match'}-${index}`,
-            home: resolveTeamName(match.homeTeam || match.home_team, match.homeTeamId || match.home_team_id, teams, 'Home'),
-            away: resolveTeamName(match.awayTeam || match.away_team, match.awayTeamId || match.away_team_id, teams, 'Away'),
-            date: formatDate(match.date),
-            rawDate: match.date,
-            status,
-            competition: match.competition || 'Turkish Süper Lig',
-            homeScore: toNumber(match.homeScore),
-            awayScore: toNumber(match.awayScore),
-          };
-        })
+        .map((match: any, index: number) => toAnalysisMatchRecord(match, index, teams))
         .filter(Boolean) as AnalysisMatchRecord[];
 
       normalizedMatches.sort(compareAnalysisMatches);
@@ -143,9 +249,19 @@ const MultiMatchAnalysis: React.FC = () => {
     [analysisMatchesData, matches, teams],
   );
 
+  const knownMatchLookup = useMemo(() => {
+    const lookup = new Map<string, AnalysisMatchRecord>();
+
+    mergeMatchRecords(availableMatches, matchCache).forEach((match) => {
+      lookup.set(match.id, match);
+    });
+
+    return lookup;
+  }, [availableMatches, matchCache]);
+
   useEffect(() => {
-    setSelectedMatches((previous) => previous.filter((matchId) => availableMatches.some((match) => match.id === matchId)));
-  }, [availableMatches]);
+    setSelectedMatches((previous) => previous.filter((matchId) => knownMatchLookup.has(matchId)));
+  }, [knownMatchLookup]);
 
   // Close picker when clicking outside
   useEffect(() => {
@@ -166,8 +282,45 @@ const MultiMatchAnalysis: React.FC = () => {
       setTimeout(() => searchInputRef.current?.focus(), 50);
     } else {
       setMatchSearchQuery('');
+      setMatchPickerError(null);
     }
   }, [showMatchPicker]);
+
+  useEffect(() => {
+    if (!showMatchPicker) {
+      return;
+    }
+
+    let isCancelled = false;
+    const timeoutId = setTimeout(async () => {
+      setMatchPickerLoading(true);
+      setMatchPickerError(null);
+
+      const response = await apiService.searchMatches(matchSearchQuery, 36);
+      if (isCancelled) {
+        return;
+      }
+
+      if (response.success) {
+        const normalizedResults = (response.data || [])
+          .map((match: any, index: number) => toAnalysisMatchRecord(match, index, teams))
+          .filter(Boolean) as AnalysisMatchRecord[];
+
+        setMatchPickerResults(normalizedResults);
+        setMatchCache((previous) => mergeMatchRecords(previous, normalizedResults));
+      } else {
+        setMatchPickerResults([]);
+        setMatchPickerError(response.error.message || 'Failed to search matches');
+      }
+
+      setMatchPickerLoading(false);
+    }, matchSearchQuery.trim().length >= 2 ? 250 : 0);
+
+    return () => {
+      isCancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [matchSearchQuery, showMatchPicker, teams]);
 
   useEffect(() => {
     setAppliedAnalysis((previous) => {
@@ -175,7 +328,7 @@ const MultiMatchAnalysis: React.FC = () => {
         return previous;
       }
 
-      const validMatchIds = previous.matchIds.filter((matchId) => availableMatches.some((match) => match.id === matchId));
+      const validMatchIds = previous.matchIds.filter((matchId) => knownMatchLookup.has(matchId));
       if (validMatchIds.length === 0) {
         return null;
       }
@@ -189,48 +342,55 @@ const MultiMatchAnalysis: React.FC = () => {
         matchIds: validMatchIds,
       };
     });
-  }, [availableMatches]);
+  }, [knownMatchLookup]);
 
-  const availableMatchLookup = useMemo(
-    () => new Map(availableMatches.map((match) => [match.id, match])),
-    [availableMatches],
+  const playerLookup = useMemo(
+    () => {
+      const lookup = new Map<string, any>();
+
+      players.forEach((player: any) => {
+        [
+          player.id,
+          player.playerID,
+          player.player_id,
+          player.optaId,
+          player.opta_uid,
+          player.provider_ids?.opta,
+        ]
+          .filter(Boolean)
+          .forEach((candidateId) => lookup.set(String(candidateId), player));
+      });
+
+      return lookup;
+    },
+    [players],
   );
 
   const selectedMatchCards = useMemo(
     () => selectedMatches
-      .map((matchId) => availableMatchLookup.get(matchId))
+      .map((matchId) => knownMatchLookup.get(matchId))
       .filter(Boolean) as AnalysisMatchRecord[],
-    [availableMatchLookup, selectedMatches],
+    [knownMatchLookup, selectedMatches],
   );
 
   const pickerMatches = useMemo(() => {
-    const normalizedQuery = matchSearchQuery.trim().toLowerCase();
-    // Search across ALL available matches — no year/league pre-filter
-    const pool = normalizedQuery.length === 0
-      ? availableMatches
-      : availableMatches.filter((match) => {
-        const text = `${match.home} ${match.away} ${match.competition} ${match.date} ${match.rawDate ?? ''}`.toLowerCase();
-        return text.includes(normalizedQuery);
-      });
-    // Put already-selected ones first so they're easy to deselect
-    const selected = pool.filter((m) => selectedMatches.includes(m.id));
-    const unselected = pool.filter((m) => !selectedMatches.includes(m.id));
+    const selected = matchPickerResults.filter((match) => selectedMatches.includes(match.id));
+    const unselected = matchPickerResults.filter((match) => !selectedMatches.includes(match.id));
     return [...selected, ...unselected].slice(0, 50);
-  }, [availableMatches, matchSearchQuery, selectedMatches]);
+  }, [matchPickerResults, selectedMatches]);
 
   const openPicker = useCallback(() => setShowMatchPicker(true), []);
   const closePicker = useCallback(() => setShowMatchPicker(false), []);
 
   const appliedMatchIds = appliedAnalysis?.matchIds ?? [];
   const appliedAnalysisType = appliedAnalysis?.analysisType ?? analysisType;
+  const appliedEvents = appliedAnalysis?.events ?? [];
 
-  const summary = overviewData?.summary || overviewData?.data || {};
-  const predictionSummary = overviewData?.predictions || {};
   const selectedMatchRecords = useMemo(
     () => appliedMatchIds
-      .map((matchId) => availableMatchLookup.get(matchId))
+      .map((matchId) => knownMatchLookup.get(matchId))
       .filter(Boolean) as AnalysisMatchRecord[],
-    [appliedMatchIds, availableMatchLookup],
+    [appliedMatchIds, knownMatchLookup],
   );
   const averageGoals = selectedMatchRecords.length > 0
     ? selectedMatchRecords.reduce((sum, match) => sum + match.homeScore + match.awayScore, 0) / selectedMatchRecords.length
@@ -243,52 +403,247 @@ const MultiMatchAnalysis: React.FC = () => {
   const highScoringMatches = selectedMatchRecords.filter((match) => match.homeScore + match.awayScore >= 3).length;
   const liveSelections = selectedMatchRecords.filter((match) => ['live', 'in_progress'].includes(String(match.status).toLowerCase())).length;
 
-  const patterns = useMemo(() => {
-    const baseline = toNumber(summary.avgGoalsPerMatch);
+  const generatedAnalysis = useMemo(() => {
+    const orderedMatches = [...selectedMatchRecords].sort(
+      (left, right) => new Date(left.rawDate).getTime() - new Date(right.rawDate).getTime(),
+    );
+    const matchIds = new Set(orderedMatches.map((match) => match.id));
+    const eventBuckets = new Map<string, AnalysisEvent[]>(orderedMatches.map((match) => [match.id, []]));
+    const playerBuckets = new Map<string, {
+      id: string;
+      name: string;
+      matches: Set<string>;
+      goals: number;
+      shots: number;
+      completedPasses: number;
+      successfulActions: number;
+      totalActions: number;
+      assists: number;
+      keyPasses: number;
+      progressivePasses: number;
+      tackles: number;
+      interceptions: number;
+    }>();
 
-    return ((trendData?.trends || []) as any[]).slice(-4).map((trend) => ({
-      pattern: `${trend.name} scoring trend`,
-      frequency: `${toNumber(trend.matchCount)} matches`,
-      impact: toNumber(trend.avgGoals) >= baseline ? 'High' : 'Medium',
-      trend: toNumber(trend.avgGoals) > baseline ? 'increasing' : toNumber(trend.avgGoals) < baseline ? 'decreasing' : 'stable',
-    }));
-  }, [summary.avgGoalsPerMatch, trendData]);
+    let totalShots = 0;
+    let totalXg = 0;
+    let keyPasses = 0;
+    let assists = 0;
+    let progressivePasses = 0;
+    let finalThirdEntries = 0;
+    let boxEntries = 0;
+    let highRegains = 0;
+    let recoveries = 0;
+    let tackles = 0;
+    let interceptions = 0;
+    let completedPasses = 0;
 
-  const keyInsights = useMemo(() => {
-    if (selectedMatchRecords.length === 0) {
-      return [];
+    for (const rawEvent of appliedEvents) {
+      const event = rawEvent as AnalysisEvent;
+      const matchId = getEventMatchId(event);
+      if (!matchIds.has(matchId)) {
+        continue;
+      }
+
+      eventBuckets.get(matchId)?.push(event);
+
+      const typeName = String(event.type_name || '').toLowerCase();
+      const isShot = isShotEvent(event);
+
+      if (isShot) {
+        totalShots += 1;
+        totalXg += toNumber(event.analytical_xg);
+      }
+      if (event.is_key_pass) {
+        keyPasses += 1;
+      }
+      if (event.is_assist) {
+        assists += 1;
+      }
+      if (event.progressive_pass) {
+        progressivePasses += 1;
+      }
+      if (event.entered_final_third) {
+        finalThirdEntries += 1;
+      }
+      if (event.entered_box) {
+        boxEntries += 1;
+      }
+      if (event.high_regain) {
+        highRegains += 1;
+      }
+      if (typeName === 'tackle') {
+        tackles += 1;
+      }
+      if (typeName === 'interception') {
+        interceptions += 1;
+      }
+      if (typeName === 'good_skill' && String(event.action_type || '').toLowerCase() === 'recovery') {
+        recoveries += 1;
+      }
+      if (typeName === 'pass' && event.is_successful) {
+        completedPasses += 1;
+      }
+
+      const playerId = getEventPlayerId(event);
+      if (!playerId) {
+        continue;
+      }
+
+      const rawEventPayload = (event.raw_event || {}) as Record<string, unknown>;
+      const playerName = String(
+        event.player_name
+        || rawEventPayload.player_name
+        || playerLookup.get(playerId)?.name
+        || `Player #${playerId}`
+      );
+      const bucket = playerBuckets.get(playerId) || {
+        id: playerId,
+        name: playerName,
+        matches: new Set<string>(),
+        goals: 0,
+        shots: 0,
+        completedPasses: 0,
+        successfulActions: 0,
+        totalActions: 0,
+        assists: 0,
+        keyPasses: 0,
+        progressivePasses: 0,
+        tackles: 0,
+        interceptions: 0,
+      };
+
+      bucket.matches.add(matchId);
+
+      if (isShot) {
+        bucket.shots += 1;
+      }
+      if (event.is_goal) {
+        bucket.goals += 1;
+      }
+      if (typeName === 'pass' && event.is_successful) {
+        bucket.completedPasses += 1;
+      }
+      if (event.is_assist) {
+        bucket.assists += 1;
+      }
+      if (event.is_key_pass) {
+        bucket.keyPasses += 1;
+      }
+      if (event.progressive_pass) {
+        bucket.progressivePasses += 1;
+      }
+      if (typeName === 'tackle') {
+        bucket.tackles += 1;
+      }
+      if (typeName === 'interception') {
+        bucket.interceptions += 1;
+      }
+
+      if (['pass', 'tackle', 'interception', 'take_on', 'clearance', 'blocked_pass'].includes(typeName)) {
+        bucket.totalActions += 1;
+        if (event.is_successful !== false) {
+          bucket.successfulActions += 1;
+        }
+      }
+
+      playerBuckets.set(playerId, bucket);
     }
 
-    const baseline = toNumber(summary.avgGoalsPerMatch);
+    const buildSeries = (selector: (event: AnalysisEvent) => boolean): number[] =>
+      orderedMatches.map((match) => (eventBuckets.get(match.id) || []).filter(selector).length);
+
+    const buildPattern = (
+      pattern: string,
+      series: number[],
+      highThreshold: number,
+      mediumThreshold: number,
+    ): PatternCard | null => {
+      const total = series.reduce((sum, value) => sum + value, 0);
+      if (total === 0) {
+        return null;
+      }
+
+      const perMatch = total / Math.max(series.length, 1);
+
+      return {
+        pattern,
+        frequency: perMatch >= 1 ? `${perMatch.toFixed(1)} per match` : `${total} total`,
+        impact: perMatch >= highThreshold ? 'High' : perMatch >= mediumThreshold ? 'Medium' : 'Medium',
+        trend: getSeriesTrend(series),
+      };
+    };
+
+    const patterns = [
+      buildPattern('Progressive build-up', buildSeries((event) => Boolean(event.progressive_pass)), 12, 4),
+      buildPattern('Chance creation', buildSeries((event) => Boolean(event.is_key_pass || event.is_assist)), 5, 2),
+      buildPattern('Final-third pressure', buildSeries((event) => Boolean(event.entered_final_third || event.entered_box || isShotEvent(event))), 14, 6),
+      buildPattern('Defensive regains', buildSeries((event) => {
+        const typeName = String(event.type_name || '').toLowerCase();
+        return Boolean(event.high_regain || typeName === 'tackle' || typeName === 'interception' || String(event.action_type || '').toLowerCase() === 'recovery');
+      }), 10, 4),
+    ].filter(Boolean) as PatternCard[];
+
+    const playerOutput = Array.from(playerBuckets.values())
+      .sort((left, right) => {
+        const leftScore = (left.goals * 12) + (left.assists * 9) + (left.keyPasses * 4) + (left.progressivePasses * 2) + (left.tackles * 2) + (left.interceptions * 2) + left.shots + (left.completedPasses * 0.03);
+        const rightScore = (right.goals * 12) + (right.assists * 9) + (right.keyPasses * 4) + (right.progressivePasses * 2) + (right.tackles * 2) + (right.interceptions * 2) + right.shots + (right.completedPasses * 0.03);
+        return rightScore - leftScore;
+      })
+      .slice(0, 6)
+      .map((player, index) => ({
+        id: player.id,
+        uiKey: `${player.id}-${index}`,
+        name: player.name,
+        rank: index + 1,
+        matches: player.matches.size,
+        goals: player.goals,
+        shots: player.shots,
+        completedPasses: player.completedPasses,
+        actionSuccessRate: player.totalActions > 0 ? Math.round((player.successfulActions / player.totalActions) * 100) : 0,
+      }));
+
+    const topPlayer = playerOutput[0];
+    const averageEventsPerMatch = selectedMatchRecords.length > 0 ? appliedEvents.length / selectedMatchRecords.length : 0;
+    const averageXgPerShot = totalShots > 0 ? totalXg / totalShots : 0;
     const homeWinRate = selectedMatchRecords.length > 0 ? Math.round((homeWins / selectedMatchRecords.length) * 100) : 0;
     const drawRate = selectedMatchRecords.length > 0 ? Math.round((draws / selectedMatchRecords.length) * 100) : 0;
 
-    return [
-      `${selectedMatchRecords.length} selected matches average ${averageGoals.toFixed(2)} goals per game.`,
-      `Home sides won ${homeWinRate}% of the sample, with draws in ${drawRate}% of fixtures.`,
-      baseline > 0
-        ? `This ${appliedAnalysisType} view is ${averageGoals >= baseline ? 'above' : 'below'} the league baseline of ${baseline.toFixed(2)} goals per match.`
-        : 'League baseline metrics are still loading from analytics-service.',
-      liveSelections > 0
-        ? `${liveSelections} selected fixtures are currently live or in progress.`
-        : 'No selected fixtures are currently live.',
-    ];
-  }, [appliedAnalysisType, averageGoals, draws, homeWins, liveSelections, selectedMatchRecords, summary.avgGoalsPerMatch]);
+    const keyInsights = selectedMatchRecords.length === 0
+      ? []
+      : [
+        `${selectedMatchRecords.length} selected matches generated ${appliedEvents.length} tracked events, averaging ${averageEventsPerMatch.toFixed(0)} actions per match.`,
+        `${totalShots} shot events produced ${totalXg.toFixed(2)} xG, with ${keyPasses} key passes and ${assists} direct assists in the sample.`,
+        `${progressivePasses} progressive passes, ${finalThirdEntries} final-third entries and ${boxEntries} box entries define this ${appliedAnalysisType} view.`,
+        topPlayer
+          ? `${topPlayer.name} leads the selected set with ${topPlayer.goals} goals, ${topPlayer.shots} shots and ${topPlayer.completedPasses} completed passes.`
+          : `Home sides won ${homeWinRate}% of the sample, with draws in ${drawRate}% of fixtures.`,
+      ];
 
-  const playerOutput = useMemo(
-    () => ((overviewData?.topPlayers || []) as any[]).slice(0, 6).map((player, index) => ({
-      id: String(player.playerID || ''),
-      uiKey: `${player.playerID || player.player_name || 'player'}-${index}`,
-      name: player.player_name || `Player #${player.playerID}`,
-      rank: player.rank || '—',
-      matches: Array.isArray(player.matchIDs) ? player.matchIDs.length : 0,
-      goals: toNumber(player.goals),
-      shots: toNumber(player.shots),
-      completedPasses: toNumber(player.passes_completed),
-      duelWinRate: player.duels ? Math.round((toNumber(player.duels_won) / Math.max(toNumber(player.duels), 1)) * 100) : 0,
-    })),
-    [overviewData],
-  );
+    return {
+      patterns,
+      playerOutput,
+      keyInsights,
+      totalEvents: appliedEvents.length,
+      totalShots,
+      totalXg,
+      averageXgPerShot,
+      keyPasses,
+      assists,
+      progressivePasses,
+      finalThirdEntries,
+      boxEntries,
+      highRegains,
+      recoveries,
+      tackles,
+      interceptions,
+      completedPasses,
+    };
+  }, [appliedAnalysisType, appliedEvents, draws, homeWins, playerLookup, selectedMatchRecords]);
+
+  const patterns = generatedAnalysis.patterns;
+  const keyInsights = generatedAnalysis.keyInsights;
+  const playerOutput = generatedAnalysis.playerOutput;
 
   const applyAnalysis = async () => {
     if (selectedMatches.length === 0) {
@@ -296,18 +651,51 @@ const MultiMatchAnalysis: React.FC = () => {
     }
 
     setIsAnalyzing(true);
+    setAnalysisError(null);
     try {
-      await Promise.all([refetchAnalysisMatches(), refetchOverview(), refetchTrends()]);
+      await refetchAnalysisMatches();
+
+      const eventResponses = await Promise.allSettled(
+        selectedMatches.map((matchId) => apiService.getMatchEvents(matchId)),
+      );
+
+      const collectedEvents: AnalysisEvent[] = [];
+      let failedRequests = 0;
+
+      eventResponses.forEach((result, index) => {
+        const fallbackMatchId = selectedMatches[index];
+
+        if (result.status !== 'fulfilled' || !result.value.success) {
+          failedRequests += 1;
+          return;
+        }
+
+        const events = Array.isArray(result.value.data) ? result.value.data : [];
+        collectedEvents.push(
+          ...events.map((event) => ({
+            ...(event as AnalysisEvent),
+            match_id: getEventMatchId(event as AnalysisEvent) || fallbackMatchId,
+          })),
+        );
+      });
+
       setAppliedAnalysis({
         matchIds: [...selectedMatches],
         analysisType,
+        events: collectedEvents,
       });
+
+      if (failedRequests > 0) {
+        setAnalysisError(`Loaded event data for ${selectedMatches.length - failedRequests} of ${selectedMatches.length} selected matches. Some matches did not return event feeds.`);
+      } else if (collectedEvents.length === 0) {
+        setAnalysisError('No event data was returned for the selected matches. Score-based summaries are still available, but event-derived sections will stay empty.');
+      }
     } finally {
       setIsAnalyzing(false);
     }
   };
 
-  const analysisLoading = analysisMatchesLoading || overviewLoading || trendsLoading || isAnalyzing;
+  const analysisLoading = analysisMatchesLoading || isAnalyzing;
 
   const toggleMatchSelection = useCallback((matchId: string) => {
     setSelectedMatches((previous) => (
@@ -326,7 +714,7 @@ const MultiMatchAnalysis: React.FC = () => {
           <BarChart3 className="h-8 w-8 mr-3 text-blue-500" />
           Multi-Match Analysis
         </h1>
-        <p className="text-slate-400 text-sm">{availableMatches.length} matches available</p>
+        <p className="text-slate-400 text-sm">Search across all competitions and seasons</p>
       </div>
 
       {/* ── Match Selection Bar (mirrors PlayerComparison layout) ─────────── */}
@@ -391,11 +779,18 @@ const MultiMatchAnalysis: React.FC = () => {
                   className="w-full rounded-lg border border-slate-600 bg-slate-700 py-2.5 pl-9 pr-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
+              <div className="mt-2 text-xs text-slate-400">
+                Type a team, league or year. Results are loaded from the backend, so the picker scales to large match catalogs.
+              </div>
             </div>
 
             {/* Match grid */}
             <div className="max-h-96 overflow-y-auto p-3">
-              {pickerMatches.length === 0 ? (
+              {matchPickerLoading ? (
+                <div className="py-8 text-center text-sm text-slate-400">Loading matches…</div>
+              ) : matchPickerError ? (
+                <div className="py-8 text-center text-sm text-red-300">{matchPickerError}</div>
+              ) : pickerMatches.length === 0 ? (
                 <div className="py-8 text-center text-sm text-slate-400">No matches found</div>
               ) : (
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
@@ -437,7 +832,7 @@ const MultiMatchAnalysis: React.FC = () => {
             </div>
 
             <div className="px-4 py-2 border-t border-slate-700 flex items-center justify-between">
-              <span className="text-xs text-slate-500">{pickerMatches.length} shown · {availableMatches.length} total</span>
+              <span className="text-xs text-slate-500">{pickerMatches.length} result{pickerMatches.length !== 1 ? 's' : ''} shown</span>
               <button onClick={closePicker} className="text-xs text-slate-400 hover:text-white transition-colors">Done</button>
             </div>
           </div>
@@ -475,6 +870,12 @@ const MultiMatchAnalysis: React.FC = () => {
               <><RefreshCw className="h-4 w-4" /><span>Apply Analysis</span></>
             )}
           </button>
+        </div>
+      )}
+
+      {analysisError && (
+        <div className="rounded-lg border border-yellow-600/30 bg-yellow-600/10 px-4 py-3 text-sm text-yellow-200">
+          {analysisError}
         </div>
       )}
 
@@ -521,7 +922,7 @@ const MultiMatchAnalysis: React.FC = () => {
               </div>
             ) : (
               <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
-                Trend-based pattern data is not available from analytics-service yet.
+                No event-driven patterns were generated for the selected matches.
               </div>
             )}
           </div>
@@ -577,7 +978,7 @@ const MultiMatchAnalysis: React.FC = () => {
                       <td className="py-3 px-2">{player.shots}</td>
                       <td className="py-3 px-2">{player.completedPasses}</td>
                       <td className="py-3 px-2">
-                        <span className="font-semibold text-green-400">{player.duelWinRate}%</span>
+                        <span className="font-semibold text-green-400">{player.actionSuccessRate}%</span>
                       </td>
                     </tr>
                   ))}
@@ -586,7 +987,7 @@ const MultiMatchAnalysis: React.FC = () => {
             </div>
           ) : (
             <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
-              Player output rankings are not available from the backend yet.
+              No player event output is available for the selected match set.
             </div>
           )}
         </div>
@@ -643,19 +1044,19 @@ const MultiMatchAnalysis: React.FC = () => {
           </div>
 
           <div className="bg-slate-800 rounded-xl p-6">
-            <h3 className="text-xl font-semibold mb-6">Predictive Insights</h3>
+            <h3 className="text-xl font-semibold mb-6">Generated Signals</h3>
             <div className="space-y-4">
               <div className="p-3 bg-green-600/10 border border-green-600/20 rounded">
-                <div className="text-sm font-medium text-green-400 mb-1">Prediction Volume</div>
-                <div className="text-xs text-slate-300">{predictionSummary.total || summary.transferPredictions || 0} active prediction records available in the backend snapshot.</div>
+                <div className="text-sm font-medium text-green-400 mb-1">Event Volume</div>
+                <div className="text-xs text-slate-300">{generatedAnalysis.totalEvents} tracked event rows and {generatedAnalysis.completedPasses} completed passes were generated from the selected matches.</div>
               </div>
               <div className="p-3 bg-yellow-600/10 border border-yellow-600/20 rounded">
-                <div className="text-sm font-medium text-yellow-400 mb-1">Accuracy Score</div>
-                <div className="text-xs text-slate-300">Current model accuracy reading: {predictionSummary.accuracy || summary.modelAccuracy || '—'}.</div>
+                <div className="text-sm font-medium text-yellow-400 mb-1">Chance Quality</div>
+                <div className="text-xs text-slate-300">{generatedAnalysis.totalShots} shots produced {generatedAnalysis.totalXg.toFixed(2)} xG, averaging {generatedAnalysis.averageXgPerShot.toFixed(2)} xG per shot.</div>
               </div>
               <div className="p-3 bg-blue-600/10 border border-blue-600/20 rounded">
-                <div className="text-sm font-medium text-blue-400 mb-1">Trend Alert</div>
-                <div className="text-xs text-slate-300">Competition baseline sits at {toNumber(summary.avgGoalsPerMatch).toFixed(2)} goals per match across {summary.totalMatches || 0} fixtures.</div>
+                <div className="text-sm font-medium text-blue-400 mb-1">Transition Signal</div>
+                <div className="text-xs text-slate-300">{generatedAnalysis.progressivePasses} progressive passes, {generatedAnalysis.finalThirdEntries} final-third entries and {generatedAnalysis.highRegains + generatedAnalysis.recoveries} regain events were found in the applied sample.</div>
               </div>
             </div>
           </div>
