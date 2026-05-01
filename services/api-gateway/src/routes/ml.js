@@ -778,6 +778,26 @@ router.post('/similarity/players', async (req, res) => {
 });
 
 
+// Engine predict — proxies to ml-service /api/v2/ml/engine/predict/:modelName
+router.post('/engine/predict/:modelName', async (req, res) => {
+  const { modelName } = req.params;
+  try {
+    const payload = ensureSuccess(
+      await requestJson(mlServiceUrl, `/api/v2/ml/engine/predict/${encodeURIComponent(modelName)}`, {
+        method: 'POST',
+        body: req.body,
+      }),
+      `Failed to run ${modelName} prediction`
+    );
+
+    res.json(unwrapPayload(payload) ?? payload);
+  } catch (error) {
+    console.warn(`ML engine predict fallback (${modelName}):`, error.message);
+    res.status(503).json({ error: `ml-service unavailable: ${error.message}`, algorithm: modelName });
+  }
+});
+
+
 // Phase 4: Time-series Form Analysis
 router.get('/form/:playerId', async (req, res) => {
   try {

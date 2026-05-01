@@ -182,6 +182,15 @@ class ApiService {
     return this.request<Match[]>(`/matches${queryString ? `?${queryString}` : ''}`);
   }
 
+  async searchMatches(query: string, limit: number = 30): Promise<ApiResponse<Match[]>> {
+    const params = new URLSearchParams();
+    if (query.trim()) {
+      params.set('q', query.trim());
+    }
+    params.set('limit', String(limit));
+    return this.request<Match[]>(`/matches/search?${params.toString()}`);
+  }
+
   async getMatch(id: string): Promise<ApiResponse<Match>> {
     return this.request<Match>(`/matches/${id}`);
   }
@@ -566,21 +575,21 @@ class ApiService {
   
   // ==== Phase 4: Machine Learning (Engine Integrations) ====
   async predictTacticalRole(stats: Record<string, any>): Promise<ApiResponse<any>> {
-    return this.request<any>('/api/v2/ml/engine/predict/tactical_role_classifier', {
+    return this.request<any>('/ml/engine/predict/tactical_role_classifier', {
       method: 'POST',
       body: stats,
     });
   }
 
   async predictPerformanceAnomaly(stats: Record<string, any>): Promise<ApiResponse<any>> {
-    return this.request<any>('/api/v2/ml/engine/predict/performance_anomaly_detector', {
+    return this.request<any>('/ml/engine/predict/performance_anomaly_detector', {
       method: 'POST',
       body: stats,
     });
   }
 
   async predictFatigueRisk(stats: Record<string, any>): Promise<ApiResponse<any>> {
-    return this.request<any>('/api/v2/ml/engine/predict/fatigue_risk_predictor', {
+    return this.request<any>('/ml/engine/predict/fatigue_risk_predictor', {
       method: 'POST',
       body: stats,
     });

@@ -1,0 +1,41 @@
+# ----------------------------------------------------------------
+# ScoutPro Data Seeder Image
+#
+# Builds on the same code as data-sync-service, adding the
+# enrichment scripts so everything runs in a single container.
+#
+# Build context must be the repository root (default when using
+# docker-compose.seed.yml from the project root).
+# ----------------------------------------------------------------
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# System tools needed by some dependencies and wait logic
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    curl \
+    netcat-openbsd \
+    && rm -rf /var/lib/apt/lists/*
+
+# --- Python dependencies ---
+# Shared library first (data-sync-service Dockerfile convention)
+COPY services/shared /app/shared
+
+COPY services/data-sync-service/requirements.txt ./requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt \
+    && pip install --no-cache-dir requests pymongo
+
+# --- Application code ---
+COPY services/data-sync-service/ /app/
+
+# --- Enrichment scripts ---
+COPY scripts/enrich_f40.py /scripts/enrich_f40.py
+COPY scripts/enrich_matches_and_events.py /scripts/enrich_matches_and_events.py
+
+# --- Entrypoint ---
+COPY seed_all.sh /seed_all.sh
+RUN chmod +x /seed_all.sh
+
+ENTRYPOINT ["/seed_all.sh"]

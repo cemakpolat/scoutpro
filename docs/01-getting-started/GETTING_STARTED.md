@@ -212,6 +212,54 @@ docker-compose -f docker-compose.yml -f docker-compose.data.yml up -d
 
 The mock server exposes the same feed endpoints as the real providers, reading from `data/opta/` and `data/statsbomb/`. See [DATA_PROVIDER_MOCK.md](../03-development/DATA_PROVIDER_MOCK.md) for API reference.
 
+### Option E — Initial Data Seeding (Recommended for New Setup)
+
+When deploying the system on a new machine, use the **data seeder** to automatically load all sample data:
+
+```bash
+./seed-data.sh
+```
+
+This one-command operation:
+1. ✅ Starts the required infrastructure (MongoDB, Kafka, TimescaleDB, Redis, Zookeeper, data-provider mock)
+2. ✅ Parses all local Opta feeds (F1, F9, F24, F40) and StatsBomb events from the `data/` folder
+3. ✅ Normalizes and ingests data through the full pipeline: Kafka → MongoDB/TimescaleDB
+4. ✅ Enriches player records with biometrics (height, weight, nationality)
+5. ✅ Links team names and player names to matches and events
+6. ✅ Auto-removes the seeder container when complete
+
+**Typical execution time:** 5–15 minutes (depending on machine specs).
+
+**After seeding completes**, start the full system:
+
+```bash
+docker compose up -d
+```
+
+Then open http://localhost:5173 in your browser.
+
+#### Seeding Options
+
+```bash
+# Skip Docker image rebuild (use cached image if available)
+./seed-data.sh --no-build
+
+# Manual steps (if you prefer to control each phase)
+docker compose up -d zookeeper kafka mongo timescaledb redis data-provider
+docker compose -f docker-compose.yml -f docker-compose.seed.yml run --rm data-seeder
+```
+
+#### Verify Data Was Loaded
+
+```bash
+# Connect to MongoDB and check counts
+docker exec -it scoutpro-mongo mongosh -u root -p scoutpro123 \
+  --eval 'use scoutpro; printjson({players: db.players.countDocuments(), teams: db.teams.countDocuments(), matches: db.matches.countDocuments(), events: db.match_events.countDocuments()})'
+
+# Expected output (Turkish Super Lig, 2019/2020 season, ~300 matches):
+# { players: ~500, teams: ~20, matches: ~300, events: ~50000 }
+```
+
 ---
 
 ## 7. Stopping the System
@@ -289,6 +337,7 @@ This is real match data — all player IDs, event coordinates, and timestamps ar
 
 | Script | Purpose | Usage |
 |--------|---------|-------|
+| `./seed-data.sh` | **[NEW]** Full data seeding in one command (recommended for new setup) | `./seed-data.sh [--no-build]` |
 | `./start-dev.sh` | Start MongoDB + API Gateway + Frontend (dev) | `./start-dev.sh [--seed] [--reset]` |
 | `./start-local.sh` | Start with `.env` configuration | `./start-local.sh` |
 | `./test-opta-integration.sh` | Smoke-test Opta data ingestion | `./test-opta-integration.sh` |

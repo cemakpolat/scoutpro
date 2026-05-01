@@ -41,6 +41,8 @@ services:
       - api-gateway
     networks:
       - scoutpro-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
 
   # ============ CORE MICROSERVICES ============

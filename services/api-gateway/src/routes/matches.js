@@ -16,6 +16,10 @@ const {
 
 const matchServiceUrl = (process.env.MATCH_SERVICE_URL || 'http://match-service:8000').replace(/\/$/, '');
 
+function escapeRegex(value = '') {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 /**
  * Map a match-service response object to the frontend Match interface.
  * The service returns snake_case (home_team_id, home_score, home_team_name …)
@@ -33,8 +37,8 @@ function toFrontendMatch(m) {
 
   return {
     id: String(m.id || m.uID || ''),
-    homeTeam: m.home_team_name || m.homeTeamName || `Team ${m.home_team_id || m.homeTeamID || ''}`,
-    awayTeam: m.away_team_name || m.awayTeamName || `Team ${m.away_team_id || m.awayTeamID || ''}`,
+    homeTeam: m.home_team_name || m.homeTeamName || m.home_team || `Team ${m.home_team_id || m.homeTeamID || ''}`,
+    awayTeam: m.away_team_name || m.awayTeamName || m.away_team || `Team ${m.away_team_id || m.awayTeamID || ''}`,
     homeTeamId: String(m.home_team_id || m.homeTeamID || ''),
     awayTeamId: String(m.away_team_id || m.awayTeamID || ''),
     homeScore: m.home_score ?? m.homeScore ?? 0,
@@ -63,6 +67,34 @@ function toFrontendMatch(m) {
 
 router.get('/', async (req, res) => {
   try {
+    const db = req.app.locals.db;
+
+    // When DB is available query it directly so we can sort finished matches first
+    // across the full dataset, not just the page the match-service returns.
+    if (db) {
+      const limit = Math.min(parseInt(req.query.limit, 10) || 400, 1000);
+      const query = {};
+      if (req.query.status) query.status = new RegExp(`^${escapeRegex(req.query.status)}$`, 'i');
+      if (req.query.team_id) query.$or = [{ homeTeamId: req.query.team_id }, { awayTeamId: req.query.team_id }];
+
+      // Pull all matches, sort finished first then by date desc
+      const docs = await db.collection('matches').find(query).limit(limit * 3).toArray();
+
+      const statusRank = (s) => {
+        const n = String(s || '').toLowerCase();
+        if (n === 'finished' || n === 'played') return 0;
+        if (n === 'live' || n === 'in_progress') return 1;
+        return 2;
+      };
+      docs.sort((a, b) =>
+        statusRank(a.status) - statusRank(b.status) ||
+        new Date(b.date || 0) - new Date(a.date || 0)
+      );
+
+      return res.json(docs.slice(0, limit).map(toFrontendMatch).filter(Boolean));
+    }
+
+    // Fallback: proxy to match-service
     const payload = ensureSuccess(
       await requestJson(matchServiceUrl, '/api/v2/matches', {
         query: {
@@ -70,15 +102,13 @@ router.get('/', async (req, res) => {
           competition_id: req.query.competition || req.query.competition_id,
           season_id: req.query.season || req.query.season_id,
           team_id: req.query.team_id,
-          limit: req.query.limit || 50,
+          limit: req.query.limit || 400,
         },
       }),
       'Failed to fetch matches'
     );
-
     const raw = unwrapPayload(payload);
-    const list = Array.isArray(raw) ? raw : (raw?.matches || []);
-    res.json(list.map(toFrontendMatch));
+    res.json((Array.isArray(raw) ? raw : (raw?.matches || [])).map(toFrontendMatch));
   } catch (error) {
     console.error('Matches list error:', error);
     sendGatewayError(res, error, 'Failed to fetch matches');
@@ -101,17 +131,103 @@ router.get('/live', async (req, res) => {
   }
 });
 
+router.get('/search', async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    if (!db) {
+      return res.status(503).json({ success: false, error: 'Database not available' });
+    }
+
+    const q = String(req.query.q || '').trim();
+    const status = String(req.query.status || '').trim();
+    const limit = Math.min(parseInt(req.query.limit, 10) || 30, 100);
+
+    const query = {};
+    if (q) {
+      const regex = new RegExp(escapeRegex(q), 'i');
+      query.$or = [
+        { home_team: regex },
+        { away_team: regex },
+        { home_team_name: regex },
+        { away_team_name: regex },
+        { competition: regex },
+        { competition_name: regex },
+        { date: regex },
+        { uID: regex },
+      ];
+    }
+
+    if (status) {
+      query.status = new RegExp(`^${escapeRegex(status)}$`, 'i');
+    }
+
+    const matches = await db
+      .collection('matches')
+      .find(query)
+      .sort({ status: 1, date: -1 })
+      .limit(limit)
+      .toArray();
+
+    // Put finished matches first so picker shows real scores before scheduled fixtures
+    const statusRank = (s) => {
+      const n = String(s || '').toLowerCase();
+      if (n === 'finished' || n === 'played') return 0;
+      if (n === 'live') return 1;
+      return 2;
+    };
+    matches.sort((a, b) => statusRank(a.status) - statusRank(b.status) || new Date(b.date || 0) - new Date(a.date || 0));
+
+    res.json(matches.map(toFrontendMatch).filter(Boolean));
+  } catch (error) {
+    console.error('Match search error:', error);
+    sendGatewayError(res, error, 'Failed to search matches');
+  }
+});
+
 router.get('/:id/events', async (req, res) => {
   try {
-    const payload = ensureSuccess(
-      await requestJson(matchServiceUrl, `/api/v2/matches/${req.params.id}/events`),
-      'Failed to fetch match events'
-    );
+    const db = req.app.locals.db;
+    if (!db) {
+      return res.json([]);
+    }
 
-    res.json(unwrapPayload(payload) || []);
+    const mIdNum = Number(req.params.id);
+    const mIdStr = req.params.id;
+
+    const events = await db.collection('match_events').find({
+      $or: [
+        { matchID: mIdNum }, { matchID: mIdStr },
+        { match_id: mIdNum }, { match_id: mIdStr },
+      ],
+    }).toArray();
+
+    const data = events.map(e => ({
+      id: String(e._id),
+      match_id: String(e.match_id || e.matchID || req.params.id),
+      player_id: e.player_id != null ? String(e.player_id) : null,
+      player_name: e.player_name || null,
+      team_id: e.team_id != null ? String(e.team_id) : null,
+      type_name: e.type_name || e.type || null,
+      minute: e.minute ?? null,
+      is_goal: !!e.is_goal,
+      is_key_pass: !!e.is_key_pass,
+      is_assist: !!e.is_assist,
+      is_successful: e.is_successful !== false,
+      progressive_pass: !!e.progressive_pass,
+      entered_final_third: !!e.entered_final_third,
+      entered_box: !!e.entered_box,
+      high_regain: !!e.high_regain,
+      analytical_xg: e.analytical_xg ?? null,
+      shot_distance: e.shot_distance ?? null,
+      location: e.location || null,
+      raw_event: e.raw_event || null,
+    }));
+
+    res.json(data);
   } catch (error) {
     console.error('Match events error:', error);
-    sendGatewayError(res, error, 'Failed to fetch match events');
+    // Return empty array instead of crashing — callers handle empty gracefully
+    res.json([]);
   }
 });
 
