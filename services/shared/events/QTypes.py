@@ -1,5 +1,3 @@
-from src.utils import Utils
-
 
 class QTypes:
     ID_1 = 1

@@ -1,6 +1,8 @@
 """
 Statistics Service - Main Application
 """
+import asyncio
+from contextlib import suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -10,6 +12,8 @@ sys.path.append('/app')
 from shared.utils.logger import setup_logger
 from config.settings import get_settings
 from api.statistics import router as statistics_router
+from api.events import router as events_router
+from api.events_enhanced import router as events_enhanced_router
 from dependencies import (
     get_database_manager,
     kafka_producer,
@@ -20,6 +24,16 @@ from services.stream_handler import StatisticsStreamProcessor
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
 stream_processor = None
+stream_processor_task = None
+
+
+def _handle_stream_processor_exit(task: asyncio.Task) -> None:
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        logger.info("Statistics Stream Processor task cancelled")
+    except Exception as exc:
+        logger.error(f"Statistics Stream Processor stopped unexpectedly: {exc}", exc_info=True)
 
 app = FastAPI(
     title="Statistics Service",
@@ -40,12 +54,14 @@ app.add_middleware(
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
 app.include_router(statistics_router)
+app.include_router(events_router)
+app.include_router(events_enhanced_router)
 
 
 @app.on_event("startup")
 async def startup_event():
     logger.info(f"Starting {settings.service_name}")
-    global stream_processor
+    global stream_processor, stream_processor_task
 
     try:
         manager = await get_database_manager()
@@ -65,8 +81,8 @@ async def startup_event():
         try:
             logger.info("Starting Statistics Stream Processor...")
             stream_processor = StatisticsStreamProcessor()
-            import asyncio
-            asyncio.create_task(stream_processor.start())
+            stream_processor_task = asyncio.create_task(stream_processor.start())
+            stream_processor_task.add_done_callback(_handle_stream_processor_exit)
             logger.info("Statistics Stream Processor started")
         except Exception as e:
             logger.error(f"Failed to start stream processor: {e}")
@@ -82,11 +98,17 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info(f"Shutting down {settings.service_name}")
-    global stream_processor
+    global stream_processor, stream_processor_task
 
     try:
         if stream_processor:
             await stream_processor.stop()
+
+        if stream_processor_task:
+            if not stream_processor_task.done():
+                stream_processor_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await stream_processor_task
 
         if db_manager:
             await db_manager.close_all()
@@ -95,6 +117,9 @@ async def shutdown_event():
 
     except Exception as e:
         logger.error(f"Shutdown error: {e}")
+    finally:
+        stream_processor = None
+        stream_processor_task = None
 
 
 @app.get("/health")

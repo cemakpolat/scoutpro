@@ -10,7 +10,6 @@ sys.path.append('/app')
 from shared.utils.logger import setup_logger
 from config.settings import get_settings
 from api.ml import router as ml_router
-from services.stream_handler import MLFeatureStreamProcessor
 
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
@@ -56,12 +55,43 @@ async def startup_event():
         # Start ML Stream Processor
         try:
             logger.info("Starting ML Feature Stream Processor...")
+            from services.stream_handler import MLFeatureStreamProcessor
+
             stream_processor = MLFeatureStreamProcessor()
             import asyncio
             asyncio.create_task(stream_processor.start())
             logger.info("ML Feature Stream Processor started")
         except Exception as e:
             logger.error(f"Failed to start stream processor: {e}")
+
+        # Bootstrap player_features from existing player_statistics
+        try:
+            from services.feature_extractor import bootstrap_player_features
+            feature_count = await bootstrap_player_features()
+            logger.info(f"Player feature store bootstrapped with {feature_count} documents")
+        except Exception as e:
+            logger.warning(f"Feature bootstrap skipped: {e}")
+
+        # Pre-load saved models if available
+        try:
+            from api.ml import player_predictor
+            player_predictor.load_model()
+            if player_predictor.is_fitted:
+                logger.info("PlayerPerformancePredictor pre-loaded from disk")
+        except Exception as e:
+            logger.warning(f"Model pre-load skipped: {e}")
+
+        # Pre-train engine algorithms from MongoDB
+        try:
+            from api.ml import get_engine
+            engine = get_engine()
+            logger.info("Pre-training AnalyticsEngine algorithms...")
+            result = engine.train_from_mongo("player_clustering", settings.mongodb_url, collection="player_features")
+            logger.info(f"Clustering trained: {result}")
+            result = engine.train_from_mongo("goals_regression", settings.mongodb_url, collection="player_statistics", target_field="goals")
+            logger.info(f"Goals regression trained: {result}")
+        except Exception as e:
+            logger.warning(f"Engine pre-training failed (non-fatal): {e}")
 
         logger.info(f"{settings.service_name} started successfully")
 

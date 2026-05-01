@@ -18,6 +18,22 @@ logger = logging.getLogger(__name__)
 class MatchService:
     """Match service with caching and event publishing"""
 
+    @staticmethod
+    def _is_stale_cached_match(match_data: Dict[str, Any]) -> bool:
+        status = str(match_data.get('status', '')).lower()
+        home_team_id = str(match_data.get('home_team_id') or '').strip()
+        away_team_id = str(match_data.get('away_team_id') or '').strip()
+        home_team_name = str(match_data.get('home_team_name') or '').strip()
+        away_team_name = str(match_data.get('away_team_name') or '').strip()
+
+        if status == 'live' and (home_team_id in ('', '0') or away_team_id in ('', '0')):
+            return True
+
+        if status == 'live' and (not home_team_name or not away_team_name):
+            return True
+
+        return False
+
     def __init__(
         self,
         repository: IMatchRepository,
@@ -38,7 +54,12 @@ class MatchService:
 
             if cached:
                 logger.debug(f"Cache hit for match {match_id}")
-                return Match(**json.loads(cached))
+                cached_match = json.loads(cached)
+                if not self._is_stale_cached_match(cached_match):
+                    return Match(**cached_match)
+
+                logger.info("Ignoring stale cached match snapshot for %s", match_id)
+                await self.redis.delete(cache_key)
 
             match = await self.repository.get_by_id(match_id)
 

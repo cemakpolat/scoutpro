@@ -29,7 +29,7 @@ async def get_database_manager() -> DatabaseManager:
 
 async def get_mongo_db() -> AsyncIOMotorDatabase:
     global mongo_db
-    if not mongo_db:
+    if mongo_db is None:
         settings = get_settings()
         manager = await get_database_manager()
         mongo_db = await manager.connect_mongodb(
@@ -41,7 +41,7 @@ async def get_mongo_db() -> AsyncIOMotorDatabase:
 
 async def get_redis() -> Redis:
     global redis_client
-    if not redis_client:
+    if redis_client is None:
         settings = get_settings()
         manager = await get_database_manager()
         redis_client = await manager.connect_redis(settings.redis_url)
@@ -50,7 +50,7 @@ async def get_redis() -> Redis:
 
 async def get_kafka_producer() -> Optional[AIOKafkaProducer]:
     global kafka_producer
-    if not kafka_producer:
+    if kafka_producer is None:
         try:
             settings = get_settings()
             kafka_producer = AIOKafkaProducer(

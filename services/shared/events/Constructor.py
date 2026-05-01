@@ -3,9 +3,13 @@
 """
 
 import copy
-from src.restapi import APIHelpers
-from src.events.Events import *
-from src.events.QTypes import *
+from .Events import *
+from .QTypes import *
+
+
+class APIHelpers:
+    """Stub - API access is now handled by live-ingestion-service"""
+    pass
 
 
 class Constructor:

@@ -1,105 +1,139 @@
 import React, { useState, useEffect } from 'react';
 import {
   DollarSign, TrendingUp, TrendingDown, AlertTriangle, Clock,
-  Users, Target, Zap, Calendar, MapPin, Star, Eye, Filter,
-  Search, Download, Bell, CheckCircle, XCircle, RefreshCw, Loader2
+  Calendar, Eye, Download, RefreshCw
 } from 'lucide-react';
 import { exportService } from '../services/exportService';
 import { useData } from '../context/DataContext';
 import apiService from '../services/api';
 
+const formatCurrency = (value: unknown): string => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return `€${Math.round(value / 1000000)}M`;
+  }
+
+  if (typeof value === 'string' && value.trim()) {
+    return value;
+  }
+
+  return 'N/A';
+};
+
+const formatPercent = (value: unknown): number => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value > 1 ? value : Math.round(value * 100);
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? (parsed > 1 ? parsed : Math.round(parsed * 100)) : 0;
+};
+
 const TransferHub: React.FC = () => {
   const [selectedTab, setSelectedTab] = useState('market-watch');
-  const [priceRange, setPriceRange] = useState([0, 200]);
   const [loading, setLoading] = useState(true);
-  const [apiMarketTrends, setApiMarketTrends] = useState<any>(null);
-  const [apiPredictions, setApiPredictions] = useState<any>(null);
+  const [apiMarketTrends, setApiMarketTrends] = useState<any[]>([]);
+  const [apiPredictions, setApiPredictions] = useState<any[]>([]);
+  const [marketError, setMarketError] = useState('');
 
   const { players: contextPlayers } = useData();
 
-  // Fetch market data from API
-  useEffect(() => {
+  const loadMarketData = () => {
     setLoading(true);
+    setMarketError('');
+
     Promise.all([
-      apiService.getMarketTrends().catch(() => null),
-      apiService.getTransferPredictions().catch(() => null),
+      apiService.getMarketTrends(),
+      apiService.getTransferPredictions(),
     ]).then(([trends, predictions]) => {
-      if (trends) setApiMarketTrends(trends);
-      if (predictions) setApiPredictions(predictions);
+      setApiMarketTrends(trends.data || []);
+      setApiPredictions(predictions.data || []);
+    }).catch((error) => {
+      console.error('Failed to load transfer hub data:', error);
+      setApiMarketTrends([]);
+      setApiPredictions([]);
+      setMarketError('Transfer market data is unavailable right now.');
     }).finally(() => setLoading(false));
+  };
+
+  useEffect(() => {
+    loadMarketData();
   }, []);
 
-  // Build transfer rumors from API predictions or fallback
-  const transferRumors = apiPredictions?.data?.length > 0
-    ? apiPredictions.data.slice(0, 5).map((p: any) => ({
+  const transferRumors = apiPredictions.slice(0, 5).map((p: any) => ({
         player: p.playerName || p.name || 'Unknown Player',
         currentClub: p.currentClub || p.fromClub || 'Unknown',
         targetClub: p.targetClub || p.toClub || 'TBD',
-        probability: p.probability || p.confidence || 50,
-        value: p.estimatedFee || p.value || '€0M',
-        status: (p.probability || 50) > 70 ? 'hot' : (p.probability || 50) > 40 ? 'warm' : 'cold',
+        probability: formatPercent(p.probability || p.confidence || 0),
+        value: formatCurrency(p.estimatedFee || p.value),
+        status: formatPercent(p.probability || p.confidence || 0) > 70 ? 'hot' : formatPercent(p.probability || p.confidence || 0) > 40 ? 'warm' : 'cold',
         deadline: p.deadline || '2026-06-30',
         sources: p.sources || ['ScoutPro AI'],
-      }))
-    : [
-        { player: 'Transfer Target 1', currentClub: 'Club A', targetClub: 'Club B', probability: 75, value: '€60M', status: 'hot', deadline: '2026-06-30', sources: ['ScoutPro Analysis'] },
-        { player: 'Transfer Target 2', currentClub: 'Club C', targetClub: 'Club D', probability: 45, value: '€35M', status: 'warm', deadline: '2026-08-31', sources: ['Market Analysis'] },
-      ];
+      }));
 
-  // Build market trends from API or fallback
-  const marketTrends = apiMarketTrends?.data?.length > 0
-    ? apiMarketTrends.data.slice(0, 5).map((t: any) => ({
+  const marketTrends = apiMarketTrends.slice(0, 5).map((t: any) => ({
         position: t.position || t.name || 'Unknown',
-        avgValue: t.avgValue || `€${t.averageValue || 0}M`,
-        change: t.change || `${t.changePercent > 0 ? '+' : ''}${t.changePercent || 0}%`,
-        trend: (t.changePercent || 0) > 0 ? 'up' : (t.changePercent || 0) < 0 ? 'down' : 'stable',
-      }))
-    : [
-        { position: 'Striker', avgValue: '€67M', change: '+15%', trend: 'up' },
-        { position: 'Winger', avgValue: '€45M', change: '+8%', trend: 'up' },
-        { position: 'Midfielder', avgValue: '€38M', change: '-3%', trend: 'down' },
-        { position: 'Defender', avgValue: '€32M', change: '+2%', trend: 'stable' },
-        { position: 'Goalkeeper', avgValue: '€28M', change: '-5%', trend: 'down' },
-      ];
+        avgValue: formatCurrency(t.currentValue || t.avgValue || t.averageValue),
+        change: `${(t.change || 0) > 0 ? '+' : ''}${Number(t.change || 0).toFixed(1)}%`,
+        trend: (t.change || 0) > 0 ? 'up' : (t.change || 0) < 0 ? 'down' : 'stable',
+      }));
 
-  // Build contract expirations from context players or fallback
   const contractExpirations = contextPlayers.length > 0
     ? contextPlayers
-        .filter((p: any) => p.contractEnd || p.contractExpiry)
+        .filter((p: any) => p.contractEnd || p.contractExpiry || p.contract)
         .slice(0, 6)
         .map((p: any) => ({
           player: p.name,
           club: p.club || p.team || 'Unknown',
-          expires: p.contractEnd || p.contractExpiry || '2026-06-30',
-          value: p.marketValue || `€${p.value || 10}M`,
+          expires: p.contractEnd || p.contractExpiry || p.contract || 'Unknown',
+          value: formatCurrency(p.marketValue || p.value),
           status: new Date(p.contractEnd || p.contractExpiry || '2026-12-31') < new Date('2026-06-30') ? 'critical' : 'expiring',
         }))
-    : [
-        { player: 'Player A', club: 'Club X', expires: '2026-06-30', value: '€25M', status: 'critical' },
-        { player: 'Player B', club: 'Club Y', expires: '2026-12-31', value: '€15M', status: 'expiring' },
-      ];
+    : [];
 
-  // Valuation predictions - built from API or fallback (fixes the crash bug)
-  const valuationPredictions = apiPredictions?.data?.length > 0
-    ? apiPredictions.data.slice(0, 4).map((p: any) => ({
+  const valuationPredictions = apiPredictions.slice(0, 4).map((p: any) => ({
         player: p.playerName || p.name || 'Player',
-        current: p.currentValue || p.value || '€50M',
-        predicted: p.predictedValue || p.estimatedFee || '€65M',
-        confidence: p.confidence || p.probability || 75,
+        current: formatCurrency(p.currentValue || p.value),
+        predicted: formatCurrency(p.predictedValue || p.estimatedFee),
+        confidence: formatPercent(p.confidence || p.probability || 0),
         timeframe: p.timeframe || '12 months',
         factors: p.factors || ['Performance', 'Age', 'Market Demand'],
-      }))
-    : [
-        { player: 'Top Prospect 1', current: '€80M', predicted: '€110M', confidence: 88, timeframe: '12 months', factors: ['Age', 'Performance', 'Demand'] },
-        { player: 'Top Prospect 2', current: '€60M', predicted: '€85M', confidence: 82, timeframe: '12 months', factors: ['Form', 'Contract', 'League'] },
-      ];
+      }));
 
   const transferAlerts = [
-    { type: 'rumor', message: `${transferRumors[0]?.player || 'Transfer'} rumor gaining momentum`, time: '5 min ago' },
-    { type: 'contract', message: `${contractExpirations[0]?.player || 'Player'} contract expiring soon`, time: '1 hour ago' },
-    { type: 'value', message: 'Market values updated from latest data', time: '2 hours ago' },
-    { type: 'deadline', message: 'Transfer window updates available', time: '1 day ago' },
-  ];
+    transferRumors[0]
+      ? {
+          type: 'rumor',
+          message: `${transferRumors[0].player} linked with ${transferRumors[0].targetClub}`,
+          time: 'Prediction feed',
+        }
+      : null,
+    contractExpirations[0]
+      ? {
+          type: 'contract',
+          message: `${contractExpirations[0].player} contract status: ${contractExpirations[0].expires}`,
+          time: 'Player registry',
+        }
+      : null,
+    marketTrends[0]
+      ? {
+          type: 'value',
+          message: `${marketTrends[0].position} market at ${marketTrends[0].avgValue} (${marketTrends[0].change})`,
+          time: 'Market trends',
+        }
+      : null,
+    valuationPredictions[0]
+      ? {
+          type: 'deadline',
+          message: `${valuationPredictions[0].player} projected at ${valuationPredictions[0].predicted}`,
+          time: 'Prediction model',
+        }
+      : null,
+  ].filter(Boolean) as Array<{ type: 'rumor' | 'contract' | 'value' | 'deadline'; message: string; time: string }>;
+
+  const totalMarketActivity = apiMarketTrends.reduce((sum, trend) => sum + (Number(trend.currentValue) || 0), 0);
+  const averageTransferFee = apiPredictions.length > 0
+    ? apiPredictions.reduce((sum, prediction) => sum + (Number(prediction.estimatedFee) || 0), 0) / apiPredictions.length
+    : 0;
 
   const handleExport = async () => {
     let exportData: any[] = [];
@@ -166,13 +200,11 @@ const TransferHub: React.FC = () => {
         </h1>
         <div className="flex items-center space-x-4">
           <button
-            onClick={() => {
-              alert('🔔 Set Custom Alert\n\nConfigure alerts for:\n- Transfer rumors\n- Contract expirations\n- Market value changes\n- Transfer deadline reminders\n\n(Alert configuration will be available once backend is connected)');
-            }}
+            onClick={loadMarketData}
             className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
           >
-            <Bell className="h-4 w-4" />
-            <span>Set Alert</span>
+            <RefreshCw className="h-4 w-4" />
+            <span>Refresh Market</span>
           </button>
           <button onClick={handleExport} className="flex items-center space-x-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
             <Download className="h-4 w-4" />
@@ -180,6 +212,12 @@ const TransferHub: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {marketError && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {marketError}
+        </div>
+      )}
 
       {/* Tab Navigation */}
       <div className="bg-slate-800 rounded-xl p-6">
@@ -214,59 +252,66 @@ const TransferHub: React.FC = () => {
         <div className="bg-slate-800 rounded-xl p-6">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-2xl font-bold text-white">€2.4B</div>
+              <div className="text-2xl font-bold text-white">{formatCurrency(totalMarketActivity)}</div>
               <div className="text-slate-400 text-sm">Market Activity</div>
             </div>
             <DollarSign className="h-8 w-8 text-green-400" />
           </div>
           <div className="flex items-center mt-2 text-green-400 text-sm">
             <TrendingUp className="h-4 w-4 mr-1" />
-            +12% this window
+            {marketTrends[0]?.change || 'No live delta'}
           </div>
         </div>
 
         <div className="bg-slate-800 rounded-xl p-6">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-2xl font-bold text-white">247</div>
+              <div className="text-2xl font-bold text-white">{transferRumors.length}</div>
               <div className="text-slate-400 text-sm">Active Rumors</div>
             </div>
             <AlertTriangle className="h-8 w-8 text-yellow-400" />
           </div>
           <div className="flex items-center mt-2 text-yellow-400 text-sm">
             <RefreshCw className="h-4 w-4 mr-1" />
-            23 new today
+            Backend feed
           </div>
         </div>
 
         <div className="bg-slate-800 rounded-xl p-6">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-2xl font-bold text-white">89</div>
+              <div className="text-2xl font-bold text-white">{contractExpirations.length}</div>
               <div className="text-slate-400 text-sm">Contracts Expiring</div>
             </div>
             <Clock className="h-8 w-8 text-red-400" />
           </div>
           <div className="flex items-center mt-2 text-red-400 text-sm">
             <AlertTriangle className="h-4 w-4 mr-1" />
-            12 this month
+            Player registry scan
           </div>
         </div>
 
         <div className="bg-slate-800 rounded-xl p-6">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-2xl font-bold text-white">€89M</div>
+              <div className="text-2xl font-bold text-white">{formatCurrency(averageTransferFee)}</div>
               <div className="text-slate-400 text-sm">Avg Transfer Fee</div>
             </div>
             <TrendingUp className="h-8 w-8 text-blue-400" />
           </div>
           <div className="flex items-center mt-2 text-blue-400 text-sm">
             <TrendingUp className="h-4 w-4 mr-1" />
-            +8% vs last window
+            Prediction average
           </div>
         </div>
       </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center rounded-xl bg-slate-800 px-6 py-20 text-slate-300">
+          Loading transfer market data...
+        </div>
+      ) : (
+        <>
 
       {/* Dynamic Content Based on Selected Tab */}
       {selectedTab === 'market-watch' && (
@@ -274,7 +319,7 @@ const TransferHub: React.FC = () => {
           <div className="bg-slate-800 rounded-xl p-6">
             <h3 className="text-xl font-semibold mb-6">Market Trends by Position</h3>
             <div className="space-y-4">
-              {marketTrends.map((trend, index) => (
+              {marketTrends.length > 0 ? marketTrends.map((trend, index) => (
                 <div key={index} className="p-4 bg-slate-700 rounded-lg">
                   <div className="flex items-center justify-between mb-2">
                     <span className="font-semibold">{trend.position}</span>
@@ -291,14 +336,18 @@ const TransferHub: React.FC = () => {
                     </div>
                   </div>
                 </div>
-              ))}
+              )) : (
+                <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
+                  No live market trend data available.
+                </div>
+              )}
             </div>
           </div>
 
           <div className="bg-slate-800 rounded-xl p-6">
             <h3 className="text-xl font-semibold mb-6">Recent Transfer Alerts</h3>
             <div className="space-y-4">
-              {transferAlerts.map((alert, index) => (
+              {transferAlerts.length > 0 ? transferAlerts.map((alert, index) => (
                 <div key={index} className="p-4 bg-slate-700 rounded-lg">
                   <div className="flex items-start space-x-3">
                     <div className={`p-2 rounded-full ${
@@ -317,7 +366,11 @@ const TransferHub: React.FC = () => {
                     </div>
                   </div>
                 </div>
-              ))}
+              )) : (
+                <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
+                  No backend transfer alerts available.
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -327,7 +380,7 @@ const TransferHub: React.FC = () => {
         <div className="bg-slate-800 rounded-xl p-6">
           <h3 className="text-xl font-semibold mb-6">Transfer Rumors</h3>
           <div className="space-y-4">
-            {transferRumors.map((rumor, index) => (
+            {transferRumors.length > 0 ? transferRumors.map((rumor, index) => (
               <div key={index} className="p-6 bg-slate-700 rounded-lg">
                 <div className="flex items-center justify-between mb-4">
                   <div>
@@ -365,17 +418,16 @@ const TransferHub: React.FC = () => {
                   <div className="text-sm text-slate-400">
                     Sources: {rumor.sources.join(', ')}
                   </div>
-                  <button
-                    onClick={() => {
-                      alert(`📍 Tracking Transfer Rumor\n\n${rumor.player}: ${rumor.currentClub} → ${rumor.targetClub}\nProbability: ${rumor.probability}%\nValue: ${rumor.value}\n\nYou will receive notifications about updates to this rumor.\n\n(Rumor tracking will be available once backend is connected)`);
-                    }}
-                    className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm transition-colors"
-                  >
-                    Track Rumor
-                  </button>
+                  <span className="rounded bg-slate-600 px-3 py-1 text-xs text-slate-200">
+                    Backend prediction
+                  </span>
                 </div>
               </div>
-            ))}
+            )) : (
+              <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
+                No live transfer predictions available.
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -384,7 +436,7 @@ const TransferHub: React.FC = () => {
         <div className="bg-slate-800 rounded-xl p-6">
           <h3 className="text-xl font-semibold mb-6">AI Valuation Predictions</h3>
           <div className="space-y-6">
-            {valuationPredictions.map((prediction, index) => (
+            {valuationPredictions.length > 0 ? valuationPredictions.map((prediction, index) => (
               <div key={index} className="p-6 bg-slate-700 rounded-lg">
                 <div className="flex items-center justify-between mb-4">
                   <h4 className="font-bold text-lg">{prediction.player}</h4>
@@ -427,7 +479,11 @@ const TransferHub: React.FC = () => {
                   ></div>
                 </div>
               </div>
-            ))}
+            )) : (
+              <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
+                No valuation predictions available.
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -444,11 +500,10 @@ const TransferHub: React.FC = () => {
                   <th className="text-left py-3 px-2">Expires</th>
                   <th className="text-left py-3 px-2">Market Value</th>
                   <th className="text-left py-3 px-2">Status</th>
-                  <th className="text-left py-3 px-2">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {contractExpirations.map((contract, index) => (
+                {contractExpirations.length > 0 ? contractExpirations.map((contract, index) => (
                   <tr key={index} className="border-b border-slate-700 hover:bg-slate-700">
                     <td className="py-3 px-2 font-semibold">{contract.player}</td>
                     <td className="py-3 px-2">{contract.club}</td>
@@ -462,32 +517,20 @@ const TransferHub: React.FC = () => {
                         {contract.status}
                       </span>
                     </td>
-                    <td className="py-3 px-2">
-                      <div className="flex space-x-2">
-                        <button
-                          onClick={() => {
-                            alert(`📍 Tracking ${contract.player}\n\nClub: ${contract.club}\nContract expires: ${contract.expires}\nValue: ${contract.value}\n\nYou will receive updates about this player's contract situation.\n\n(Contract tracking will be available once backend is connected)`);
-                          }}
-                          className="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs transition-colors"
-                        >
-                          Track
-                        </button>
-                        <button
-                          onClick={() => {
-                            alert(`🔔 Alert Set for ${contract.player}\n\nYou will be notified:\n- 90 days before expiration\n- 30 days before expiration\n- On expiration date\n\n(Contract alerts will be available once backend is connected)`);
-                          }}
-                          className="px-2 py-1 bg-green-600 hover:bg-green-700 rounded text-xs transition-colors"
-                        >
-                          Alert
-                        </button>
-                      </div>
+                  </tr>
+                )) : (
+                  <tr>
+                    <td colSpan={5} className="py-10 text-center text-slate-400">
+                      No contract expiry data available.
                     </td>
                   </tr>
-                ))}
+                )}
               </tbody>
             </table>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

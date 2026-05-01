@@ -45,6 +45,12 @@ async def startup_event():
     logger.info(f"Starting {settings.service_name}")
     global kafka_producer, stream_processor
 
+    stream_processor = LiveDataProcessor(
+        kafka_producer=None,
+        bootstrap_servers=settings.kafka_bootstrap_servers,
+    )
+    app.state.processor = stream_processor
+
     try:
         # Initialize connections
         logger.info("Initializing Kafka producer...")
@@ -53,13 +59,7 @@ async def startup_event():
         )
         await kafka_producer.start()
 
-        # Init global processor
-        stream_processor = LiveDataProcessor(
-            kafka_producer=kafka_producer
-        )
-        
-        # Make processor available to routers via app state
-        app.state.processor = stream_processor
+        stream_processor.kafka = kafka_producer
 
         logger.info(f"{settings.service_name} started successfully")
 
@@ -70,9 +70,11 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info(f"Shutting down {settings.service_name}")
-    global kafka_producer
-    
-    if kafka_producer:
+    global kafka_producer, stream_processor
+
+    if stream_processor:
+        await stream_processor.close()
+    elif kafka_producer:
         await kafka_producer.stop()
 
 

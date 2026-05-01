@@ -2,8 +2,8 @@
 #     "17":"Cards"
 # author: Doruk Sahinel, Cem Akpolat
 
-from src.events.Events import *
-from src.events.QTypes import *
+from .Events import *
+from .QTypes import *
 import pandas as pd
 
 

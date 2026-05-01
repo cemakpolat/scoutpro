@@ -2,8 +2,8 @@
 # author: Doruk Sahinel, Cem Akpolat
 
 from __future__ import division
-from src.events.Events import *
-from src.events.QTypes import QTypes
+from .Events import *
+from .QTypes import QTypes
 
 
 class AssistEvents:

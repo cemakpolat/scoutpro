@@ -127,8 +127,8 @@ class MongoTeamRepository(ITeamRepository):
     async def create(self, team: Team) -> str:
         """Create new team"""
         try:
-            result = await self.teams_collection.insert_one(team.dict())
-            return str(result.inserted_id)
+            await self.teams_collection.insert_one(team.dict(by_alias=True))
+            return str(team.id)
         except Exception as e:
             logger.error(f"Error creating team: {e}")
             raise

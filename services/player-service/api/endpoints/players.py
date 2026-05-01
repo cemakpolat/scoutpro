@@ -2,7 +2,7 @@
 Player Service API Endpoints
 Implements all endpoints defined in PlayerServiceClient
 """
-from fastapi import APIRouter, HTTPException, Query, Path
+from fastapi import APIRouter, HTTPException, Query, Path, Depends
 from typing import Optional, List
 import sys
 import asyncio
@@ -13,6 +13,9 @@ sys.path.append('/app')
 from feedapi.player_api import PlayerAPI
 from shared.clients import MatchServiceClient, TeamServiceClient
 from shared.messaging import get_kafka_producer, EventType, create_event
+from shared.models.base import Player
+from dependencies import get_player_service
+from services.player_service import PlayerService
 import logging
 
 logger = logging.getLogger(__name__)
@@ -61,7 +64,8 @@ async def publish_player_event(event_type: EventType, data: dict):
 
 @router.get("/{player_id}", summary="Get player by ID")
 async def get_player_by_id(
-    player_id: str = Path(..., description="Player ID")
+    player_id: str = Path(..., description="Player ID"),
+    service: PlayerService = Depends(get_player_service)
 ):
     """
     Get player details by ID
@@ -72,23 +76,12 @@ async def get_player_by_id(
     - Profile information
     """
     try:
-        loop = asyncio.get_event_loop()
-
-        def fetch_player():
-            player_api = get_player_api()
-            # TODO: Add get by ID method to PlayerAPI
-            # For now, return placeholder
-            return {
-                "player_id": player_id,
-                "status": "implemented_with_legacy_api"
-            }
-
-        result = await loop.run_in_executor(executor, fetch_player)
+        result = await service.get_player(player_id)
 
         if not result:
             raise HTTPException(status_code=404, detail="Player not found")
 
-        return result
+        return result.dict(by_alias=True)
 
     except Exception as e:
         logger.error(f"Error fetching player {player_id}: {e}")
@@ -99,8 +92,13 @@ async def get_player_by_id(
 async def search_players(
     q: Optional[str] = Query(None, description="Search query (player name)"),
     team: Optional[str] = Query(None, description="Filter by team name"),
+    club: Optional[str] = Query(None, description="Filter by club name"),
     position: Optional[str] = Query(None, description="Filter by position"),
-    limit: int = Query(100, ge=1, le=1000, description="Maximum results")
+    nationality: Optional[str] = Query(None, description="Filter by nationality"),
+    age_min: Optional[int] = Query(None, description="Minimum age"),
+    age_max: Optional[int] = Query(None, description="Maximum age"),
+    limit: int = Query(100, ge=1, le=1000, description="Maximum results"),
+    service: PlayerService = Depends(get_player_service)
 ):
     """
     Search for players with optional filters
@@ -111,18 +109,19 @@ async def search_players(
     - Position filtering
     """
     try:
-        loop = asyncio.get_event_loop()
+        filters = {
+            "club": club or team,
+            "position": position,
+            "nationality": nationality,
+            "age_min": age_min,
+            "age_max": age_max,
+            "search": q,
+        }
 
-        def search():
-            player_api = get_player_api()
-            # TODO: Implement search in PlayerAPI
-            players = []
-            return players[:limit]
-
-        players = await loop.run_in_executor(executor, search)
+        players = await service.list_players(filters, limit)
 
         return {
-            "players": players,
+            "players": [player.dict(by_alias=True) for player in players],
             "total": len(players),
             "limit": limit
         }
@@ -172,7 +171,8 @@ async def get_player_by_name(
 async def get_player_stats_by_id(
     player_id: str = Path(..., description="Player ID"),
     per_90: bool = Query(False, description="Normalize to per 90 minutes"),
-    stat_type: Optional[str] = Query(None, description="Type of statistics")
+    stat_type: Optional[str] = Query(None, description="Type of statistics"),
+    service: PlayerService = Depends(get_player_service)
 ):
     """
     Get player statistics by ID
@@ -182,23 +182,46 @@ async def get_player_stats_by_id(
     - stat_type: Filter by stat type (passing, shooting, etc.)
     """
     try:
-        loop = asyncio.get_event_loop()
+        result = await service.get_player_statistics(player_id, stat_type, per_90)
 
-        def fetch_stats():
-            player_api = get_player_api()
-            # TODO: Add get stats by ID to PlayerAPI
-            return {
-                "player_id": player_id,
-                "per_90": per_90,
-                "stat_type": stat_type,
-                "stats": {}
-            }
+        if not result:
+            raise HTTPException(status_code=404, detail=f"Statistics not found for player {player_id}")
 
-        result = await loop.run_in_executor(executor, fetch_stats)
-        return result
+        return result.dict()
 
     except Exception as e:
         logger.error(f"Error fetching stats for player {player_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("", summary="Create player", status_code=201)
+async def create_player(
+    player: Player,
+    service: PlayerService = Depends(get_player_service)
+):
+    try:
+        player_id = await service.create_player(player)
+        return {"player_id": player_id}
+    except Exception as e:
+        logger.error(f"Error creating player: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/{player_id}", summary="Update player")
+async def update_player(
+    player_id: str,
+    player: Player,
+    service: PlayerService = Depends(get_player_service)
+):
+    try:
+        updated = await service.update_player(player_id, player)
+        if not updated:
+            raise HTTPException(status_code=404, detail=f"Player {player_id} not found")
+        return {"success": True, "player_id": player_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating player {player_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

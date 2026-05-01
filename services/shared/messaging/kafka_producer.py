@@ -6,8 +6,18 @@ import json
 import logging
 from typing import Any, Dict, Optional
 import os
-from datetime import datetime
+from datetime import datetime, date
 import uuid
+
+
+class _DatetimeEncoder(json.JSONEncoder):
+    """JSON encoder that handles datetime, date and UUID objects."""
+    def default(self, obj):
+        if isinstance(obj, (datetime, date)):
+            return obj.isoformat()
+        if isinstance(obj, uuid.UUID):
+            return str(obj)
+        return super().default(obj)
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +53,10 @@ class KafkaProducerClient:
         try:
             self.producer = AIOKafkaProducer(
                 bootstrap_servers=self.bootstrap_servers,
-                value_serializer=lambda v: json.dumps(v).encode('utf-8'),
+                value_serializer=lambda v: json.dumps(v, cls=_DatetimeEncoder).encode('utf-8'),
                 key_serializer=lambda k: k.encode('utf-8') if k else None,
                 compression_type='gzip',
                 acks='all',  # Wait for all replicas
-                retries=3,
-                max_in_flight_requests_per_connection=5,
             )
             await self.producer.start()
             self._started = True

@@ -11,9 +11,11 @@ sys.path.append('/app')
 from shared.utils.database import DatabaseManager
 from repository.mongo_repository import MongoStatisticsRepository
 from services.statistics_service import StatisticsService
+from services.event_aggregator_enhanced import EnhancedEventAggregator
 from config.settings import get_settings
 
 db_manager: Optional[DatabaseManager] = None
+event_aggregator_enhanced: Optional[EnhancedEventAggregator] = None
 mongo_db: Optional[AsyncIOMotorDatabase] = None
 redis_client: Optional[Redis] = None
 kafka_producer: Optional[AIOKafkaProducer] = None
@@ -28,7 +30,7 @@ async def get_database_manager() -> DatabaseManager:
 
 async def get_mongo_db() -> AsyncIOMotorDatabase:
     global mongo_db
-    if not mongo_db:
+    if mongo_db is None:
         settings = get_settings()
         manager = await get_database_manager()
         mongo_db = await manager.connect_mongodb(
@@ -40,16 +42,26 @@ async def get_mongo_db() -> AsyncIOMotorDatabase:
 
 async def get_redis() -> Redis:
     global redis_client
-    if not redis_client:
+    if redis_client is None:
         settings = get_settings()
         manager = await get_database_manager()
         redis_client = await manager.connect_redis(settings.redis_url)
     return redis_client
 
 
+async def get_db_client():
+    """Alias for get_mongo_db for compatibility"""
+    return await get_mongo_db()
+
+
+async def get_redis_client() -> Redis:
+    """Alias for get_redis for compatibility"""
+    return await get_redis()
+
+
 async def get_kafka_producer() -> Optional[AIOKafkaProducer]:
     global kafka_producer
-    if not kafka_producer:
+    if kafka_producer is None:
         try:
             settings = get_settings()
             kafka_producer = AIOKafkaProducer(
@@ -82,3 +94,18 @@ async def get_statistics_service(
     )
 
     return service
+
+
+async def get_event_aggregator_enhanced(
+    mongo_db: AsyncIOMotorDatabase = Depends(get_mongo_db),
+    redis: Redis = Depends(get_redis)
+) -> EnhancedEventAggregator:
+    """Get Enhanced Event Aggregator instance with dependencies"""
+    global event_aggregator_enhanced
+    
+    if event_aggregator_enhanced is None:
+        # Get the client from the motor database
+        client = mongo_db.client
+        event_aggregator_enhanced = EnhancedEventAggregator(client, redis)
+    
+    return event_aggregator_enhanced

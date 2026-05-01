@@ -1,36 +1,32 @@
 """
 Search API Endpoints
 """
-from fastapi import APIRouter, HTTPException, Query
-from typing import Optional, Dict, Any
+from fastapi import APIRouter, HTTPException, Query, Request
+from typing import Optional, Dict, Any, List
 import sys
 sys.path.append('/app')
 from shared.models.base import APIResponse
-from search.elasticsearch_client import SearchClient
 from config.settings import get_settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v2/search", tags=["search"])
 
-# Initialize search client
 settings = get_settings()
-search_client = SearchClient(settings.elasticsearch_url)
 
 
 @router.get("/players", response_model=APIResponse)
 async def search_players(
+    request: Request,
     q: str = Query(..., min_length=2),
     position: Optional[str] = Query(None),
     club: Optional[str] = Query(None),
     size: int = Query(20, le=100)
 ):
     """Search for players"""
-    filters = {}
-    if position:
-        filters['position'] = position
-    if club:
-        filters['club'] = club
-
-    results = await search_client.search_players(q, filters, size)
+    search_client = request.app.state.search_client
+    results = await search_client.search_players(q, position=position, limit=size)
 
     return APIResponse(
         success=True,
@@ -41,11 +37,13 @@ async def search_players(
 
 @router.get("/teams", response_model=APIResponse)
 async def search_teams(
+    request: Request,
     q: str = Query(..., min_length=2),
     size: int = Query(20, le=100)
 ):
     """Search for teams"""
-    results = await search_client.search_teams(q, size=size)
+    search_client = request.app.state.search_client
+    results = await search_client.search_teams(q, limit=size)
 
     return APIResponse(
         success=True,
@@ -56,10 +54,12 @@ async def search_teams(
 
 @router.get("/all", response_model=APIResponse)
 async def search_all(
+    request: Request,
     q: str = Query(..., min_length=2),
     size: int = Query(10, le=50)
 ):
     """Search across all entities"""
+    search_client = request.app.state.search_client
     results = await search_client.search_all(q, size)
 
     total = sum(len(v) for v in results.values())
@@ -72,9 +72,10 @@ async def search_all(
 
 
 @router.post("/index/player/{player_id}", response_model=APIResponse)
-async def index_player(player_id: str, player_data: Dict[str, Any]):
+async def index_player(request: Request, player_id: str, player_data: Dict[str, Any]):
     """Index a player for search"""
     try:
+        search_client = request.app.state.search_client
         await search_client.index_player(player_id, player_data)
 
         return APIResponse(
@@ -86,9 +87,10 @@ async def index_player(player_id: str, player_data: Dict[str, Any]):
 
 
 @router.post("/index/team/{team_id}", response_model=APIResponse)
-async def index_team(team_id: str, team_data: Dict[str, Any]):
+async def index_team(request: Request, team_id: str, team_data: Dict[str, Any]):
     """Index a team for search"""
     try:
+        search_client = request.app.state.search_client
         await search_client.index_team(team_id, team_data)
 
         return APIResponse(
@@ -96,4 +98,103 @@ async def index_team(team_id: str, team_data: Dict[str, Any]):
             message=f"Team {team_id} indexed successfully"
         )
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/backend")
+async def get_backend(request: Request):
+    """Return which search backend is active."""
+    client = request.app.state.search_client
+    return {"backend": client.backend, "es_available": client._es_available}
+
+
+@router.get("/events", response_model=APIResponse)
+async def search_events(
+    request: Request,
+    player_id: Optional[str] = Query(None, description="Filter by player ID"),
+    event_type: Optional[str] = Query(None, description="Filter by event type (pass, shot, tackle, etc.)"),
+    match_id: Optional[str] = Query(None, description="Filter by match ID"),
+    team_id: Optional[str] = Query(None, description="Filter by team ID"),
+    size: int = Query(50, ge=1, le=500)
+):
+    """
+    Search for match events with filtering.
+    
+    Query parameters:
+    - player_id: Get events for a specific player
+    - event_type: Filter by shot, pass, tackle, corner, etc.
+    - match_id: Get events from a specific match
+    - team_id: Get events from a team (across all their matches)
+    """
+    try:
+        search_client = request.app.state.search_client
+        
+        # Build MongoDB query
+        query: Dict[str, Any] = {}
+        
+        if player_id:
+            query['player_id'] = player_id
+        
+        if event_type:
+            query['type_name'] = event_type
+        
+        if match_id:
+            # Handle both string and numeric match IDs
+            try:
+                query['matchID'] = {'$in': [match_id, int(match_id)]}
+            except (ValueError, TypeError):
+                query['matchID'] = match_id
+        
+        # If team_id provided, find their matches first
+        if team_id:
+            try:
+                # Get MongoDB client from search_client
+                mongo_client = search_client._mongo_client
+                db = mongo_client.get_default_database()
+                
+                # Find matches where this team played
+                matches_collection = db['matches']
+                matches = await matches_collection.find({
+                    '$or': [
+                        {'homeTeamID': team_id},
+                        {'awayTeamID': team_id}
+                    ]
+                }).projection({'matchID': 1}).to_list(None)
+                
+                match_ids = [m.get('matchID') for m in matches]
+                if match_ids:
+                    query['matchID'] = {'$in': match_ids}
+                else:
+                    return APIResponse(
+                        success=True,
+                        data=[],
+                        message=f"No matches found for team {team_id}"
+                    )
+            except Exception as e:
+                logger.warning(f"Team filtering failed, skipping: {e}")
+        
+        # Query events directly from MongoDB
+        try:
+            mongo_client = search_client._mongo_client
+            db = mongo_client.get_default_database()
+            events_collection = db['match_events']
+            
+            events = await events_collection.find(query).sort('timestamp', -1).to_list(size)
+            
+            # Remove MongoDB internal IDs
+            for event in events:
+                event.pop('_id', None)
+            
+            return APIResponse(
+                success=True,
+                data=events,
+                message=f"Found {len(events)} events"
+            )
+        except Exception as e:
+            logger.error(f"MongoDB event search failed: {e}")
+            raise HTTPException(status_code=500, detail="Failed to search events")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Event search error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

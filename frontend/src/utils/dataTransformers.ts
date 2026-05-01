@@ -1,21 +1,26 @@
 import { Player, Match, Team, PerformanceMetric } from '../types';
 
+interface TeamReference {
+  id?: string | number;
+  name?: string;
+}
+
 // Transform API responses to frontend models
 export function transformPlayerData(apiPlayer: any): Player {
   return {
-    id: apiPlayer.id || apiPlayer._id,
-    name: apiPlayer.name || `${apiPlayer.firstName} ${apiPlayer.lastName}`,
-    age: apiPlayer.age || calculateAge(apiPlayer.dateOfBirth),
+    id: apiPlayer.id || apiPlayer._id || apiPlayer.uID,
+    name: apiPlayer.name || `${apiPlayer.firstName || apiPlayer.first || ''} ${apiPlayer.lastName || apiPlayer.last || ''}`.trim(),
+    age: apiPlayer.age || calculateAge(apiPlayer.dateOfBirth || apiPlayer.birthDate),
     position: apiPlayer.position || apiPlayer.primaryPosition,
-    club: apiPlayer.club?.name || apiPlayer.clubName,
-    nationality: apiPlayer.nationality || apiPlayer.country,
+    club: (typeof apiPlayer.club === 'string' ? apiPlayer.club : apiPlayer.club?.name) || apiPlayer.clubName || apiPlayer.teamName || '',
+    nationality: apiPlayer.nationality || apiPlayer.country || '',
     rating: apiPlayer.rating || apiPlayer.overallRating,
     marketValue: formatCurrency(apiPlayer.marketValue),
     photo: apiPlayer.photo || apiPlayer.imageUrl || getDefaultPlayerImage(),
     contract: apiPlayer.contractExpiry || apiPlayer.contract?.expiryDate,
     height: formatHeight(apiPlayer.height),
     weight: formatWeight(apiPlayer.weight),
-    preferredFoot: apiPlayer.preferredFoot || 'Right',
+    preferredFoot: apiPlayer.preferredFoot || apiPlayer.preferred_foot || 'Unknown',
     goals: apiPlayer.stats?.goals || 0,
     assists: apiPlayer.stats?.assists || 0,
     appearances: apiPlayer.stats?.appearances || 0,
@@ -117,6 +122,133 @@ function calculateAge(dateOfBirth: string): number {
   }
   
   return age;
+}
+
+export function deriveAge(age?: number | null, birthDate?: string | null): number | null {
+  if (typeof age === 'number' && Number.isFinite(age) && age > 0) {
+    return age;
+  }
+
+  if (!birthDate) {
+    return null;
+  }
+
+  const parsed = new Date(birthDate);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  const today = new Date();
+  let derivedAge = today.getFullYear() - parsed.getFullYear();
+  const monthDiff = today.getMonth() - parsed.getMonth();
+
+  if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < parsed.getDate())) {
+    derivedAge -= 1;
+  }
+
+  return derivedAge >= 0 ? derivedAge : null;
+}
+
+function extractDateString(value: unknown): string | null {
+  if (!value) {
+    return null;
+  }
+
+  if (typeof value === 'object' && value !== null && '@value' in (value as Record<string, unknown>)) {
+    const rawValue = (value as Record<string, unknown>)['@value'];
+    return typeof rawValue === 'string' ? rawValue : null;
+  }
+
+  return typeof value === 'string' ? value : null;
+}
+
+function parseFlexibleDate(value: unknown): Date | null {
+  const dateString = extractDateString(value);
+  if (!dateString) {
+    return null;
+  }
+
+  const normalized = dateString.includes('T') ? dateString : dateString.replace(' ', 'T');
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+export function isPlaceholderTeamName(value?: string | null): boolean {
+  const normalized = String(value || '').trim();
+  return !normalized || /^team\s+\d+$/i.test(normalized) || /^(home|away)$/i.test(normalized);
+}
+
+export function resolveTeamName(
+  teamName: unknown,
+  teamId: unknown,
+  teams: TeamReference[] = [],
+  fallback = 'Unknown Team',
+): string {
+  const normalizedName = typeof teamName === 'string' ? teamName.trim() : '';
+  if (normalizedName && !isPlaceholderTeamName(normalizedName)) {
+    return normalizedName;
+  }
+
+  const normalizedId = teamId == null ? '' : String(teamId).trim();
+  const matchedTeam = teams.find((team) => String(team.id) === normalizedId);
+  if (matchedTeam?.name) {
+    return matchedTeam.name;
+  }
+
+  if (normalizedName && normalizedName !== 'Team 0') {
+    return normalizedName;
+  }
+
+  if (normalizedId && normalizedId !== '0') {
+    return `Team ${normalizedId}`;
+  }
+
+  return fallback;
+}
+
+export function normalizeMatchStatus(status: unknown, date: unknown, homeScore: unknown, awayScore: unknown): string {
+  const normalizedStatus = String(status || '').toLowerCase();
+  if (normalizedStatus === 'finished' || normalizedStatus === 'played') {
+    return 'finished';
+  }
+
+  if (!normalizedStatus || normalizedStatus === 'fixture' || normalizedStatus === 'scheduled') {
+    return 'scheduled';
+  }
+
+  if (normalizedStatus !== 'live') {
+    return normalizedStatus;
+  }
+
+  const parsedDate = parseFlexibleDate(date);
+  if (!parsedDate) {
+    return 'live';
+  }
+
+  const ageInHours = (Date.now() - parsedDate.getTime()) / (1000 * 60 * 60);
+  if (ageInHours <= 8) {
+    return 'live';
+  }
+
+  const hasConcreteScore = homeScore !== null && homeScore !== undefined && awayScore !== null && awayScore !== undefined;
+  return hasConcreteScore ? 'finished' : 'scheduled';
+}
+
+export function hasReliableLiveContext(match: Record<string, unknown>, teams: TeamReference[] = []): boolean {
+  const status = normalizeMatchStatus(match.status, match.date, match.homeScore, match.awayScore);
+  if (status !== 'live') {
+    return false;
+  }
+
+  const homeTeamId = String(match.homeTeamId || match.home_team_id || '').trim();
+  const awayTeamId = String(match.awayTeamId || match.away_team_id || '').trim();
+  if (!homeTeamId || !awayTeamId || homeTeamId === '0' || awayTeamId === '0') {
+    return false;
+  }
+
+  const homeTeam = resolveTeamName(match.homeTeam || match.home_team, homeTeamId, teams, '');
+  const awayTeam = resolveTeamName(match.awayTeam || match.away_team, awayTeamId, teams, '');
+  return Boolean(homeTeam && awayTeam);
 }
 
 function formatCurrency(value: number | string): string {

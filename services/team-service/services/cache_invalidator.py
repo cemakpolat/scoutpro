@@ -11,7 +11,7 @@ class TeamCacheInvalidator:
     def __init__(self):
         self.settings = get_settings()
         self.consumer = KafkaConsumerClient(
-            topics=['team.stats_updated'],
+            topics=['team.events'],
             group_id='team_service_cache_group'
         )
         self.running = False
@@ -40,18 +40,10 @@ class TeamCacheInvalidator:
 
     async def process_event(self, event_data: dict):
         """
-        Invalidate cache when a team's stats are updated
+        Invalidate cache when team data or statistics change.
         """
-        team_id = event_data.get('team_id')
-        match_id = event_data.get('match_id') # often provided if it's match-specific
-        
-        # sometimes the event could be match.completed
-        if not team_id and event_data.get('type') == 'match.completed':
-            # This is a generic match update, clear entire team cache patterns
-            team_id = event_data.get('home_team_id')
-            away_team_id = event_data.get('away_team_id')
-            await self._clear_team_caches([team_id, away_team_id])
-            return
+        payload = event_data.get('data', {})
+        team_id = payload.get('team_id') or payload.get('team', {}).get('uID')
 
         if not team_id:
             logger.warning("Event missing team_id, skipping invalidation.")
@@ -69,19 +61,24 @@ class TeamCacheInvalidator:
                 for tid in team_ids:
                     if not tid:
                         continue
-                    # Invalidate specific team cache
-                    keys_to_delete.append(f"{settings.service_name}:team:{tid}")
+                    keys_to_delete.append(f"team:{tid}")
+                    keys_to_delete.append(f"team:squad:{tid}")
                 
                 if keys_to_delete:
                     await redis_client.delete(*keys_to_delete)
                 
-                # Invalidate team list cache patterns
-                cursor = '0'
-                while cursor != 0:
-                    cursor, keys = await redis_client.scan(cursor=cursor, match=f"{settings.service_name}:teams:*", count=100)
-                    if keys:
-                        await redis_client.delete(*keys)
+                await self._delete_by_pattern(redis_client, "teams:list:*")
+                await self._delete_by_pattern(redis_client, "teams:search:*")
                 
                 logger.debug(f"Invalidated cache for teams {team_ids}")
         except Exception as e:
             logger.error(f"Failed to invalidate cache for teams {team_ids}: {e}")
+
+    async def _delete_by_pattern(self, redis_client, pattern: str):
+        cursor = 0
+        while True:
+            cursor, keys = await redis_client.scan(cursor=cursor, match=pattern, count=100)
+            if keys:
+                await redis_client.delete(*keys)
+            if cursor == 0:
+                break

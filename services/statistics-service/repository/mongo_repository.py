@@ -15,6 +15,28 @@ logger = logging.getLogger(__name__)
 class MongoStatisticsRepository(IStatisticsRepository):
     """MongoDB implementation of statistics repository"""
 
+    @staticmethod
+    def _build_player_id_query(player_id: str) -> Dict[str, Any]:
+        raw_value = str(player_id).strip()
+        numeric_values = []
+        string_values = [raw_value]
+
+        if raw_value.isdigit():
+            numeric_values.append(int(raw_value))
+        elif raw_value.lower().startswith('p') and raw_value[1:].isdigit():
+            numeric_values.append(int(raw_value[1:]))
+
+        or_clauses = []
+        for field in ('playerID', 'player_id'):
+            if numeric_values:
+                or_clauses.append({field: {'$in': numeric_values}})
+            or_clauses.append({field: {'$in': string_values}})
+
+        if numeric_values:
+            or_clauses.append({'_id': {'$in': numeric_values}})
+
+        return {'$or': or_clauses}
+
     def __init__(self, db: AsyncIOMotorDatabase):
         self.db = db
         self.player_stats_collection = db['player_statistics']
@@ -30,7 +52,7 @@ class MongoStatisticsRepository(IStatisticsRepository):
     ) -> Optional[PlayerStatistics]:
         """Get player statistics"""
         try:
-            query = {'playerID': int(player_id)}
+            query = self._build_player_id_query(player_id)
 
             if competition_id:
                 query['competitionID'] = competition_id
@@ -44,7 +66,8 @@ class MongoStatisticsRepository(IStatisticsRepository):
                 if '_id' in doc:
                     doc.pop('_id')
                 return PlayerStatistics(
-                    player_id=player_id,
+                    player_id=str(doc.get('player_id') or doc.get('playerID') or player_id),
+                    player_name=doc.get('player_name'),
                     stats=doc
                 )
 
@@ -87,26 +110,41 @@ class MongoStatisticsRepository(IStatisticsRepository):
         competition_id: Optional[int] = None,
         limit: int = 50
     ) -> List[Dict[str, Any]]:
-        """Get player rankings by statistic"""
+        """Get player rankings by statistic, enriched with player names via $lookup."""
         try:
             query = {}
-
-            if position:
-                # Need to join with players collection
-                pass
-
             if competition_id:
                 query['competitionID'] = competition_id
 
-            # Sort by stat_name descending
             cursor = self.player_stats_collection.find(query).sort(stat_name, -1).limit(limit)
             docs = await cursor.to_list(length=limit)
+
+            # Batch-resolve player names from the players collection.
+            # player_stats.playerID is from the F24 event namespace;
+            # but some stats may share IDs with F9/F40 players.uID (both numeric).
+            player_ids = [str(doc.get('playerID', '')) for doc in docs if doc.get('playerID')]
+            player_map = {}
+            if player_ids:
+                try:
+                    players_cursor = self.db['players'].find(
+                        {'uID': {'$in': player_ids}},
+                        {'uID': 1, 'name': 1, 'position': 1, 'club': 1, 'nationality': 1}
+                    )
+                    async for p in players_cursor:
+                        player_map[str(p.get('uID', ''))] = p
+                except Exception as e:
+                    logger.warning(f"Player name lookup failed: {e}")
 
             rankings = []
             for idx, doc in enumerate(docs, 1):
                 if '_id' in doc:
                     doc.pop('_id')
                 doc['rank'] = idx
+                pid = str(doc.get('playerID', ''))
+                player_info = player_map.get(pid, {})
+                doc['player_name'] = player_info.get('name') or None
+                doc['player_position'] = player_info.get('position') or None
+                doc['player_team'] = player_info.get('club') or None
                 rankings.append(doc)
 
             return rankings
@@ -120,21 +158,38 @@ class MongoStatisticsRepository(IStatisticsRepository):
         competition_id: Optional[int] = None,
         limit: int = 50
     ) -> List[Dict[str, Any]]:
-        """Get team rankings by statistic"""
+        """Get team rankings by statistic, enriched with team names via $lookup."""
         try:
             query = {}
-
             if competition_id:
                 query['competitionID'] = competition_id
 
             cursor = self.team_stats_collection.find(query).sort(stat_name, -1).limit(limit)
             docs = await cursor.to_list(length=limit)
 
+            # Batch-resolve team names from teams collection
+            team_ids = [str(doc.get('teamID', '')) for doc in docs if doc.get('teamID')]
+            team_map = {}
+            if team_ids:
+                try:
+                    teams_cursor = self.db['teams'].find(
+                        {'uID': {'$in': team_ids}},
+                        {'uID': 1, 'name': 1, 'country': 1}
+                    )
+                    async for t in teams_cursor:
+                        team_map[str(t.get('uID', ''))] = t
+                except Exception as e:
+                    logger.warning(f"Team name lookup failed: {e}")
+
             rankings = []
             for idx, doc in enumerate(docs, 1):
                 if '_id' in doc:
                     doc.pop('_id')
                 doc['rank'] = idx
+                tid = str(doc.get('teamID', ''))
+                team_info = team_map.get(tid, {})
+                doc['team_name'] = team_info.get('name') or None
+                doc['team_country'] = team_info.get('country') or None
                 rankings.append(doc)
 
             return rankings

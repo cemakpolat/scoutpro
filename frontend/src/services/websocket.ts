@@ -96,6 +96,18 @@ class WebSocketService {
     console.log('WebSocket message received:', message.type);
     
     switch (message.type) {
+      case 'connected':
+        this.emit('server_connected', message.data);
+        break;
+      case 'subscribed':
+        this.emit('subscribed', message.data);
+        break;
+      case 'unsubscribed':
+        this.emit('unsubscribed', message.data);
+        break;
+      case 'pong':
+        this.emit('pong', message.data);
+        break;
       case 'match_update':
         this.emit('match_update', message.data as LiveMatchUpdate);
         break;

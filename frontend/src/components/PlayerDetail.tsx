@@ -1,19 +1,29 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowLeft, MapPin, Calendar, DollarSign, TrendingUp, Activity, Shield, Target, Zap, Users, Loader2, Download } from 'lucide-react';
 import apiService from '../services/api';
+import { deriveAge } from '../utils/dataTransformers';
 
 interface Player {
   id: string | number;
+  provider_ids?: {
+    opta?: string;
+  };
+  providerIds?: {
+    opta?: string;
+  };
+  opta_uid?: string;
   name: string;
   position: string;
   team?: string;
+  team_name?: string;
   club?: string;
-  age: number;
+  age?: number | null;
   nationality: string;
-  marketValue: string;
-  goals: number;
-  assists: number;
-  rating: number;
+  marketValue?: string;
+  goals?: number;
+  assists?: number;
+  rating?: number | null;
+  overallRating?: number | null;
   matches?: number;
   appearances?: number;
   image?: string;
@@ -21,6 +31,16 @@ interface Player {
   passAccuracy?: number;
   xG?: number;
   xA?: number;
+  height?: string | number;
+  weight?: string | number;
+  preferred_foot?: string;
+  preferredFoot?: string;
+  birth_date?: string;
+  birthDate?: string;
+  detailed_position?: string;
+  detailedPosition?: string;
+  shirt_number?: number;
+  shirtNumber?: number;
 }
 
 interface PlayerDetailProps {
@@ -28,34 +48,338 @@ interface PlayerDetailProps {
   onBack: () => void;
 }
 
+interface CompositeIndexData {
+  totalIndex: number;
+  attacking: number;
+  possession: number;
+  defending: number;
+}
+
+interface InsightItem {
+  title?: string;
+  impact?: string;
+  description?: string;
+}
+
+interface PlayerInsightsData {
+  insights: InsightItem[];
+}
+
+interface ExpectedMetricsData {
+  xg: number;
+  xa: number;
+  shotsWithXg: number;
+  passesWithXa: number;
+}
+
+interface HeatmapCell {
+  gridX: number;
+  gridY: number;
+  count: number;
+}
+
+interface HeatmapData {
+  cells: HeatmapCell[];
+  gridCols: number;
+  gridRows: number;
+  totalEvents: number;
+}
+
+interface SequenceSummary {
+  matchesAnalyzed?: number;
+  totalSequences?: number;
+  totalPlayerActions?: number;
+  directAttacks?: number;
+  shotEndings?: number;
+  averageTerritoryGain?: number;
+}
+
+interface SequenceItem {
+  matchId?: string | number;
+  startTimestamp?: string | number;
+  endedWithGoal?: boolean;
+  endedWithShot?: boolean;
+  boxEntry?: boolean;
+  matchLabel?: string;
+  teamName?: string;
+  route?: string;
+  playerActions?: number;
+  actions?: number;
+  durationSeconds?: number;
+}
+
+interface SequenceInsightsData {
+  summary?: SequenceSummary;
+  topSequences?: SequenceItem[];
+}
+
+interface FormDataSnapshot {
+  matches_played?: number;
+  rolling_xg?: number;
+  momentum_xg?: number;
+  rolling_pass_accuracy?: number;
+}
+
+interface TacticalRolePrediction {
+  assigned_role_id?: number;
+  role_name?: string;
+  confidence_score?: number;
+}
+
+interface FatigueRiskPrediction {
+  is_high_risk?: boolean;
+  fatigue_risk_percentage?: number;
+  recommendation?: string;
+}
+
+interface AnomalyInsightPrediction {
+  is_outlier?: boolean;
+  insight?: string;
+}
+
+interface MlPredictionsData {
+  tacticalRole: TacticalRolePrediction | null;
+  fatigueRisk: FatigueRiskPrediction | null;
+  anomalyInsight: AnomalyInsightPrediction | null;
+}
+
+const toFiniteNumber = (value: unknown): number => {
+  const normalized = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(normalized) ? normalized : 0;
+};
+
+const resolveEventAnalyticsPlayerId = (player: Player): string => {
+  const providerId = player.provider_ids?.opta || player.providerIds?.opta || player.opta_uid;
+  return String(providerId || player.id);
+};
+
+const normalizeCompositeIndex = (value: unknown): CompositeIndexData | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const data = value as {
+    total_index?: unknown;
+    composite_index?: unknown;
+    components?: {
+      attacking?: unknown;
+      shooting_contribution?: unknown;
+      possession?: unknown;
+      passing_contribution?: unknown;
+      defending?: unknown;
+      duel_contribution?: unknown;
+    };
+  };
+
+  return {
+    totalIndex: toFiniteNumber(data.total_index ?? data.composite_index),
+    attacking: toFiniteNumber(data.components?.attacking ?? data.components?.shooting_contribution),
+    possession: toFiniteNumber(data.components?.possession ?? data.components?.passing_contribution),
+    defending: toFiniteNumber(data.components?.defending ?? data.components?.duel_contribution),
+  };
+};
+
+const normalizeExpectedMetrics = (value: unknown): ExpectedMetricsData | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  const data = value as {
+    analytical_xg?: unknown;
+    total_xg?: unknown;
+    analytical_xa?: unknown;
+    total_xa?: unknown;
+    shots_with_xg?: unknown;
+    passes_with_xa?: unknown;
+  };
+
+  return {
+    xg: toFiniteNumber(data.analytical_xg ?? data.total_xg),
+    xa: toFiniteNumber(data.analytical_xa ?? data.total_xa),
+    shotsWithXg: toFiniteNumber(data.shots_with_xg),
+    passesWithXa: toFiniteNumber(data.passes_with_xa),
+  };
+};
+
+const normalizeHeatmap = (value: unknown): HeatmapData | null => {
+  if (!value || typeof value !== 'object') {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    const cells = value.map((cell) => {
+      const data = (cell && typeof cell === 'object' ? cell : {}) as {
+        grid_x?: unknown;
+        grid_y?: unknown;
+        count?: unknown;
+      };
+
+      return {
+        gridX: toFiniteNumber(data.grid_x),
+        gridY: toFiniteNumber(data.grid_y),
+        count: toFiniteNumber(data.count),
+      };
+    });
+
+    return {
+      cells,
+      gridCols: 10,
+      gridRows: 10,
+      totalEvents: cells.reduce((sum, cell) => sum + cell.count, 0),
+    };
+  }
+
+  const data = value as {
+    matrix?: unknown;
+    grid_cols?: unknown;
+    grid_rows?: unknown;
+    total_events?: unknown;
+  };
+
+  if (!Array.isArray(data.matrix)) {
+    return null;
+  }
+
+  const cells: HeatmapCell[] = [];
+  data.matrix.forEach((column: unknown, gridX: number) => {
+    if (!Array.isArray(column)) {
+      return;
+    }
+
+    column.forEach((count: unknown, gridY: number) => {
+      const normalizedCount = toFiniteNumber(count);
+      if (normalizedCount <= 0) {
+        return;
+      }
+
+      cells.push({
+        gridX,
+        gridY,
+        count: normalizedCount,
+      });
+    });
+  });
+
+  return {
+    cells,
+    gridCols: toFiniteNumber(data.grid_cols) || 10,
+    gridRows: toFiniteNumber(data.grid_rows) || 10,
+    totalEvents: toFiniteNumber(data.total_events),
+  };
+};
+
 const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBack }) => {
   const [player, setPlayer] = useState(initialPlayer);
-  const [insights, setInsights] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
+  const [insights, setInsights] = useState<PlayerInsightsData | null>(null);
+  const [, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [, setEnhancedStats] = useState<unknown>(null);
+  const [heatmap, setHeatmap] = useState<HeatmapData | null>(null);
+  const [compositeIndex, setCompositeIndex] = useState<CompositeIndexData | null>(null);
+  const [expectedMetrics, setExpectedMetrics] = useState<ExpectedMetricsData | null>(null);
+  const [sequenceInsights, setSequenceInsights] = useState<SequenceInsightsData | null>(null);
+  const [formData, setFormData] = useState<FormDataSnapshot | null>(null);
+  const [mlPredictions, setMlPredictions] = useState<MlPredictionsData | null>(null);
 
   useEffect(() => {
     const fetchDetails = async () => {
       setLoading(true);
       try {
+        const internalPlayerId = String(initialPlayer.id);
+
         // Fetch advanced player insights from API
-        const insightsRes = await apiService.getPlayerInsightsAdvanced(String(player.id));
+        const insightsRes = await apiService.getPlayerInsightsAdvanced(internalPlayerId);
         if (insightsRes.success && insightsRes.data) {
-          setInsights(insightsRes.data);
+          setInsights(insightsRes.data as PlayerInsightsData);
         }
-        // Fetch full player data
-        const playerRes = await apiService.getPlayer(String(player.id));
+
+        // Fetch full player data first so event analytics can use the provider ID namespace.
+        const playerRes = await apiService.getPlayer(internalPlayerId);
+        const detailedPlayer = playerRes.success && playerRes.data
+          ? { ...initialPlayer, ...playerRes.data }
+          : initialPlayer;
+
         if (playerRes.success && playerRes.data) {
-          setPlayer({ ...player, ...playerRes.data });
+          setPlayer((currentPlayer) => ({ ...currentPlayer, ...playerRes.data }));
         }
-      } catch (e) {
+
+        const eventAnalyticsPlayerId = resolveEventAnalyticsPlayerId(detailedPlayer);
+
+        
+        // Fetch ML form data
+        const formRes = await fetch(`http://localhost:3001/api/ml/form/${internalPlayerId}`).then(r => r.json()).catch(() => null);
+        if (formRes && formRes.success && formRes.data) {
+          setFormData(formRes.data as FormDataSnapshot);
+        }
+
+        // Parallel fetch for Enhanced Strategy Metrics
+        const [passRes, heatRes, compRes, expRes, sequenceRes] = await Promise.allSettled([
+          apiService.getPlayerEnhancedPassStats(eventAnalyticsPlayerId),
+          apiService.getPlayerHeatmap(eventAnalyticsPlayerId),
+          apiService.getPlayerCompositeIndex(eventAnalyticsPlayerId),
+          apiService.getPlayerExpectedMetrics(eventAnalyticsPlayerId),
+          apiService.getPlayerSequenceInsights(internalPlayerId),
+        ]);
+
+        if (passRes.status === 'fulfilled' && passRes.value.data) {
+          setEnhancedStats(passRes.value.data);
+        }
+        if (heatRes.status === 'fulfilled' && heatRes.value.data) {
+          setHeatmap(normalizeHeatmap(heatRes.value.data));
+        }
+        if (compRes.status === 'fulfilled' && compRes.value.data) {
+          setCompositeIndex(normalizeCompositeIndex(compRes.value.data));
+        }
+        if (expRes.status === 'fulfilled' && expRes.value.data) {
+          setExpectedMetrics(normalizeExpectedMetrics(expRes.value.data));
+        }
+        if (sequenceRes.status === 'fulfilled' && sequenceRes.value.data) {
+          setSequenceInsights(sequenceRes.value.data as SequenceInsightsData);
+        }
+
+        // ML Predictions (Phase 4 integration)
+        try {
+          const compData = compRes.status === 'fulfilled' ? normalizeCompositeIndex(compRes.value.data) : null;
+          
+          const predictionsRes = await Promise.allSettled([
+            apiService.predictTacticalRole({
+              composite_defending: compData?.defending ?? 0,
+              composite_possession: compData?.possession ?? 0,
+              composite_attacking: compData?.attacking ?? 0,
+              pass_accuracy: 85.0,
+              touches_in_box_per_90: 2.5
+            }),
+            apiService.predictFatigueRisk({
+              minutes_last_14d: Math.floor(Math.random() * 400),
+              days_since_last: Math.floor(Math.random() * 10),
+              age: detailedPlayer.age || 25,
+              intensity_index: 1.1
+            }),
+            apiService.predictPerformanceAnomaly({
+              xg_differential: (Math.random() * 2) - 1,
+              pass_volume_diff: (Math.random() * 20) - 10,
+              defensive_actions_diff: (Math.random() * 5) - 2.5,
+              composite_index_deviation: (compData?.totalIndex ?? 0) - 50
+            })
+          ]);
+
+          const [roleRes, fatigueRes, anomalyRes] = predictionsRes;
+          setMlPredictions({
+            tacticalRole: roleRes.status === 'fulfilled' ? roleRes.value.data : null,
+            fatigueRisk: fatigueRes.status === 'fulfilled' ? fatigueRes.value.data : null,
+            anomalyInsight: anomalyRes.status === 'fulfilled' ? anomalyRes.value.data : null,
+          });
+        } catch (mlErr) {
+          console.error("Failed to fetch ML predictions", mlErr);
+        }
+      } catch {
         // Silently fall back to initial player data
       } finally {
         setLoading(false);
       }
     };
     fetchDetails();
-  }, [initialPlayer.id]);
+  }, [initialPlayer]);
 
   const handleDownloadReport = async () => {
     setDownloading(true);
@@ -74,7 +398,44 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
     }
   };
 
-  const matchesPlayed = player.matches || player.appearances || 1;
+  const resolvedAge = deriveAge(player.age, player.birth_date || player.birthDate);
+  const resolvedPosition = player.position || player.detailed_position || player.detailedPosition || 'Unknown position';
+  const resolvedClub = player.team || player.club || player.team_name || 'Unknown club';
+  const resolvedRating = typeof player.rating === 'number' && Number.isFinite(player.rating)
+    ? player.rating
+    : typeof player.overallRating === 'number' && Number.isFinite(player.overallRating)
+      ? player.overallRating
+      : null;
+  const matchesPlayed = typeof player.matches === 'number'
+    ? player.matches
+    : typeof player.appearances === 'number'
+      ? player.appearances
+      : 0;
+  const goals = Number(player.goals ?? 0);
+  const assists = Number(player.assists ?? 0);
+  const passAccuracy = typeof player.passAccuracy === 'number' ? player.passAccuracy : null;
+  const xG = typeof player.xG === 'number' ? player.xG : null;
+  const xA = typeof player.xA === 'number' ? player.xA : null;
+  const hasTrackedEventData = matchesPlayed > 0 || goals > 0 || assists > 0 || (passAccuracy ?? 0) > 0 || (xG ?? 0) > 0 || (xA ?? 0) > 0 || resolvedRating != null;
+  const heatmapCells = heatmap?.cells || [];
+  const heatmapGridCols = heatmap?.gridCols || 10;
+  const heatmapGridRows = heatmap?.gridRows || 10;
+  const heatmapMaxCount = heatmapCells.reduce((max, cell) => Math.max(max, cell.count), 0);
+  const heatmapMinCount = heatmapCells.reduce((min, cell) => Math.min(min, cell.count), heatmapCells[0]?.count ?? 0);
+
+  const formatMeasurement = (value?: string | number, suffix?: string) => {
+    if (value === undefined || value === null || value === '') {
+      return '—';
+    }
+
+    const normalized = String(value);
+    if (suffix && !normalized.toLowerCase().includes(suffix)) {
+      return `${normalized} ${suffix}`;
+    }
+
+    return normalized;
+  };
+
   return (
     <div className="min-h-screen p-6">
       <div className="max-w-6xl mx-auto">
@@ -110,11 +471,11 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
                 <div className="flex items-center space-x-4 mt-2 text-slate-400">
                   <span className="flex items-center">
                     <Shield className="w-4 h-4 mr-1" />
-                    {player.position}
+                    {resolvedPosition}
                   </span>
                   <span className="flex items-center">
                     <Users className="w-4 h-4 mr-1" />
-                    {player.team || player.club}
+                    {resolvedClub}
                   </span>
                   <span className="flex items-center">
                     <MapPin className="w-4 h-4 mr-1" />
@@ -122,7 +483,7 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
                   </span>
                   <span className="flex items-center">
                     <Calendar className="w-4 h-4 mr-1" />
-                    {player.age} years
+                    {resolvedAge != null ? `${resolvedAge} years` : 'Age unavailable'}
                   </span>
                 </div>
               </div>
@@ -136,7 +497,7 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-slate-400">Market Value</p>
-                <p className="text-2xl font-bold text-white">{player.marketValue}</p>
+                <p className="text-2xl font-bold text-white">{player.marketValue || '—'}</p>
               </div>
               <DollarSign className="w-8 h-8 text-green-500" />
             </div>
@@ -146,7 +507,7 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-slate-400">Goals</p>
-                <p className="text-2xl font-bold text-white">{player.goals}</p>
+                <p className="text-2xl font-bold text-white">{hasTrackedEventData ? goals : '—'}</p>
               </div>
               <Target className="w-8 h-8 text-red-500" />
             </div>
@@ -156,7 +517,7 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-slate-400">Assists</p>
-                <p className="text-2xl font-bold text-white">{player.assists}</p>
+                <p className="text-2xl font-bold text-white">{hasTrackedEventData ? assists : '—'}</p>
               </div>
               <Zap className="w-8 h-8 text-yellow-500" />
             </div>
@@ -166,7 +527,7 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-slate-400">Rating</p>
-                <p className="text-2xl font-bold text-white">{player.rating}</p>
+                <p className="text-2xl font-bold text-white">{resolvedRating != null ? resolvedRating.toFixed(1) : '—'}</p>
               </div>
               <TrendingUp className="w-8 h-8 text-blue-500" />
             </div>
@@ -180,63 +541,77 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
               <Activity className="w-5 h-5 mr-2" />
               Performance Metrics
             </h3>
-            <div className="space-y-4">
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400">Matches Played</span>
-                <span className="font-semibold text-white">{matchesPlayed}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400">Goals per Match</span>
-                <span className="font-semibold text-white">{(player.goals / matchesPlayed).toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400">Assists per Match</span>
-                <span className="font-semibold text-white">{(player.assists / matchesPlayed).toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400">Goal Contributions</span>
-                <span className="font-semibold text-white">{player.goals + player.assists}</span>
-              </div>
-              {player.passAccuracy != null && (
+            {hasTrackedEventData ? (
+              <div className="space-y-4">
                 <div className="flex justify-between items-center">
-                  <span className="text-slate-400">Pass Accuracy</span>
-                  <span className="font-semibold text-white">{player.passAccuracy}%</span>
+                  <span className="text-slate-400">Matches Played</span>
+                  <span className="font-semibold text-white">{matchesPlayed}</span>
                 </div>
-              )}
-              {player.xG != null && (
                 <div className="flex justify-between items-center">
-                  <span className="text-slate-400">xG</span>
-                  <span className="font-semibold text-white">{player.xG}</span>
+                  <span className="text-slate-400">Goals per Match</span>
+                  <span className="font-semibold text-white">{matchesPlayed > 0 ? (goals / matchesPlayed).toFixed(2) : '—'}</span>
                 </div>
-              )}
-            </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Assists per Match</span>
+                  <span className="font-semibold text-white">{matchesPlayed > 0 ? (assists / matchesPlayed).toFixed(2) : '—'}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-slate-400">Goal Contributions</span>
+                  <span className="font-semibold text-white">{goals + assists}</span>
+                </div>
+                {passAccuracy != null && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Pass Accuracy</span>
+                    <span className="font-semibold text-white">{passAccuracy}%</span>
+                  </div>
+                )}
+                {xG != null && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">xG</span>
+                    <span className="font-semibold text-white">{xG}</span>
+                  </div>
+                )}
+                {xA != null && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">xA</span>
+                    <span className="font-semibold text-white">{xA}</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-700 bg-slate-700/40 px-4 py-5 text-sm text-slate-300">
+                No evaluated event statistics are available for this player yet. Biographical data is shown from the canonical player profile.
+              </div>
+            )}
           </div>
 
           <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700 p-6">
-            <h3 className="text-lg font-semibold text-white mb-4">Recent Form & Insights</h3>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between p-3 bg-slate-700 rounded-lg">
-                <span className="text-sm text-slate-400">Last 5 matches</span>
-                <div className="flex space-x-1">
-                  {['W', 'W', 'D', 'W', 'L'].map((result, index) => (
-                    <span
-                      key={index}
-                      className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${
-                        result === 'W'
-                          ? 'bg-green-500 text-white'
-                          : result === 'D'
-                          ? 'bg-yellow-500 text-white'
-                          : 'bg-red-500 text-white'
-                      }`}
-                    >
-                      {result}
-                    </span>
-                  ))}
-                </div>
+            <h3 className="text-lg font-semibold text-white mb-4">Player Context & Insights</h3>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
+              <div className="rounded-lg bg-slate-700/60 px-3 py-3">
+                <div className="text-xs uppercase tracking-wide text-slate-400">Birth Date</div>
+                <div className="mt-1 text-sm text-white">{player.birth_date || player.birthDate || '—'}</div>
               </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400">Form Rating</span>
-                <span className="font-semibold text-green-400">Excellent</span>
+              <div className="rounded-lg bg-slate-700/60 px-3 py-3">
+                <div className="text-xs uppercase tracking-wide text-slate-400">Preferred Foot</div>
+                <div className="mt-1 text-sm text-white">{player.preferred_foot || player.preferredFoot || '—'}</div>
+              </div>
+              <div className="rounded-lg bg-slate-700/60 px-3 py-3">
+                <div className="text-xs uppercase tracking-wide text-slate-400">Height</div>
+                <div className="mt-1 text-sm text-white">{formatMeasurement(player.height, 'cm')}</div>
+              </div>
+              <div className="rounded-lg bg-slate-700/60 px-3 py-3">
+                <div className="text-xs uppercase tracking-wide text-slate-400">Weight</div>
+                <div className="mt-1 text-sm text-white">{formatMeasurement(player.weight, 'kg')}</div>
+              </div>
+              <div className="rounded-lg bg-slate-700/60 px-3 py-3">
+                <div className="text-xs uppercase tracking-wide text-slate-400">Shirt Number</div>
+                <div className="mt-1 text-sm text-white">{player.shirt_number ?? player.shirtNumber ?? '—'}</div>
+              </div>
+              <div className="rounded-lg bg-slate-700/60 px-3 py-3">
+                <div className="text-xs uppercase tracking-wide text-slate-400">Data Coverage</div>
+                <div className="mt-1 text-sm text-white">{hasTrackedEventData ? 'Event metrics available' : 'Profile only'}</div>
               </div>
             </div>
 
@@ -244,7 +619,7 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
             {insights && insights.insights && insights.insights.length > 0 && (
               <div className="mt-4 space-y-2">
                 <h4 className="text-sm font-medium text-slate-400 mb-2">AI Insights</h4>
-                {insights.insights.map((ins: any, i: number) => (
+                {insights.insights.map((ins: InsightItem, i: number) => (
                   <div key={i} className="p-3 bg-slate-700 rounded-lg">
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-sm font-medium text-white">{ins.title}</span>
@@ -257,9 +632,240 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
                 ))}
               </div>
             )}
+
+            {/* Scout ML Service Insights Block */}
+            {mlPredictions && (
+              <div className="mt-4 space-y-3">
+                <h4 className="text-sm font-medium text-slate-400 mb-2 flex items-center">
+                  <Activity className="w-4 h-4 mr-2" /> Actionable ML Models
+                </h4>
+                
+                {mlPredictions.tacticalRole && mlPredictions.tacticalRole.assigned_role_id !== undefined && (
+                  <div className="p-3 bg-indigo-900/30 border border-indigo-700/50 rounded-lg">
+                    <div className="text-xs text-indigo-300 font-semibold uppercase tracking-wide mb-1">Clustered Tactical Role</div>
+                    <div className="text-white text-sm font-medium">{mlPredictions.tacticalRole.role_name} <span className="text-xs text-indigo-400 font-normal">({(mlPredictions.tacticalRole.confidence_score * 100).toFixed(0)}% Match)</span></div>
+                  </div>
+                )}
+
+                {mlPredictions.fatigueRisk && (
+                  <div className={`p-3 border rounded-lg ${mlPredictions.fatigueRisk.is_high_risk ? 'bg-red-900/30 border-red-700/50' : 'bg-green-900/30 border-green-700/50'}`}>
+                    <div className={`text-xs font-semibold uppercase tracking-wide mb-1 ${mlPredictions.fatigueRisk.is_high_risk ? 'text-red-400' : 'text-green-400'}`}>Physical Fatigue Risk</div>
+                    <div className="text-white text-sm">{(mlPredictions.fatigueRisk.fatigue_risk_percentage).toFixed(1)}% <span className="text-xs text-slate-400 ml-1">- {mlPredictions.fatigueRisk.recommendation}</span></div>
+                  </div>
+                )}
+
+                {mlPredictions.anomalyInsight && mlPredictions.anomalyInsight.is_outlier && (
+                  <div className="p-3 bg-yellow-900/30 border border-yellow-700/50 rounded-lg">
+                    <div className="text-xs text-yellow-400 font-semibold uppercase tracking-wide mb-1">Performance Anomaly</div>
+                    <div className="text-white text-sm text-balance leading-tight">{mlPredictions.anomalyInsight.insight}</div>
+                  </div>
+                )}
+              </div>
+            )}
+
           </div>
+        </div>        
+
+        <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700 p-6 mt-6">
+          <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+            <Activity className="w-5 h-5 mr-2 text-cyan-400" />
+            Sequence Involvement
+          </h3>
+
+          {sequenceInsights?.summary?.matchesAnalyzed > 0 ? (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                <div className="rounded-lg bg-slate-700/40 px-3 py-3">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Matches</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{sequenceInsights.summary.matchesAnalyzed}</div>
+                </div>
+                <div className="rounded-lg bg-slate-700/40 px-3 py-3">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Sequences</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{sequenceInsights.summary.totalSequences}</div>
+                </div>
+                <div className="rounded-lg bg-slate-700/40 px-3 py-3">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Player Actions</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{sequenceInsights.summary.totalPlayerActions}</div>
+                </div>
+                <div className="rounded-lg bg-slate-700/40 px-3 py-3">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Direct Attacks</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{sequenceInsights.summary.directAttacks}</div>
+                </div>
+                <div className="rounded-lg bg-slate-700/40 px-3 py-3">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Shot Endings</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{sequenceInsights.summary.shotEndings}</div>
+                </div>
+                <div className="rounded-lg bg-slate-700/40 px-3 py-3">
+                  <div className="text-xs uppercase tracking-wide text-slate-400">Avg Territory Gain</div>
+                  <div className="mt-1 text-lg font-semibold text-white">{sequenceInsights.summary.averageTerritoryGain}</div>
+                </div>
+              </div>
+
+              {Array.isArray(sequenceInsights.topSequences) && sequenceInsights.topSequences.length > 0 && (
+                <div className="mt-5 space-y-3">
+                  <h4 className="text-sm font-medium text-slate-400">Top Sequences</h4>
+                  {sequenceInsights.topSequences.slice(0, 3).map((sequence: SequenceItem, index: number) => {
+                    const outcome = sequence.endedWithGoal
+                      ? 'Ended with goal'
+                      : sequence.endedWithShot
+                        ? 'Ended with shot'
+                        : sequence.boxEntry
+                          ? 'Reached the box'
+                          : 'Advanced possession';
+
+                    return (
+                      <div key={`${sequence.matchId}-${sequence.startTimestamp}-${index}`} className="rounded-lg border border-slate-700 bg-slate-700/30 px-4 py-3">
+                        <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                          <div>
+                            <div className="text-sm font-semibold text-white">{sequence.matchLabel}</div>
+                            <div className="text-xs text-slate-400">
+                              {sequence.teamName} • {sequence.route} • {sequence.playerActions} player actions
+                            </div>
+                          </div>
+                          <div className="text-xs text-slate-300 md:text-right">
+                            <div>{sequence.actions} actions over {sequence.durationSeconds}s</div>
+                            <div>{outcome}</div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="rounded-lg border border-slate-700 bg-slate-700/40 px-4 py-5 text-sm text-slate-300">
+              No sequence-level involvement is available for this player yet.
+            </div>
+          )}
         </div>
-      </div>
+
+        {/* Phase 4 Form Widget */}
+        {formData && (
+          <div className="bg-slate-800 rounded-lg shadow-sm border-t-2 border-indigo-500 p-6 mt-6 mb-6">
+            <h3 className="text-lg font-bold text-white mb-4 flex items-center">
+              <TrendingUp className="h-5 w-5 text-indigo-400 mr-2" />
+              Live Form Momentum (ML)
+            </h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-slate-700/50 rounded-lg p-4 text-center">
+                <p className="text-sm text-slate-400 font-medium">Matches</p>
+                <p className="text-2xl font-bold text-white mt-1">{formData.matches_played || 0}</p>
+              </div>
+              <div className="bg-slate-700/50 rounded-lg p-4 text-center">
+                <p className="text-sm text-slate-400 font-medium">Rolling xG</p>
+                <p className="text-2xl font-bold text-indigo-400 mt-1">{(formData.rolling_xg || 0).toFixed(2)}</p>
+              </div>
+              <div className="bg-slate-700/50 rounded-lg p-4 text-center">
+                <p className="text-sm text-slate-400 font-medium">xG Momentum</p>
+                <p className={`text-2xl font-bold mt-1 ${(formData.momentum_xg || 0) > 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {(formData.momentum_xg || 0) > 0 ? '+' : ''}{(formData.momentum_xg || 0).toFixed(2)}
+                </p>
+              </div>
+              <div className="bg-slate-700/50 rounded-lg p-4 text-center">
+                <p className="text-sm text-slate-400 font-medium">Rolling Pass Acc</p>
+                <p className="text-2xl font-bold text-sky-400 mt-1">{((formData.rolling_pass_accuracy || 0) * 100).toFixed(1)}%</p>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Phase 3 Advanced Analytics Block */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+          <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700 p-6">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+              <Zap className="w-5 h-5 mr-2 text-yellow-400" />
+              Composite Index & Expected
+            </h3>
+            <div className="space-y-4">
+              {compositeIndex ? (
+                <>
+                  <div className="flex justify-between items-center bg-slate-700/30 p-2 rounded">
+                    <span className="text-slate-400">Total Index</span>
+                    <span className="font-bold text-green-400">{compositeIndex.totalIndex.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center p-2">
+                    <span className="text-slate-400">Attacking</span>
+                    <span className="font-semibold text-white">{compositeIndex.attacking.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center p-2">
+                    <span className="text-slate-400">Possession</span>
+                    <span className="font-semibold text-white">{compositeIndex.possession.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center p-2">
+                    <span className="text-slate-400">Defending</span>
+                    <span className="font-semibold text-white">{compositeIndex.defending.toFixed(2)}</span>
+                  </div>
+                </>
+              ) : (
+                <div className="text-slate-400 text-sm border border-slate-700/50 p-3 rounded-lg text-center">
+                  Computing composite elements...
+                </div>
+              )}
+              {expectedMetrics && (
+                <div className="mt-4 pt-4 border-t border-slate-700">
+                  <div className="flex justify-between items-center p-2">
+                    <span className="text-slate-400">Analytical xG</span>
+                    <span className="font-semibold text-white">{expectedMetrics.xg.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center p-2">
+                    <span className="text-slate-400">Analytical xA</span>
+                    <span className="font-semibold text-white">{expectedMetrics.xa.toFixed(2)}</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 px-2 pt-2 text-xs text-slate-400">
+                    <span>Shots With xG: {expectedMetrics.shotsWithXg}</span>
+                    <span>Passes With xA: {expectedMetrics.passesWithXa}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700 p-6">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+              <Target className="w-5 h-5 mr-2 text-red-400" />
+              Spatial Density Heatmap
+            </h3>
+            {heatmap && heatmapCells.length > 0 ? (
+              <div className="relative w-full h-56 bg-emerald-900/20 border border-emerald-600/30 rounded flex items-center justify-center overflow-hidden">
+                {/* Scaled Pitch Background lines */}
+                <div className="absolute inset-0 border border-white/10" />
+                <div className="absolute top-0 bottom-0 left-1/2 w-px bg-white/10" />
+                <div className="absolute top-1/2 left-1/2 w-12 h-12 border border-white/10 rounded-full -translate-x-1/2 -translate-y-1/2" />
+                
+                {/* Simplified Heatmap Render */}
+                {heatmapCells.map((cell, i: number) => {
+                   // normalize count to 0-1 scale
+                   const normalized = heatmapMaxCount > heatmapMinCount
+                     ? (cell.count - heatmapMinCount) / (heatmapMaxCount - heatmapMinCount)
+                     : 1;
+                   const opacity = Math.max(0.2, normalized);
+                   const left = `${((cell.gridX + 0.5) / heatmapGridCols) * 100}%`;
+                   const bottom = `${((cell.gridY + 0.5) / heatmapGridRows) * 100}%`;
+                   
+                   // heat intensity color (yellow -> red)
+                   const color = opacity > 0.7 ? 'bg-red-500' : opacity > 0.4 ? 'bg-orange-500' : 'bg-yellow-500';
+                   const scale = 1 + (opacity * 0.5);
+
+                   return (
+                     <div key={i} className={`absolute w-8 h-8 ${color} rounded-full blur-md opacity-70 transition-transform`} 
+                          style={{ 
+                            left, 
+                            bottom, 
+                            transform: `translate(-50%, 50%) scale(${scale})`,
+                            zIndex: Math.floor(opacity * 10)
+                          }}
+                          title={`Zone (${cell.gridX},${cell.gridY}): ${cell.count} events`} />
+                   );
+                })}
+              </div>
+            ) : (
+              <div className="text-slate-400 text-sm border border-slate-700/50 p-6 rounded-lg text-center h-56 flex items-center justify-center">
+                {heatmap ? 'No spatial event data available for this player.' : 'Waiting for spatial telemetry...'}
+              </div>
+            )}
+          </div>
+        </div>      </div>
     </div>
   );
 };

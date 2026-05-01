@@ -1,0 +1,336 @@
+# Merge Rules Configuration
+#
+# This file defines how to handle conflicts when the same field has different
+# values from multiple data providers.
+#
+# Available strategies:
+# - prefer_primary: Use value from primary provider (based on providers.yaml)
+# - prefer_live: Use value from whichever provider is reporting live data
+# - average: Average numeric values from all providers
+# - weighted_average: Average using provider weights
+# - keep_both: Store all values separately
+# - first_available: Use first non-null value (by priority order)
+# - must_match: Values must be identical or flag for manual review
+# - majority_vote: Use most common value across providers
+# - union: Combine lists from all providers
+# - intersection: Keep only values present in all providers
+# - average_with_threshold: Average if within threshold, otherwise treat as separate
+
+# ============================================
+# MATCH-LEVEL MERGE RULES
+# ============================================
+
+merge_rules:
+  match:
+    # ====== IDENTITY FIELDS (must match) ======
+    match_date:
+      strategy: must_match
+      tolerance: 0
+      action_if_mismatch: flag_for_manual_review
+      log_conflict: true
+
+    venue:
+      strategy: must_match
+      tolerance_hours: 24  # Allow if same venue and within 24h
+      action_if_mismatch: flag_for_manual_review
+
+    # ====== FACTUAL FIELDS (prefer primary) ======
+    home_score:
+      strategy: prefer_primary
+      primary_provider: opta
+      validation: must_be_integer
+      log_if_mismatch: true
+      action_if_mismatch: log_warning
+
+    away_score:
+      strategy: prefer_primary
+      primary_provider: opta
+      validation: must_be_integer
+      log_if_mismatch: true
+
+    home_ht_score:
+      strategy: prefer_primary
+      primary_provider: opta
+
+    away_ht_score:
+      strategy: prefer_primary
+      primary_provider: opta
+
+    # ====== STATUS FIELDS (prefer live) ======
+    status:
+      strategy: prefer_live
+      priority_order:
+        - live
+        - finished
+        - scheduled
+        - postponed
+      log_if_mismatch: true
+
+    current_minute:
+      strategy: prefer_live
+      comment: "Live data is more current than cached/scheduled data"
+
+    current_period:
+      strategy: prefer_live
+
+    # ====== OPTIONAL FIELDS (first available) ======
+    attendance:
+      strategy: first_available
+      priority_order: [opta, statsbomb, wyscout]
+      comment: "Use whichever provider has attendance data"
+
+    referee:
+      strategy: first_available
+      priority_order: [opta, statsbomb, wyscout]
+
+    venue:
+      strategy: first_available
+      priority_order: [opta, statsbomb, wyscout]
+
+    # ====== STATISTICS (keep both or average) ======
+    possession:
+      strategy: average
+      validation: must_sum_to_100  # home + away should = 100
+      log_if_mismatch: true
+
+    shots:
+      strategy: keep_both
+      output_format:
+        shots: average
+        shots_opta: opta_value
+        shots_statsbomb: statsbomb_value
+
+    xG:
+      strategy: keep_both
+      output_format:
+        xg: weighted_average  # Use provider weights from providers.yaml
+        xg_opta: opta_value
+        xg_statsbomb: statsbomb_value
+
+  # ============================================
+  # EVENT-LEVEL MERGE RULES
+  # ============================================
+
+  event:
+    # ====== TEMPORAL FIELDS (average with threshold) ======
+    timestamp_seconds:
+      strategy: average_with_threshold
+      threshold: 3.0  # seconds
+      action_if_exceeds: treat_as_different_event
+      comment: "Events >3 seconds apart are likely different events"
+
+    minute:
+      strategy: average_with_threshold
+      threshold: 1  # Allow 1 minute difference
+      action_if_exceeds: log_warning
+
+    second:
+      strategy: average_with_threshold
+      threshold: 5  # Allow 5 second difference
+
+    # ====== LOCATION FIELDS (average with threshold) ======
+    x:
+      strategy: average_with_threshold
+      threshold: 5.0  # percentage of pitch
+      unit: percentage_of_pitch  # 0-100
+      action_if_exceeds: treat_as_different_event
+      comment: "Events >5% apart are likely different events"
+
+    y:
+      strategy: average_with_threshold
+      threshold: 5.0
+      unit: percentage_of_pitch
+      action_if_exceeds: treat_as_different_event
+
+    end_x:
+      strategy: average_with_threshold
+      threshold: 5.0
+
+    end_y:
+      strategy: average_with_threshold
+      threshold: 5.0
+
+    # ====== EVENT TYPE (must match) ======
+    event_type:
+      strategy: must_match
+      action_if_mismatch: treat_as_different_event
+      comment: "Different event types = different events"
+
+    # ====== OUTCOME (prefer primary) ======
+    outcome:
+      strategy: prefer_primary
+      primary_provider: opta
+      log_if_mismatch: true
+
+    successful:
+      strategy: prefer_primary
+      primary_provider: opta
+      log_if_mismatch: true
+
+    # ====== PLAYER/TEAM (must match) ======
+    player_id:
+      strategy: must_match
+      action_if_mismatch: treat_as_different_event
+
+    team_id:
+      strategy: must_match
+      action_if_mismatch: treat_as_different_event
+
+    # ====== DERIVED METRICS (keep both) ======
+    xG:
+      strategy: keep_both
+      output_format:
+        xg: weighted_average
+        xg_opta: opta_value
+        xg_statsbomb: statsbomb_value
+        xg_wyscout: wyscout_value
+
+    pass_length:
+      strategy: average
+      log_if_mismatch: false  # Small differences expected
+
+    pass_angle:
+      strategy: average
+
+    # ====== BOOLEAN FLAGS (OR logic) ======
+    # If ANY provider says true, mark as true
+    is_progressive:
+      strategy: majority_vote
+      tie_breaker: prefer_primary
+      comment: "Use majority, prefer primary on tie"
+
+    is_key_pass:
+      strategy: majority_vote
+      tie_breaker: prefer_primary
+
+    is_assist:
+      strategy: majority_vote
+      tie_breaker: or_logic  # If any says assist, it's an assist
+
+    under_pressure:
+      strategy: majority_vote
+      tie_breaker: prefer_primary
+
+  # ============================================
+  # PLAYER-LEVEL MERGE RULES
+  # ============================================
+
+  player:
+    # ====== IDENTITY (must match) ======
+    name:
+      strategy: fuzzy_match
+      threshold: 0.85  # Similarity score
+      action_if_below: flag_for_manual_review
+      comment: "Names must be very similar (account for spelling differences)"
+
+    birth_date:
+      strategy: must_match
+      tolerance_days: 1  # Allow 1 day difference (timezone issues)
+      action_if_mismatch: flag_for_manual_review
+
+    # ====== FACTUAL FIELDS ======
+    position:
+      strategy: prefer_primary
+      primary_provider: opta
+      log_if_mismatch: true
+
+    nationality:
+      strategy: prefer_primary
+      primary_provider: opta
+
+    height_cm:
+      strategy: average
+      tolerance: 5  # Allow 5cm difference
+
+    weight_kg:
+      strategy: average
+      tolerance: 5  # Allow 5kg difference
+
+    # ====== OPTIONAL FIELDS ======
+    current_team:
+      strategy: prefer_primary
+      primary_provider: opta
+
+    jersey_number:
+      strategy: prefer_primary
+      primary_provider: opta
+
+  # ============================================
+  # TEAM-LEVEL MERGE RULES
+  # ============================================
+
+  team:
+    # ====== IDENTITY ======
+    name:
+      strategy: fuzzy_match
+      threshold: 0.9
+      action_if_below: flag_for_manual_review
+
+    # ====== OPTIONAL FIELDS ======
+    stadium:
+      strategy: first_available
+
+    city:
+      strategy: first_available
+
+    manager:
+      strategy: prefer_primary
+      primary_provider: opta
+
+# ============================================
+# CORRELATION SETTINGS
+# ============================================
+# Settings for correlating events across providers
+
+correlation:
+  event:
+    # How to determine if two events are the same
+    matching_criteria:
+      - field: event_type
+        must_match: true
+      - field: timestamp_seconds
+        threshold: 3.0
+        weight: 0.4
+      - field: x
+        threshold: 5.0
+        weight: 0.3
+      - field: y
+        threshold: 5.0
+        weight: 0.3
+
+    # Minimum confidence score to consider events correlated
+    min_confidence: 0.75
+
+  match:
+    matching_criteria:
+      - field: date
+        threshold_hours: 24
+        weight: 0.4
+      - field: home_team
+        must_match: true
+        weight: 0.3
+      - field: away_team
+        must_match: true
+        weight: 0.3
+
+    min_confidence: 0.90
+
+# ============================================
+# CONFLICT LOGGING SETTINGS
+# ============================================
+
+conflict_logging:
+  # Log all conflicts to MongoDB
+  enabled: true
+  collection_name: data_conflicts
+
+  # Alert on critical conflicts
+  alert_on_critical: true
+  critical_fields:
+    - home_score
+    - away_score
+    - status
+    - event_type
+
+  # Sampling (log 100% of conflicts for now, can reduce in production)
+  sample_rate: 1.0

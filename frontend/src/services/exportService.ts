@@ -1,5 +1,6 @@
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { API_BASE_URL } from '../config/api';
 import {
   ExportOptions,
   PDFExportOptions,
@@ -15,6 +16,33 @@ import {
 class ExportService {
   private readonly STORAGE_KEY = 'scoutpro_export_history';
   private exportJobs: Map<string, ExportJob> = new Map();
+
+  private async exportLocally(options: ExportOptions): Promise<{ blob: Blob; mimeType: string }> {
+    switch (options.format) {
+      case 'pdf':
+        return {
+          blob: await this.exportToPDF(options as PDFExportOptions),
+          mimeType: 'application/pdf',
+        };
+      case 'excel':
+        return {
+          blob: await this.exportToExcel(options as ExcelExportOptions),
+          mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        };
+      case 'csv':
+        return {
+          blob: await this.exportToCSV(options as CSVExportOptions),
+          mimeType: 'text/csv',
+        };
+      case 'json':
+        return {
+          blob: await this.exportToJSON(options),
+          mimeType: 'application/json',
+        };
+      default:
+        throw new Error(`Unsupported export format: ${options.format}`);
+    }
+  }
 
   /**
    * Main export function that routes to specific format handlers
@@ -36,17 +64,16 @@ class ExportService {
       let blob: Blob;
       let mimeType: string;
 
-      const useMockData = import.meta.env.VITE_USE_MOCK_DATA === 'true';
-
-      if (!useMockData) {
-        const baseUrl = import.meta.env.VITE_API_URL || '/api/v1';
-        // Send data to the backend export service instead of formatting locally
-        const response = await fetch(`${baseUrl}/exports/custom`, {
+      try {
+        const baseUrl = API_BASE_URL;
+        const response = await fetch(`${baseUrl}/v2/exports/custom`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             data: options.data,
             format: options.format,
+            fileName: options.fileName,
+            header: 'header' in options ? options.header : undefined,
           })
         });
 
@@ -56,27 +83,11 @@ class ExportService {
 
         blob = await response.blob();
         mimeType = response.headers.get('Content-Type') || 'application/octet-stream';
-      } else {
-        switch (options.format) {
-          case 'pdf':
-            blob = await this.exportToPDF(options as PDFExportOptions);
-            mimeType = 'application/pdf';
-            break;
-          case 'excel':
-            blob = await this.exportToExcel(options as ExcelExportOptions);
-            mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-            break;
-          case 'csv':
-            blob = await this.exportToCSV(options as CSVExportOptions);
-            mimeType = 'text/csv';
-            break;
-          case 'json':
-            blob = await this.exportToJSON(options);
-            mimeType = 'application/json';
-            break;
-          default:
-            throw new Error(`Unsupported export format: ${options.format}`);
-        }
+      } catch (backendError) {
+        console.warn('Backend export unavailable, falling back to local export:', backendError);
+        const localExport = await this.exportLocally(options);
+        blob = localExport.blob;
+        mimeType = localExport.mimeType;
       }
 
       // Create download URL

@@ -12,6 +12,7 @@ class WebSocketManager {
     this.db = db;
     this.clients = new Map(); // clientId -> { ws, subscriptions }
     this.simulationIntervals = [];
+    this.enableSimulation = process.env.ENABLE_WS_SIMULATION === 'true';
 
     this.wss.on('connection', (ws, req) => {
       const clientId = uuidv4();
@@ -49,8 +50,12 @@ class WebSocketManager {
       });
     });
 
-    // Start live simulation loops
-    this.startSimulations();
+    if (this.enableSimulation) {
+      this.startSimulations();
+    } else {
+      console.log('WebSocket simulations disabled; waiting for real upstream events');
+    }
+
     console.log('✅ WebSocket server initialized on /ws');
   }
 

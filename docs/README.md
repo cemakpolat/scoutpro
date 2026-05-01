@@ -176,3 +176,7 @@ docker-compose restart
 **Last Updated**: 2025-10-19
 **Services**: 13 microservices fully implemented
 **Status**: Feature complete, ready for integration testing
+
+### **08 - MLOps Automation**
+End-to-End Pipeline configuration.
+- **[CRON_SETUP.md](03-development/CRON_SETUP.md)** - Automating the ingest/MinIO/Retrain pipeline.

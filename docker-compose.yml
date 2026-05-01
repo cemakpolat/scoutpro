@@ -20,7 +20,7 @@ services:
       - scoutpro-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3001/health"]
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -50,15 +50,16 @@ services:
       dockerfile: player-service/Dockerfile
     container_name: scoutpro-player-service
     ports:
-      - "8001:8000"
+      - "28001:8000"
     environment:
       - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:scoutpro123@redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SERVICE_NAME=player-service
       - LOG_LEVEL=INFO
       - OPTA_API_KEY=${OPTA_API_KEY}
       - STATSBOMB_API_KEY=${STATSBOMB_API_KEY}
+      - DATA_ROOT=/app/data
     depends_on:
       - mongo
       - redis
@@ -66,6 +67,7 @@ services:
     volumes:
       - ./services/player-service:/app
       - ./services/shared:/app/shared
+      - ./data:/app/data:ro
     networks:
       - scoutpro-network
     restart: unless-stopped
@@ -82,10 +84,10 @@ services:
       dockerfile: team-service/Dockerfile
     container_name: scoutpro-team-service
     ports:
-      - "8002:8000"
+      - "28002:8000"
     environment:
       - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:scoutpro123@redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SERVICE_NAME=team-service
     depends_on:
@@ -105,9 +107,10 @@ services:
       dockerfile: match-service/Dockerfile
     container_name: scoutpro-match-service
     ports:
-      - "8003:8000"
+      - "28003:8000"
     environment:
       - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
+      - REDIS_URL=redis://:scoutpro123@redis:6379/0
       - TIMESCALEDB_URL=postgresql://scoutpro:scoutpro123@timescaledb:5432/scoutpro
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SERVICE_NAME=match-service
@@ -128,10 +131,10 @@ services:
       dockerfile: statistics-service/Dockerfile
     container_name: scoutpro-statistics-service
     ports:
-      - "8004:8000"
+      - "28004:8000"
     environment:
       - TIMESCALEDB_URL=postgresql://scoutpro:scoutpro123@timescaledb:5432/scoutpro
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:scoutpro123@redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SERVICE_NAME=statistics-service
     depends_on:
@@ -145,18 +148,60 @@ services:
       - scoutpro-network
     restart: unless-stopped
 
+  # ============ DATA PROVIDER MOCK (External) ============
+  # Mimics Opta / StatsBomb HTTP APIs using local files from data/
+  # Runs independently; can be swapped with real provider URLs
+  data-provider:
+    build:
+      context: ./providers/data-provider-mock
+      dockerfile: Dockerfile
+    container_name: scoutpro-data-provider
+    ports:
+      - "7000:7000"
+    environment:
+      - DATA_ROOT=/app/data
+      - PORT=7000
+    volumes:
+      - ./data:/app/data:ro
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7000/api/health"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ============ DATA SYNC SERVICE (Internal) ============
+  # Orchestrates periodic synchronization from data providers
+  # Calls data-provider (mock or real) to fetch feeds
+  # Transforms and bulk-upserts into MongoDB
   data-sync-service:
     build:
       context: .
       dockerfile: services/data-sync-service/Dockerfile
     container_name: scoutpro-data-sync-service
+    ports:
+      - "28015:8012"
     environment:
       - MONGODB_HOST=mongo
       - MONGODB_PORT=27017
       - MONGODB_DATABASE=scoutpro
       - SERVICE_NAME=data-sync-service
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_URL=redis://redis:6379
+      - REDIS_URL=redis://:scoutpro123@redis:6379
+
+      # Data provider URLs (swap to real Opta/StatsBomb in production)
+      - OPTA_BASE_URL=http://data-provider:7000
+      - STATSBOMB_BASE_URL=http://data-provider:7000
+
+      # Sync configuration
+      - OPTA_SYNC_INTERVAL_MINUTES=60       # daily squads
+      - STATSBOMB_SYNC_INTERVAL_MINUTES=1440 # weekly
+      - OPTA_EVENT_SYNC_INTERVAL_MINUTES=15  # frequent event polling
+      - COMPETITION_ID=115
+      - SEASON_ID=2019
 
       # Optional - set dummy values for development
       - SENDGRID_API_KEY="dummy_key_development_only"
@@ -166,6 +211,7 @@ services:
       - FIREBASE_CREDENTIALS="{}"
     depends_on:
       - mongo
+      - data-provider
     networks:
       - scoutpro-network
     restart: unless-stopped
@@ -176,7 +222,7 @@ services:
       dockerfile: ml-service/Dockerfile
     container_name: scoutpro-ml-service
     ports:
-      - "8005:8000"
+      - "28005:8000"
     environment:
       - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
       - MLFLOW_TRACKING_URI=http://mlflow:5000
@@ -190,6 +236,8 @@ services:
       - mlflow
     volumes:
       - ml-models:/models
+      - ./services/ml-service:/app
+      - ./services/shared:/app/shared
     networks:
       - scoutpro-network
     restart: unless-stopped
@@ -200,18 +248,22 @@ services:
       dockerfile: services/live-ingestion-service/Dockerfile
     container_name: scoutpro-live-ingestion
     ports:
-      - "8006:8000"
+      - "28006:8000"
     environment:
       - OPTA_API_KEY=${OPTA_API_KEY}
       - OPTA_WEBSOCKET_URL=${OPTA_WEBSOCKET_URL}
       - STATSBOMB_API_KEY=${STATSBOMB_API_KEY}
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:scoutpro123@redis:6379/0
       - SERVICE_NAME=live-ingestion-service
+      - DATA_ROOT=/app/data
     depends_on:
       - kafka
       - redis
-    # Use image contents to avoid overriding merged shared package
+    volumes:
+      - ./services/live-ingestion-service:/app
+      - ./services/shared:/app/shared
+      - ./data:/app/data:ro
     networks:
       - scoutpro-network
     restart: unless-stopped
@@ -222,10 +274,10 @@ services:
       dockerfile: search-service/Dockerfile
     container_name: scoutpro-search-service
     ports:
-      - "8007:8000"
+      - "28007:8000"
     environment:
       - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:scoutpro123@redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SERVICE_NAME=search-service
     depends_on:
@@ -244,10 +296,10 @@ services:
       dockerfile: notification-service/Dockerfile
     container_name: scoutpro-notification-service
     ports:
-      - "8008:8000"
+      - "28008:8000"
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:scoutpro123@redis:6379/0
       - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
       - SENDGRID_API_KEY=${SENDGRID_API_KEY}
       - SERVICE_NAME=notification-service
@@ -267,10 +319,10 @@ services:
       dockerfile: websocket-server/Dockerfile
     container_name: scoutpro-websocket-server
     ports:
-      - "8080:8080"
+      - "28080:8080"
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:scoutpro123@redis:6379/0
       - SERVICE_NAME=websocket-server
     depends_on:
       - kafka
@@ -288,7 +340,7 @@ services:
       dockerfile: report-service/Dockerfile
     container_name: scoutpro-report-service
     ports:
-      - "8009:8009"
+      - "28009:8009"
     environment:
       - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
       - MINIO_ENDPOINT=minio:9000
@@ -311,7 +363,7 @@ services:
       dockerfile: export-service/Dockerfile
     container_name: scoutpro-export-service
     ports:
-      - "8010:8010"
+      - "28010:8010"
     environment:
       - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
       - SERVICE_NAME=export-service
@@ -330,7 +382,7 @@ services:
       dockerfile: video-service/Dockerfile
     container_name: scoutpro-video-service
     ports:
-      - "8011:8011"
+      - "28011:8011"
     environment:
       - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
       - MINIO_ENDPOINT=minio:9000
@@ -353,10 +405,10 @@ services:
       dockerfile: analytics-service/Dockerfile
     container_name: scoutpro-analytics-service
     ports:
-      - "8012:8012"
+      - "28012:8012"
     environment:
       - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
-      - REDIS_URL=redis://redis:6379/0
+      - REDIS_URL=redis://:scoutpro123@redis:6379/0
       - TIMESCALEDB_URL=postgresql://scoutpro:scoutpro123@timescaledb:5432/scoutpro
       - SERVICE_NAME=analytics-service
     depends_on:
@@ -419,7 +471,7 @@ services:
     image: provectuslabs/kafka-ui:latest
     container_name: scoutpro-kafka-ui
     ports:
-      - "8090:8080"
+      - "28090:8080"
     environment:
       - KAFKA_CLUSTERS_0_NAME=scoutpro-local
       - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
@@ -492,24 +544,25 @@ services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
     container_name: scoutpro-elasticsearch
-    ports:
-      - "9200:9200"
-      - "9300:9300"
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-      - cluster.name=scoutpro-cluster
+      - xpack.security.enrollment.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+      - cluster.name=scoutpro-search
+    ports:
+      - "29200:9200"
     volumes:
-      - es-data:/usr/share/elasticsearch/data
+      - elasticsearch-data:/usr/share/elasticsearch/data
     networks:
       - scoutpro-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 60s
 
   # ============ OBJECT STORAGE ============
   minio:
@@ -676,6 +729,7 @@ volumes:
   redis-data:
   es-data:
   es-logs-data:
+  elasticsearch-data:
   minio-data:
   kafka-data:
   zookeeper-data:

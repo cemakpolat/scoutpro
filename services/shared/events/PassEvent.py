@@ -1,8 +1,8 @@
 # This class checks the following Opta F24 events:
 #     "1":"Pass"
 # author:Cem Akpolat, Doruk Sahinel
-from src.events.Events import EventIDs
-from src.events.QTypes import QTypes
+from .Events import EventIDs
+from .QTypes import QTypes
 import math
 
 

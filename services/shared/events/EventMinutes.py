@@ -1,6 +1,10 @@
-from src.events.Events import EventIDs
-from src.events.QTypes import QTypes
-from src.feedAPI import TeamAPI
+from .Events import EventIDs
+from .QTypes import QTypes
+
+
+class TeamAPI:
+    """Stub - team data is now served by team-service via HTTP"""
+    pass
 
 
 class EventMinutes:

@@ -19,18 +19,28 @@ const analyticsRouter = require('./routes/analytics');
 const notificationsRouter = require('./routes/notifications');
 const mlRouter = require('./routes/ml');
 const searchRouter = require('./routes/search');
+const statisticsRouter = require('./routes/statistics');
 const reportsRouter = require('./routes/reports');
 const exportsRouter = require('./routes/exports');
+const importsRouter = require('./routes/imports');
 const leaguesRouter = require('./routes/leagues');
 const marketRouter = require('./routes/market');
 const tacticalRouter = require('./routes/tactical');
 const aiRouter = require('./routes/ai');
 const videosRouter = require('./routes/videos');
 const advancedAnalyticsRouter = require('./routes/advancedAnalytics');
+const eventsRouter = require('./routes/events');
+const calendarRouter = require('./routes/calendar');
+const collaborationRouter = require('./routes/collaboration');
+const adminRouter = require('./routes/admin');
+const detailedStatsRouter = require('./routes/detailed-stats');
 
 const app = express();
 const server = http.createServer(app);
 const PORT = process.env.PORT || 3001;
+const MONGO_SERVER_SELECTION_TIMEOUT_MS = Number(process.env.MONGO_SERVER_SELECTION_TIMEOUT_MS || 5000);
+const MONGO_CONNECT_TIMEOUT_MS = Number(process.env.MONGO_CONNECT_TIMEOUT_MS || 5000);
+const MONGO_SOCKET_TIMEOUT_MS = Number(process.env.MONGO_SOCKET_TIMEOUT_MS || 10000);
 
 // Middleware
 app.use(cors({
@@ -49,7 +59,12 @@ const MONGODB_URL = process.env.MONGODB_URL || 'mongodb://root:scoutpro123@local
 let db;
 async function connectDB() {
   try {
-    const client = new MongoClient(MONGODB_URL);
+    const client = new MongoClient(MONGODB_URL, {
+      serverSelectionTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
+      connectTimeoutMS: MONGO_CONNECT_TIMEOUT_MS,
+      socketTimeoutMS: MONGO_SOCKET_TIMEOUT_MS,
+      maxPoolSize: 20,
+    });
     await client.connect();
     db = client.db('scoutpro');
     console.log('✅ Connected to MongoDB');
@@ -86,12 +101,18 @@ app.get('/', (req, res) => {
       teams: '/api/teams',
       leagues: '/api/leagues',
       analytics: '/api/analytics',
+      statistics: '/api/statistics',
       notifications: '/api/notifications',
       ml: '/api/ml',
       search: '/api/search',
       reports: '/api/v2/reports',
       exports: '/api/v2/exports',
+      imports: '/api/v2/imports',
+      calendar: '/api/v2/calendar',
+      collaboration: '/api/v2/collaboration',
+      admin: '/api/v2/admin',
       videos: '/api/v2/videos',
+      events: '/api/v2/events',
       advancedAnalytics: '/api/v2/analytics',
       market: '/api/market',
       tactical: '/api/tactical',
@@ -104,19 +125,26 @@ app.get('/', (req, res) => {
 // API Routes
 app.use('/api/auth', authRouter);
 app.use('/api/players', playersRouter);
+app.use('/api/players', detailedStatsRouter);
 app.use('/api/matches', matchesRouter);
 app.use('/api/teams', teamsRouter);
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/statistics', statisticsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/ml', mlRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/v2/reports', reportsRouter);
 app.use('/api/v2/exports', exportsRouter);
+app.use('/api/v2/imports', importsRouter);
+app.use('/api/v2/calendar', calendarRouter);
+app.use('/api/v2/collaboration', collaborationRouter);
+app.use('/api/v2/admin', adminRouter);
 app.use('/api/leagues', leaguesRouter);
 app.use('/api/market', marketRouter);
 app.use('/api/tactical', tacticalRouter);
 app.use('/api/ai', aiRouter);
 app.use('/api/v2/videos', videosRouter);
+app.use('/api/v2/events', eventsRouter);
 app.use('/api/v2/analytics', advancedAnalyticsRouter);
 
 // WebSocket stats endpoint

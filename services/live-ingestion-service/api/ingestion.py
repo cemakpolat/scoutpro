@@ -15,8 +15,9 @@ active_tasks = {}
 
 class EventsPayload(BaseModel):
     events: List[Dict[str, Any]]
+    source: str = "opta"
     
-async def process_batch_background(events: List[Dict[str, Any]], request: Request, match_id: str):
+async def process_batch_background(events: List[Dict[str, Any]], source: str, request: Request, match_id: str):
     processor = getattr(request.app.state, "processor", None)
     if processor:
         try:
@@ -25,9 +26,10 @@ async def process_batch_background(events: List[Dict[str, Any]], request: Reques
             payload = {
                 "match_id": match_id,
                 "events": events,
+                "source": source,
                 "stats": {}
             }
-            await processor.process_live_update(payload)
+            await processor.process_live_update(payload, source=source)
         except Exception as e:
             print(f"Failed background processing: {e}")
 
@@ -38,11 +40,11 @@ async def ingest_events(match_id: str, payload: EventsPayload, request: Request,
         return APIResponse(success=False, message="No events provided")
     
     # Store ingestion processing as background task
-    background_tasks.add_task(process_batch_background, payload.events, request, match_id)
+    background_tasks.add_task(process_batch_background, payload.events, payload.source, request, match_id)
     
     return APIResponse(
         success=True,
-        data={"match_id": match_id, "processed_events": len(payload.events)},
+        data={"match_id": match_id, "processed_events": len(payload.events), "source": payload.source},
         message=f"Queued {len(payload.events)} events for processing"
     )
 

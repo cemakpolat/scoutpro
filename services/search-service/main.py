@@ -9,10 +9,13 @@ import sys
 sys.path.append('/app')
 from shared.utils.logger import setup_logger
 from config.settings import get_settings
-from api.search import router as search_router, search_client
+from search.elasticsearch_client import SearchClient
+from api.search import router as search_router
+from consumers.event_consumer import start_consumer, stop_consumer
 
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
+consumer_started = False
 
 app = FastAPI(
     title="Search Service",
@@ -38,9 +41,29 @@ app.include_router(search_router)
 @app.on_event("startup")
 async def startup_event():
     logger.info(f"Starting {settings.service_name}")
+    global consumer_started
 
     try:
-        logger.info(f"Connected to Elasticsearch: {settings.elasticsearch_url}")
+        search_client = SearchClient(
+            es_url=settings.elasticsearch_url,
+            mongodb_url=settings.mongodb_url,
+        )
+        await search_client.connect()
+        app.state.search_client = search_client
+        logger.info(f"Search backend: {search_client.backend}")
+
+        try:
+            index_counts = await search_client.bulk_index_from_mongo()
+            logger.info(f"Bulk index result: {index_counts}")
+        except Exception as e:
+            logger.warning(f"Bulk index from mongo skipped: {e}")
+
+        try:
+            await start_consumer()
+            consumer_started = True
+            logger.info("Search event consumer started")
+        except Exception as e:
+            logger.error(f"Failed to start search event consumer: {e}")
 
         logger.info(f"{settings.service_name} started successfully")
 
@@ -52,9 +75,13 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info(f"Shutting down {settings.service_name}")
+    global consumer_started
 
     try:
-        await search_client.close()
+        if consumer_started:
+            await stop_consumer()
+            consumer_started = False
+        await app.state.search_client.close()
     except Exception as e:
         logger.error(f"Shutdown error: {e}")
 

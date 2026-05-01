@@ -1,17 +1,21 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import { useData } from '../context/DataContext';
-import { useApi } from '../hooks/useApi';
-import apiService from '../services/api';
-import { Star, TrendingUp, Award, Target } from 'lucide-react';
+import { usePlayerSequenceCoverage } from '../hooks/usePlayerSequenceCoverage';
+import { Award, Target } from 'lucide-react';
+import SequenceCoverageBadge from './SequenceCoverageBadge';
 
 const TopPerformers: React.FC = () => {
   const { players, loading: loadingState } = useData();
-  const { data: analytics } = useApi(() => apiService.getAnalytics('top-performers'), []);
 
   const topPerformers = players
-    .filter(player => player.rating > 8.0)
-    .sort((a, b) => b.rating - a.rating)
+    .filter(player => player.rating != null)
+    .sort((a, b) => (b.rating || 0) - (a.rating || 0))
     .slice(0, 6);
+  const topPerformerIds = useMemo(
+    () => topPerformers.map((player) => String(player.id)).filter(Boolean),
+    [topPerformers],
+  );
+  const { coverageByPlayerId } = usePlayerSequenceCoverage(topPerformerIds);
 
   if (loadingState.players) {
     return (
@@ -65,16 +69,19 @@ const TopPerformers: React.FC = () => {
                   xG: {player.xG}
                 </span>
                 <span className="text-xs bg-green-600/20 text-green-300 px-2 py-1 rounded">
-                  {player.consistency}% consistency
+                  {player.consistency != null ? `${player.consistency}% consistency` : `${(player.passAccuracy || 0).toFixed(0)}% pass acc`}
                 </span>
+              </div>
+              <div className="mt-2 inline-block">
+                <SequenceCoverageBadge coverage={coverageByPlayerId[String(player.id)]} compact />
               </div>
             </div>
             <div className="text-right">
-              <div className="text-2xl font-bold text-yellow-400">{player.rating.toFixed(2)}</div>
+              <div className="text-2xl font-bold text-yellow-400">{(player.rating || 0).toFixed(2)}</div>
               <div className="text-xs text-slate-400 mb-1">Performance Index</div>
               <div className="flex items-center text-sm text-slate-400">
                 <Target className="h-4 w-4 mr-1 text-green-400" />
-                <span className="text-green-400">{player.marketValue}</span>
+                <span className="text-green-400">{player.marketValue || '—'}</span>
               </div>
             </div>
           </div>
@@ -88,7 +95,7 @@ const TopPerformers: React.FC = () => {
             <div className="text-slate-400">Average Rating</div>
             <div className="font-bold text-white">
               {topPerformers.length > 0 ? 
-                (topPerformers.reduce((sum, p) => sum + p.rating, 0) / topPerformers.length).toFixed(1) : 
+                (topPerformers.reduce((sum, p) => sum + (p.rating || 0), 0) / topPerformers.length).toFixed(1) : 
                 '0.0'
               }
             </div>
@@ -97,7 +104,8 @@ const TopPerformers: React.FC = () => {
             <div className="text-slate-400">Total Market Value</div>
             <div className="font-bold text-green-400">
               €{topPerformers.reduce((sum, p) => {
-                const value = parseFloat(p.marketValue.replace(/[€M]/g, '')) || 0;
+                const raw = String(p.marketValue || '0').replace(/[€M,\s]/g, '');
+                const value = parseFloat(raw) || 0;
                 return sum + value;
               }, 0).toFixed(0)}M
             </div>

@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     minio_secret_key: str = "minioadmin"
     minio_bucket: str = "mlmodels"
 
+    # MongoDB
+    mongodb_url: str = "mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin"
+
     # Model settings
     model_cache_dir: str = "/app/model_cache"
 

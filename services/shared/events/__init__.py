@@ -1,20 +1,17 @@
 """
-Opta event processing modules
+Opta event processing modules.
+
+Only constants and the EventHandler are eagerly imported.
+The legacy event-type classes (AerialDuelEvents, ShotandGoalEvents, etc.)
+are still importable directly but are NOT auto-imported here to avoid
+pulling in heavy optional dependencies (pandas, numpy) at startup.
 """
-# Export all event modules
-from .Events import EventIDs
+from .Events import EventIDs, EventTypes, EventTypesHelper
 from .QTypes import QTypes
-from .PassEvent import *
-from .ShotandGoalEvents import *
-from .GoalkeeperEvents import *
-from .DuelEvents import *
-from .TouchEvents import *
-from .AerialDuelEvents import *
-from .event_handler import EventHandler, GamesandMinutesEvents
 
 __all__ = [
     'EventIDs',
+    'EventTypes',
+    'EventTypesHelper',
     'QTypes',
-    'EventHandler',
-    'GamesandMinutesEvents',
 ]

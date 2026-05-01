@@ -5,16 +5,127 @@ import {
   Maximize, MessageSquare, Plus, Save, Share2, Download,
   Film, Clock, Tag, Star, User, Calendar, Grid, List,
   Search, Filter, Trash2, Edit2, ChevronDown, ChevronUp,
-  PlayCircle, Folder, X
+  PlayCircle, Folder, X, Upload, Camera, Loader2, BarChart2
 } from 'lucide-react';
 import { Video, VideoAnnotation, AnnotationType, VideoPlaylist } from '../types/video';
-import videoService from '../services/videoService';
 import { exportService } from '../services/exportService';
 import apiService from '../services/api';
 
+type VideoFormState = {
+  url: string;
+  title: string;
+  playerName: string;
+  matchDetails: string;
+  tags: string;
+  description: string;
+};
+
+const emptyVideoForm: VideoFormState = {
+  url: '',
+  title: '',
+  playerName: '',
+  matchDetails: '',
+  tags: '',
+  description: ''
+};
+
+const toNumber = (value: unknown): number | undefined => {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value.replace(/[^\d.]/g, ''));
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+};
+
+const normalizeVideoAnnotation = (annotation: any): VideoAnnotation => ({
+  id: String(annotation.id || annotation._id || crypto.randomUUID()),
+  timestamp: toNumber(annotation.timestamp) ?? 0,
+  type: (annotation.type || 'note') as AnnotationType,
+  note: annotation.note || annotation.text || '',
+  rating: toNumber(annotation.rating),
+  createdBy: annotation.createdBy || annotation.author || 'scoutpro.user',
+  createdAt: annotation.createdAt || new Date().toISOString(),
+});
+
+const normalizeVideo = (video: any): Video => {
+  const annotations = Array.isArray(video.annotations)
+    ? video.annotations.map(normalizeVideoAnnotation)
+    : [];
+
+  const playerName = video.player?.name || video.playerName || video.metadata?.playerName || '';
+  const matchInfo = video.match || video.metadata?.match || null;
+  const matchTitle = typeof video.matchTitle === 'string' ? video.matchTitle : undefined;
+
+  return {
+    id: String(video.id || video._id || crypto.randomUUID()),
+    title: video.title || 'Untitled Video',
+    url: video.url || video.streamUrl || '',
+    source: video.source || 'direct',
+    thumbnail: video.thumbnail || video.thumbnailUrl || undefined,
+    duration: typeof video.duration === 'string'
+      ? video.duration
+      : `${Math.floor((toNumber(video.duration) ?? 0) / 60)}:${String(Math.floor((toNumber(video.duration) ?? 0) % 60)).padStart(2, '0')}`,
+    player: playerName
+      ? {
+          id: String(video.player?.id || video.playerId || playerName),
+          name: playerName,
+          position: video.player?.position || video.metadata?.position,
+          photo: video.player?.photo,
+        }
+      : undefined,
+    match: matchInfo || matchTitle
+      ? {
+          id: String(matchInfo?.id || video.matchId || matchTitle || 'match'),
+          homeTeam: matchInfo?.homeTeam || matchTitle?.split(' vs ')[0] || 'Home',
+          awayTeam: matchInfo?.awayTeam || matchTitle?.split(' vs ')[1] || 'Away',
+          date: matchInfo?.date || video.uploadedAt || new Date().toISOString(),
+          competition: matchInfo?.competition || video.metadata?.competition || 'ScoutPro',
+          score: matchInfo?.score,
+        }
+      : undefined,
+    annotations,
+    stats: video.stats || video.metadata?.stats,
+    tags: Array.isArray(video.tags) ? video.tags.filter(Boolean) : [],
+    uploadedBy: video.uploadedBy || 'scoutpro.user',
+    uploadedAt: video.uploadedAt || new Date().toISOString(),
+    description: video.description || undefined,
+    isPublic: Boolean(video.isPublic),
+  };
+};
+
+const buildFilterOptions = (videos: Video[]) => ({
+  tags: Array.from(new Set(videos.flatMap((video) => video.tags))).sort(),
+  players: Array.from(new Set(videos.map((video) => video.player?.name).filter(Boolean) as string[])).sort(),
+  competitions: Array.from(new Set(videos.map((video) => video.match?.competition).filter(Boolean) as string[])).sort(),
+});
+
+const parseMatchDetails = (value: string) => {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+
+  const [teamsPart, scorePart] = trimmed.split('(');
+  const [homeTeam, awayTeam] = teamsPart.split(' vs ').map((team) => team.trim()).filter(Boolean);
+
+  if (!homeTeam && !awayTeam) return undefined;
+
+  return {
+    homeTeam: homeTeam || 'Home',
+    awayTeam: awayTeam || 'Away',
+    score: scorePart ? scorePart.replace(')', '').trim() : undefined,
+    date: new Date().toISOString(),
+    competition: 'ScoutPro Library'
+  };
+};
+
+const VIDEO_PLACEHOLDER = `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(
+  `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="360" viewBox="0 0 640 360" fill="none"><rect width="640" height="360" fill="#0f172a"/><rect x="24" y="24" width="592" height="312" rx="24" fill="#1e293b" stroke="#334155"/><circle cx="320" cy="180" r="44" fill="#f97316"/><path d="M306 154v52l42-26-42-26Z" fill="white"/><text x="320" y="246" text-anchor="middle" fill="#cbd5e1" font-family="Arial, sans-serif" font-size="24">ScoutPro Video</text></svg>`
+)}`;
+
 const VideoAnalysis: React.FC = () => {
-  const [videos, setVideos] = useState<Video[]>(videoService.getVideos());
-  const [playlists, setPlaylists] = useState<VideoPlaylist[]>(videoService.getPlaylists());
+  const [videos, setVideos] = useState<Video[]>([]);
+  const [allVideos, setAllVideos] = useState<Video[]>([]);
+  const [playlists, setPlaylists] = useState<VideoPlaylist[]>([]);
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -31,6 +142,21 @@ const VideoAnalysis: React.FC = () => {
   const [selectedAnnotations, setSelectedAnnotations] = useState<string[]>([]);
   const [showAddVideoModal, setShowAddVideoModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [submittingVideo, setSubmittingVideo] = useState(false);
+  const [videoError, setVideoError] = useState('');
+  const [videoForm, setVideoForm] = useState<VideoFormState>(emptyVideoForm);
+
+  // Upload panel state
+  const [showUploadModal, setShowUploadModal] = useState(false);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadMatchId, setUploadMatchId] = useState('');
+  const [uploadTeamId, setUploadTeamId] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [analyzingVideos, setAnalyzingVideos] = useState<Set<string>>(new Set());
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Filter states
   const [filterPlayer, setFilterPlayer] = useState('');
@@ -46,14 +172,35 @@ const VideoAnalysis: React.FC = () => {
 
   const playerRef = useRef<any>(null);
 
-  // Try to fetch videos from the real API at mount
-  useEffect(() => {
-    apiService.listVideos().then((res: any) => {
-      if (res?.data && Array.isArray(res.data) && res.data.length > 0) {
-        // Merge API videos with local mock videos (API takes priority)
-        console.log('📹 Loaded', res.data.length, 'videos from API');
+  const refreshVideos = async (selectedVideoId?: string) => {
+    setLoading(true);
+    setVideoError('');
+
+    try {
+      const res = await apiService.listVideos();
+      const normalizedVideos = (res.data || []).map(normalizeVideo);
+      setAllVideos(normalizedVideos);
+      setVideos(normalizedVideos);
+
+      if (selectedVideoId) {
+        const freshVideo = normalizedVideos.find((video) => video.id === selectedVideoId) || null;
+        setSelectedVideo(freshVideo);
       }
-    }).catch(() => { /* fall back to local videoService */ });
+    } catch (error) {
+      console.error('Failed to load videos:', error);
+      setAllVideos([]);
+      setVideos([]);
+      setVideoError('Video library is unavailable right now.');
+      if (selectedVideoId) {
+        setSelectedVideo(null);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    refreshVideos();
   }, []);
 
   const extractYouTubeId = (url: string): string | null => {
@@ -123,58 +270,68 @@ const VideoAnalysis: React.FC = () => {
   const handleAddAnnotation = () => {
     if (!selectedVideo) return;
 
-    const annotation = videoService.addAnnotation(selectedVideo.id, {
+    apiService.createVideoAnnotation(selectedVideo.id, {
       timestamp: Math.floor(currentTime),
       type: newAnnotation.type,
-      note: newAnnotation.note,
+      text: newAnnotation.note,
       rating: newAnnotation.rating,
-      createdBy: 'current_user@scoutpro.com'
-    });
-
-    if (annotation) {
-      // Refresh video data
-      const updated = videoService.getVideoById(selectedVideo.id);
-      if (updated) {
-        setSelectedVideo(updated);
-      }
-
-      setShowAnnotationForm(false);
-      setNewAnnotation({ type: 'note', note: '', rating: 5 });
-    }
+      author: 'current_user@scoutpro.com'
+    }).then(() => refreshVideos(selectedVideo.id))
+      .then(() => {
+        setShowAnnotationForm(false);
+        setNewAnnotation({ type: 'note', note: '', rating: 5 });
+      })
+      .catch((error) => {
+        console.error('Failed to create annotation:', error);
+        alert('Annotation could not be saved.');
+      });
   };
 
   const handleUpdateAnnotation = () => {
     if (!selectedVideo || !editingAnnotation) return;
 
-    videoService.updateAnnotation(selectedVideo.id, editingAnnotation.id, {
+    apiService.updateVideoAnnotation(selectedVideo.id, editingAnnotation.id, {
       type: newAnnotation.type,
-      note: newAnnotation.note,
+      text: newAnnotation.note,
       rating: newAnnotation.rating
-    });
-
-    // Refresh video data
-    const updated = videoService.getVideoById(selectedVideo.id);
-    if (updated) {
-      setSelectedVideo(updated);
-    }
-
-    setEditingAnnotation(null);
-    setShowAnnotationForm(false);
-    setNewAnnotation({ type: 'note', note: '', rating: 5 });
+    }).then(() => refreshVideos(selectedVideo.id))
+      .then(() => {
+        setEditingAnnotation(null);
+        setShowAnnotationForm(false);
+        setNewAnnotation({ type: 'note', note: '', rating: 5 });
+      })
+      .catch((error) => {
+        console.error('Failed to update annotation:', error);
+        alert('Annotation could not be updated.');
+      });
   };
 
   const handleDeleteAnnotation = (annotationId: string) => {
     if (!selectedVideo) return;
 
     if (confirm('Delete this annotation?')) {
-      videoService.deleteAnnotation(selectedVideo.id, annotationId);
-
-      // Refresh video data
-      const updated = videoService.getVideoById(selectedVideo.id);
-      if (updated) {
-        setSelectedVideo(updated);
-      }
+      apiService.deleteVideoAnnotation(selectedVideo.id, annotationId)
+        .then(() => refreshVideos(selectedVideo.id))
+        .catch((error) => {
+          console.error('Failed to delete annotation:', error);
+          alert('Annotation could not be deleted.');
+        });
     }
+  };
+
+  const handleQuickAnnotation = (type: AnnotationType) => {
+    if (!selectedVideo) return;
+
+    apiService.createVideoAnnotation(selectedVideo.id, {
+      timestamp: Math.floor(currentTime),
+      type,
+      text: `${type.charAt(0).toUpperCase() + type.slice(1)} at ${formatTime(currentTime)}`,
+      author: 'current_user@scoutpro.com'
+    }).then(() => refreshVideos(selectedVideo.id))
+      .catch((error) => {
+        console.error('Failed to create quick annotation:', error);
+        alert('Annotation could not be saved.');
+      });
   };
 
   const handleEditAnnotation = (annotation: VideoAnnotation) => {
@@ -216,6 +373,106 @@ const VideoAnalysis: React.FC = () => {
     }
   };
 
+  const resetVideoModal = () => {
+    setShowAddVideoModal(false);
+    setSubmittingVideo(false);
+    setVideoForm(emptyVideoForm);
+  };
+
+  const handleFileUpload = async () => {
+    if (!uploadFile) return;
+    setUploading(true);
+    setUploadProgress(0);
+    const formData = new FormData();
+    formData.append('file', uploadFile);
+    if (uploadMatchId.trim()) formData.append('match_id', uploadMatchId.trim());
+    if (uploadTeamId.trim()) formData.append('team_id', uploadTeamId.trim());
+    try {
+      const res = await (apiService as any).uploadVideoWithProgress(formData, (pct: number) => setUploadProgress(pct));
+      if (res.success) {
+        await refreshVideos();
+        setShowUploadModal(false);
+        setUploadFile(null);
+        setUploadMatchId('');
+        setUploadTeamId('');
+      } else {
+        alert('Upload failed: ' + (res.error?.message ?? 'Unknown error'));
+      }
+    } catch {
+      alert('Upload failed.');
+    } finally {
+      setUploading(false);
+      setUploadProgress(0);
+    }
+  };
+
+  const handleAnalyzeVideo = async (e: React.MouseEvent, videoId: string) => {
+    e.stopPropagation();
+    setAnalyzingVideos(prev => new Set(prev).add(videoId));
+    try {
+      await apiService.analyzeVideo(videoId);
+      await refreshVideos();
+    } catch {
+      alert('Analysis request failed.');
+    } finally {
+      setAnalyzingVideos(prev => { const s = new Set(prev); s.delete(videoId); return s; });
+    }
+  };
+
+  const handleDeleteVideo = async (e: React.MouseEvent, videoId: string) => {
+    e.stopPropagation();
+    if (!confirm('Delete this video? This cannot be undone.')) return;
+    try {
+      await apiService.deleteVideo(videoId);
+      await refreshVideos();
+      if (selectedVideo?.id === videoId) setSelectedVideo(null);
+    } catch {
+      alert('Delete failed.');
+    }
+  };
+
+  const handlePlayStream = (e: React.MouseEvent, videoId: string) => {
+    e.stopPropagation();
+    const streamUrl = apiService.getVideoStreamUrl(videoId);
+    window.open(streamUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleCreateVideo = async () => {
+    if (!videoForm.url.trim() || !videoForm.title.trim()) {
+      alert('Video URL and title are required.');
+      return;
+    }
+
+    setSubmittingVideo(true);
+
+    try {
+      const payload = {
+        url: videoForm.url.trim(),
+        title: videoForm.title.trim(),
+        description: videoForm.description.trim(),
+        uploadedBy: 'current_user@scoutpro.com',
+        player: videoForm.playerName.trim()
+          ? { name: videoForm.playerName.trim() }
+          : undefined,
+        match: parseMatchDetails(videoForm.matchDetails),
+        tags: videoForm.tags
+          .split(',')
+          .map((tag) => tag.trim())
+          .filter(Boolean),
+      };
+
+      const response = await apiService.createVideoEntry(payload);
+      const createdVideo = normalizeVideo(response.data);
+      await refreshVideos(createdVideo.id);
+      setSelectedVideo(createdVideo);
+      resetVideoModal();
+    } catch (error) {
+      console.error('Failed to create video:', error);
+      alert('Video could not be added.');
+      setSubmittingVideo(false);
+    }
+  };
+
   const formatTime = (seconds: number): string => {
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
@@ -223,25 +480,34 @@ const VideoAnalysis: React.FC = () => {
   };
 
   const applyFilters = () => {
-    const filtered = videoService.getVideos({
-      player: filterPlayer || undefined,
-      competition: filterCompetition || undefined,
-      tags: filterTags.length > 0 ? filterTags : undefined
+    const filtered = allVideos.filter((video) => {
+      const matchesPlayer = !filterPlayer || video.player?.name === filterPlayer;
+      const matchesCompetition = !filterCompetition || video.match?.competition === filterCompetition;
+      const matchesTags = filterTags.length === 0 || filterTags.some((tag) => video.tags.includes(tag));
+      return matchesPlayer && matchesCompetition && matchesTags;
     });
     setVideos(filtered);
   };
 
   const handleSearch = () => {
     if (searchQuery.trim()) {
-      setVideos(videoService.searchVideos(searchQuery));
+      const lowerQuery = searchQuery.toLowerCase();
+      setVideos(allVideos.filter((video) =>
+        video.title.toLowerCase().includes(lowerQuery) ||
+        video.description?.toLowerCase().includes(lowerQuery) ||
+        video.player?.name.toLowerCase().includes(lowerQuery) ||
+        video.match?.homeTeam.toLowerCase().includes(lowerQuery) ||
+        video.match?.awayTeam.toLowerCase().includes(lowerQuery) ||
+        video.tags.some((tag) => tag.toLowerCase().includes(lowerQuery))
+      ));
     } else {
-      setVideos(videoService.getVideos());
+      setVideos(allVideos);
     }
   };
 
   useEffect(() => {
     handleSearch();
-  }, [searchQuery]);
+  }, [searchQuery, allVideos]);
 
   // Update current time periodically
   useEffect(() => {
@@ -271,9 +537,7 @@ const VideoAnalysis: React.FC = () => {
     note: 'bg-slate-600'
   };
 
-  const allTags = videoService.getAllTags();
-  const allPlayers = videoService.getAllPlayers();
-  const allCompetitions = videoService.getAllCompetitions();
+  const { tags: allTags, players: allPlayers, competitions: allCompetitions } = buildFilterOptions(allVideos);
 
   if (selectedVideo) {
     const videoId = extractYouTubeId(selectedVideo.url);
@@ -428,16 +692,7 @@ const VideoAnalysis: React.FC = () => {
                 {(['goal', 'assist', 'shot', 'pass', 'dribble', 'tackle'] as AnnotationType[]).map((type) => (
                   <button
                     key={type}
-                    onClick={() => {
-                      videoService.addAnnotation(selectedVideo.id, {
-                        timestamp: Math.floor(currentTime),
-                        type,
-                        note: `${type.charAt(0).toUpperCase() + type.slice(1)} at ${formatTime(currentTime)}`,
-                        createdBy: 'current_user@scoutpro.com'
-                      });
-                      const updated = videoService.getVideoById(selectedVideo.id);
-                      if (updated) setSelectedVideo(updated);
-                    }}
+                    onClick={() => handleQuickAnnotation(type)}
                     className={`px-3 py-1 ${annotationTypeColors[type]} text-white text-xs rounded-full hover:opacity-80 transition-opacity`}
                     title={`Quick add ${type} annotation`}
                   >
@@ -699,20 +954,6 @@ const VideoAnalysis: React.FC = () => {
 
                 <button
                   onClick={() => {
-                    alert('📧 Email sharing will be available once backend is connected');
-                    setShowShareModal(false);
-                  }}
-                  className="w-full flex items-center space-x-3 px-4 py-3 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors text-left"
-                >
-                  <MessageSquare className="h-5 w-5 text-green-400" />
-                  <div>
-                    <div className="font-medium">Share via Email</div>
-                    <div className="text-xs text-slate-400">Send to team members</div>
-                  </div>
-                </button>
-
-                <button
-                  onClick={() => {
                     handleExportAnalysis();
                     setShowShareModal(false);
                   }}
@@ -780,6 +1021,13 @@ const VideoAnalysis: React.FC = () => {
             <Plus className="h-4 w-4" />
             <span>Add Video</span>
           </button>
+          <button
+            onClick={() => setShowUploadModal(true)}
+            className="flex items-center space-x-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors"
+          >
+            <Upload className="h-4 w-4" />
+            <span>Upload</span>
+          </button>
         </div>
       </div>
 
@@ -796,6 +1044,12 @@ const VideoAnalysis: React.FC = () => {
           />
         </div>
       </div>
+
+      {videoError && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {videoError}
+        </div>
+      )}
 
       {/* Filters Panel */}
       {showFilters && (
@@ -841,7 +1095,7 @@ const VideoAnalysis: React.FC = () => {
                   setFilterPlayer('');
                   setFilterCompetition('');
                   setFilterTags([]);
-                  setVideos(videoService.getVideos());
+                  setVideos(allVideos);
                 }}
                 className="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded-lg transition-colors"
               >
@@ -857,90 +1111,130 @@ const VideoAnalysis: React.FC = () => {
         Showing {videos.length} video{videos.length !== 1 ? 's' : ''}
       </div>
 
-      {/* Video Grid/List */}
-      <div className={viewMode === 'grid' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6' : 'space-y-4'}>
-        {videos.map((video) => (
-          <div
-            key={video.id}
-            onClick={() => setSelectedVideo(video)}
-            className="bg-slate-800 rounded-xl overflow-hidden cursor-pointer hover:ring-2 hover:ring-purple-500 transition-all"
-          >
-            <div className="relative">
-              <img
-                src={video.thumbnail}
-                alt={video.title}
-                className="w-full h-48 object-cover"
-                onError={(e) => {
-                  e.currentTarget.src = 'https://via.placeholder.com/640x360?text=Video+Thumbnail';
-                }}
-              />
-              <div className="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded text-xs font-mono">
-                {video.duration}
-              </div>
-              <div className="absolute top-2 left-2">
-                <span className="px-2 py-1 bg-purple-600 text-white text-xs rounded">
-                  {video.source}
-                </span>
-              </div>
-              {video.annotations.length > 0 && (
-                <div className="absolute top-2 right-2 bg-green-600 text-white text-xs px-2 py-1 rounded flex items-center space-x-1">
-                  <MessageSquare className="h-3 w-3" />
-                  <span>{video.annotations.length}</span>
-                </div>
-              )}
-            </div>
-
-            <div className="p-4">
-              <h3 className="font-semibold mb-2 line-clamp-2">{video.title}</h3>
-
-              {video.player && (
-                <div className="flex items-center space-x-2 text-sm text-slate-400 mb-2">
-                  <User className="h-4 w-4" />
-                  <span>{video.player.name}</span>
-                  {video.player.position && (
-                    <span className="px-2 py-0.5 bg-slate-700 rounded text-xs">
-                      {video.player.position}
+      {loading ? (
+        <div className="flex items-center justify-center rounded-xl bg-slate-800 px-6 py-20 text-slate-300">
+          Loading video library...
+        </div>
+      ) : (
+        <>
+          {/* Video Grid/List */}
+          <div className={viewMode === 'grid' ? 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6' : 'space-y-4'}>
+            {videos.map((video) => (
+              <div
+                key={video.id}
+                onClick={() => setSelectedVideo(video)}
+                className="bg-slate-800 rounded-xl overflow-hidden cursor-pointer hover:ring-2 hover:ring-purple-500 transition-all"
+              >
+                <div className="relative">
+                  <img
+                    src={video.thumbnail || VIDEO_PLACEHOLDER}
+                    alt={video.title}
+                    className="w-full h-48 object-cover"
+                    onError={(e) => {
+                      e.currentTarget.onerror = null;
+                      e.currentTarget.src = VIDEO_PLACEHOLDER;
+                    }}
+                  />
+                  <div className="absolute bottom-2 right-2 bg-black/80 px-2 py-1 rounded text-xs font-mono">
+                    {video.duration}
+                  </div>
+                  <div className="absolute top-2 left-2">
+                    <span className="px-2 py-1 bg-purple-600 text-white text-xs rounded">
+                      {video.source}
                     </span>
+                  </div>
+                  {video.annotations.length > 0 && (
+                    <div className="absolute top-2 right-2 bg-green-600 text-white text-xs px-2 py-1 rounded flex items-center space-x-1">
+                      <MessageSquare className="h-3 w-3" />
+                      <span>{video.annotations.length}</span>
+                    </div>
                   )}
                 </div>
-              )}
 
-              {video.match && (
-                <div className="flex items-center space-x-2 text-sm text-slate-400 mb-2">
-                  <Calendar className="h-4 w-4" />
-                  <span className="line-clamp-1">{video.match.homeTeam} vs {video.match.awayTeam}</span>
-                </div>
-              )}
+                <div className="p-4">
+                  <h3 className="font-semibold mb-2 line-clamp-2">{video.title}</h3>
 
-              <div className="flex items-center justify-between text-sm mt-3">
-                <div className="flex items-center space-x-2 text-slate-400">
-                  <Tag className="h-4 w-4" />
-                  <span>{video.tags.length} tags</span>
-                </div>
-                <div className="flex flex-wrap gap-1">
-                  {video.tags.slice(0, 2).map((tag) => (
-                    <span key={tag} className="px-2 py-0.5 bg-slate-700 rounded text-xs">
-                      {tag}
-                    </span>
-                  ))}
-                  {video.tags.length > 2 && (
-                    <span className="px-2 py-0.5 bg-slate-700 rounded text-xs">
-                      +{video.tags.length - 2}
-                    </span>
+                  {video.player && (
+                    <div className="flex items-center space-x-2 text-sm text-slate-400 mb-2">
+                      <User className="h-4 w-4" />
+                      <span>{video.player.name}</span>
+                      {video.player.position && (
+                        <span className="px-2 py-0.5 bg-slate-700 rounded text-xs">
+                          {video.player.position}
+                        </span>
+                      )}
+                    </div>
                   )}
+
+                  {video.match && (
+                    <div className="flex items-center space-x-2 text-sm text-slate-400 mb-2">
+                      <Calendar className="h-4 w-4" />
+                      <span className="line-clamp-1">{video.match.homeTeam} vs {video.match.awayTeam}</span>
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between text-sm mt-3">
+                    <div className="flex items-center space-x-2 text-slate-400">
+                      <Tag className="h-4 w-4" />
+                      <span>{video.tags.length} tags</span>
+                    </div>
+                    <div className="flex flex-wrap gap-1">
+                      {video.tags.slice(0, 2).map((tag) => (
+                        <span key={tag} className="px-2 py-0.5 bg-slate-700 rounded text-xs">
+                          {tag}
+                        </span>
+                      ))}
+                      {video.tags.length > 2 && (
+                        <span className="px-2 py-0.5 bg-slate-700 rounded text-xs">
+                          +{video.tags.length - 2}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Action buttons */}
+                  <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-700">
+                    <button
+                      onClick={(e) => handlePlayStream(e, video.id)}
+                      title="Stream video"
+                      className="flex items-center gap-1 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 rounded-lg text-xs font-medium transition-colors"
+                    >
+                      <Play className="h-3 w-3" />
+                      Play
+                    </button>
+                    <button
+                      onClick={(e) => handleAnalyzeVideo(e, video.id)}
+                      disabled={analyzingVideos.has(video.id)}
+                      title="Analyse video"
+                      className="flex items-center gap-1 px-3 py-1.5 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded-lg text-xs font-medium transition-colors"
+                    >
+                      {analyzingVideos.has(video.id)
+                        ? <Loader2 className="h-3 w-3 animate-spin" />
+                        : <BarChart2 className="h-3 w-3" />}
+                      Analyse
+                    </button>
+                    <button
+                      onClick={(e) => handleDeleteVideo(e, video.id)}
+                      title="Delete video"
+                      className="ml-auto flex items-center gap-1 px-3 py-1.5 bg-red-600/80 hover:bg-red-600 rounded-lg text-xs font-medium transition-colors"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      Delete
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
+            ))}
           </div>
-        ))}
-      </div>
 
-      {videos.length === 0 && (
+          {videos.length === 0 && (
         <div className="text-center py-16">
           <Film className="h-16 w-16 mx-auto mb-4 text-slate-600" />
           <p className="text-xl text-slate-400 mb-2">No videos found</p>
           <p className="text-sm text-slate-500">Try adjusting your search or filters</p>
         </div>
+          )}
+        </>
       )}
 
       {/* Add Video Modal */}
@@ -959,76 +1253,209 @@ const VideoAnalysis: React.FC = () => {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium mb-2">Video URL <span className="text-red-400">*</span></label>
+                <label htmlFor="video-url" className="block text-sm font-medium mb-2">Video URL <span className="text-red-400">*</span></label>
                 <input
+                  id="video-url"
                   type="text"
                   placeholder="https://youtube.com/watch?v=..."
+                  value={videoForm.url}
+                  onChange={(e) => setVideoForm({ ...videoForm, url: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
                 <p className="text-xs text-slate-400 mt-1">YouTube, Vimeo, or direct video URL</p>
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-2">Title <span className="text-red-400">*</span></label>
+                <label htmlFor="video-title" className="block text-sm font-medium mb-2">Title <span className="text-red-400">*</span></label>
                 <input
+                  id="video-title"
                   type="text"
                   placeholder="e.g., Player Highlights - Match vs Team"
+                  value={videoForm.title}
+                  onChange={(e) => setVideoForm({ ...videoForm, title: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-2">Player Name</label>
+                <label htmlFor="video-player-name" className="block text-sm font-medium mb-2">Player Name</label>
                 <input
+                  id="video-player-name"
                   type="text"
                   placeholder="e.g., Erling Haaland"
+                  value={videoForm.playerName}
+                  onChange={(e) => setVideoForm({ ...videoForm, playerName: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-2">Match Details</label>
+                <label htmlFor="video-match-details" className="block text-sm font-medium mb-2">Match Details</label>
                 <input
+                  id="video-match-details"
                   type="text"
                   placeholder="e.g., Man City vs Arsenal (3-1)"
+                  value={videoForm.matchDetails}
+                  onChange={(e) => setVideoForm({ ...videoForm, matchDetails: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-2">Tags</label>
+                <label htmlFor="video-tags" className="block text-sm font-medium mb-2">Tags</label>
                 <input
+                  id="video-tags"
                   type="text"
                   placeholder="e.g., goals, dribbling, positioning (comma-separated)"
+                  value={videoForm.tags}
+                  onChange={(e) => setVideoForm({ ...videoForm, tags: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium mb-2">Description</label>
+                <label htmlFor="video-description" className="block text-sm font-medium mb-2">Description</label>
                 <textarea
+                  id="video-description"
                   placeholder="Optional notes about this video..."
+                  value={videoForm.description}
+                  onChange={(e) => setVideoForm({ ...videoForm, description: e.target.value })}
                   className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg h-20 resize-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
                 />
               </div>
 
               <div className="flex space-x-3 pt-2">
                 <button
-                  onClick={() => {
-                    alert('✅ Video added successfully!\n\n(Note: This will be saved to database once backend is connected)');
-                    setShowAddVideoModal(false);
-                  }}
-                  className="flex-1 bg-green-600 hover:bg-green-700 py-2 rounded-lg transition-colors font-medium"
+                  onClick={handleCreateVideo}
+                  disabled={submittingVideo}
+                  className="flex-1 bg-green-600 hover:bg-green-700 disabled:bg-slate-600 py-2 rounded-lg transition-colors font-medium"
                 >
-                  Add Video
+                  {submittingVideo ? 'Saving...' : 'Add Video'}
                 </button>
                 <button
-                  onClick={() => setShowAddVideoModal(false)}
+                  onClick={resetVideoModal}
                   className="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded-lg transition-colors"
                 >
                   Cancel
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Upload Video Modal */}
+      {showUploadModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-slate-800 rounded-xl p-6 w-full max-w-md">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-xl font-semibold flex items-center gap-2">
+                <Upload className="h-5 w-5 text-purple-400" />
+                Upload Video File
+              </h3>
+              <button
+                onClick={() => { setShowUploadModal(false); setUploadFile(null); setUploadProgress(0); }}
+                className="p-1 hover:bg-slate-700 rounded transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            {/* Drag-and-drop zone */}
+            <div
+              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragLeave={() => setIsDragging(false)}
+              onDrop={(e) => {
+                e.preventDefault();
+                setIsDragging(false);
+                const file = e.dataTransfer.files?.[0];
+                if (file) setUploadFile(file);
+              }}
+              onClick={() => fileInputRef.current?.click()}
+              className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${
+                isDragging
+                  ? 'border-purple-400 bg-purple-500/10'
+                  : uploadFile
+                  ? 'border-green-500 bg-green-500/10'
+                  : 'border-slate-600 hover:border-slate-500'
+              }`}
+            >
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="video/*"
+                className="hidden"
+                onChange={(e) => { const f = e.target.files?.[0]; if (f) setUploadFile(f); }}
+              />
+              {uploadFile ? (
+                <div className="space-y-1">
+                  <Camera className="h-10 w-10 mx-auto text-green-400" />
+                  <p className="font-medium text-green-300">{uploadFile.name}</p>
+                  <p className="text-xs text-slate-400">{(uploadFile.size / 1024 / 1024).toFixed(1)} MB</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <Upload className="h-10 w-10 mx-auto text-slate-500" />
+                  <p className="text-slate-300">Drag &amp; drop a video file here</p>
+                  <p className="text-xs text-slate-500">or click to browse</p>
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-3 mt-4">
+              <div>
+                <label className="block text-sm font-medium mb-1">Match ID <span className="text-slate-500">(optional)</span></label>
+                <input
+                  type="text"
+                  value={uploadMatchId}
+                  onChange={(e) => setUploadMatchId(e.target.value)}
+                  placeholder="e.g. match_123"
+                  className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1">Team ID <span className="text-slate-500">(optional)</span></label>
+                <input
+                  type="text"
+                  value={uploadTeamId}
+                  onChange={(e) => setUploadTeamId(e.target.value)}
+                  placeholder="e.g. team_456"
+                  className="w-full px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
+                />
+              </div>
+            </div>
+
+            {/* Progress bar */}
+            {uploading && (
+              <div className="mt-4">
+                <div className="flex justify-between text-xs text-slate-400 mb-1">
+                  <span>Uploading…</span>
+                  <span>{uploadProgress}%</span>
+                </div>
+                <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-purple-500 rounded-full transition-all"
+                    style={{ width: `${uploadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-3 mt-5">
+              <button
+                onClick={handleFileUpload}
+                disabled={!uploadFile || uploading}
+                className="flex-1 flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 disabled:cursor-not-allowed py-2 rounded-lg transition-colors font-medium"
+              >
+                {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                {uploading ? `Uploading ${uploadProgress}%` : 'Upload'}
+              </button>
+              <button
+                onClick={() => { setShowUploadModal(false); setUploadFile(null); setUploadProgress(0); }}
+                className="flex-1 bg-slate-700 hover:bg-slate-600 py-2 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
             </div>
           </div>
         </div>

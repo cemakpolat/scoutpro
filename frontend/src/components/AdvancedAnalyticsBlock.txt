@@ -1,0 +1,71 @@
+        {/* Phase 3 Advanced Analytics Block */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+          <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700 p-6">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+              <Zap className="w-5 h-5 mr-2 text-yellow-400" />
+              Composite Index & Expected
+            </h3>
+            <div className="space-y-4">
+              {compositeIndex ? (
+                <>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Total Index</span>
+                    <span className="font-semibold text-green-400">{compositeIndex.total_index?.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Attacking</span>
+                    <span className="font-semibold text-white">{compositeIndex.components?.attacking?.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Possession</span>
+                    <span className="font-semibold text-white">{compositeIndex.components?.possession?.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Defending</span>
+                    <span className="font-semibold text-white">{compositeIndex.components?.defending?.toFixed(2)}</span>
+                  </div>
+                </>
+              ) : (
+                <span className="text-slate-400 text-sm">Computing composite elements...</span>
+              )}
+{expectedMetrics && expectedMetrics.analytical_xg > 0 && (
+  <>
+                  <div className="flex justify-between items-center border-t border-slate-700 pt-2 mt-2">
+                    <span className="text-slate-400">Analytical xG</span>
+                    <span className="font-semibold text-white">{expectedMetrics.analytical_xg?.toFixed(2)}</span>
+                  </div>
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Analytical xA</span>
+                    <span className="font-semibold text-white">{expectedMetrics.analytical_xa?.toFixed(2)}</span>
+                  </div>
+  </>
+)}
+            </div>
+          </div>
+
+          <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700 p-6">
+            <h3 className="text-lg font-semibold text-white mb-4 flex items-center">
+              <Target className="w-5 h-5 mr-2 text-red-400" />
+              Spatial Density Heatmap (Sample)
+            </h3>
+            {heatmap && heatmap.length > 0 ? (
+              <div className="relative w-full h-48 bg-green-800/20 border border-green-600/30 rounded flex items-center justify-center overflow-hidden">
+                {/* Simplified Heatmap Render */}
+                {heatmap.map((cell: any, i: number) => {
+                   const maxCount = Math.max(...heatmap.map((c:any) => c.count));
+                   const opacity = cell.count / maxCount;
+                   // Position based on grid layout assuming 10x10. Grid x: 0-9, y: 0-9
+                   const left = \`\${(cell.grid_x / 10) * 100}%\`;
+                   const bottom = \`\${(cell.grid_y / 10) * 100}%\`;
+                   return (
+                     <div key={i} className="absolute w-1/10 h-1/10 bg-red-500 rounded-full" 
+                          style={{ left, bottom, opacity, width: '10%', height: '10%', transform: 'translate(-50%, 50%)' }}
+                          title={\`Count: \${cell.count}\`} />
+                   );
+                })}
+              </div>
+            ) : (
+              <span className="text-slate-400 text-sm">Waiting for spatial telemetry...</span>
+            )}
+          </div>
+        </div>

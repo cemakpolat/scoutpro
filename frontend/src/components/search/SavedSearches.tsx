@@ -7,8 +7,6 @@ import {
   Edit2,
   Check,
   X,
-  Plus,
-  AlertCircle,
 } from 'lucide-react';
 import { searchService } from '../../services/searchService';
 import { SavedSearch, SearchHistory, SearchFilters } from '../../types/search';
@@ -26,23 +24,39 @@ const SavedSearches: React.FC<SavedSearchesProps> = ({ onSearchSelect }) => {
 
   // Load saved searches and history
   useEffect(() => {
-    loadData();
+    void loadData();
   }, []);
 
-  const loadData = () => {
-    setSavedSearches(searchService.getSavedSearches());
-    setSearchHistory(searchService.getRecentSearches());
+  const loadData = async () => {
+    try {
+      const [saved, history] = await Promise.all([
+        searchService.getSavedSearches(),
+        searchService.getRecentSearches(),
+      ]);
+      setSavedSearches(saved);
+      setSearchHistory(history);
+    } catch (error) {
+      console.error('Failed to load saved searches', error);
+    }
   };
 
-  const handleDelete = (id: string) => {
-    searchService.deleteSavedSearch(id);
-    loadData();
+  const handleDelete = async (id: string) => {
+    try {
+      await searchService.deleteSavedSearch(id);
+      await loadData();
+    } catch (error) {
+      console.error('Failed to delete saved search', error);
+    }
   };
 
-  const handleClearHistory = () => {
+  const handleClearHistory = async () => {
     if (confirm('Are you sure you want to clear your search history?')) {
-      searchService.clearHistory();
-      loadData();
+      try {
+        await searchService.clearHistory();
+        await loadData();
+      } catch (error) {
+        console.error('Failed to clear search history', error);
+      }
     }
   };
 
@@ -51,17 +65,18 @@ const SavedSearches: React.FC<SavedSearchesProps> = ({ onSearchSelect }) => {
     setEditName(search.name);
   };
 
-  const handleEditSave = (search: SavedSearch) => {
-    // Update search name by deleting and re-saving
-    searchService.deleteSavedSearch(search.id);
-    searchService.saveSearch({
-      name: editName,
-      query: search.query,
-      filters: search.filters,
-      type: search.type,
-    });
-    setEditingId(null);
-    loadData();
+  const handleEditSave = async (search: SavedSearch) => {
+    if (!editName.trim()) {
+      return;
+    }
+
+    try {
+      await searchService.updateSavedSearch(search.id, { name: editName.trim() });
+      setEditingId(null);
+      await loadData();
+    } catch (error) {
+      console.error('Failed to update saved search', error);
+    }
   };
 
   const handleEditCancel = () => {

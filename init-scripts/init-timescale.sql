@@ -38,3 +38,31 @@ CREATE INDEX IF NOT EXISTS idx_player_performance_player_id ON player_performanc
 -- Create retention policies (keep 1 year)
 SELECT add_retention_policy('match_stats', INTERVAL '1 year', if_not_exists => TRUE);
 SELECT add_retention_policy('player_performance', INTERVAL '1 year', if_not_exists => TRUE);
+
+-- ==========================================
+-- STEP 2: MEDALLION ARCHITECTURE (GOLD TIER)
+-- Match Events Timeseries Hypertable
+-- ==========================================
+CREATE TABLE IF NOT EXISTS match_events_ts (
+    event_time TIMESTAMPTZ NOT NULL,
+    match_id VARCHAR(50) NOT NULL,
+    player_id VARCHAR(50),
+    team_id VARCHAR(50),
+    event_type VARCHAR(100) NOT NULL,
+    x_coord FLOAT,
+    y_coord FLOAT,
+    end_x_coord FLOAT,
+    end_y_coord FLOAT,
+    is_success BOOLEAN,
+    metadata JSONB
+);
+
+-- Convert to TimescaleDB hypertable partitioned by event_time
+SELECT create_hypertable('match_events_ts', 'event_time', if_not_exists => TRUE);
+
+-- Create fast lookup indexes for spatial and temporal ML queries
+CREATE INDEX IF NOT EXISTS idx_match_events_ts_match_time ON match_events_ts (match_id, event_time);
+CREATE INDEX IF NOT EXISTS idx_match_events_ts_player ON match_events_ts (player_id, event_type);
+
+-- Keep events for 2 years (historical analysis span)
+SELECT add_retention_policy('match_events_ts', INTERVAL '2 years', if_not_exists => TRUE);

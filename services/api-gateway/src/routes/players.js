@@ -1,152 +1,595 @@
 /**
- * Players Routes - Proxies to player-service or serves from MongoDB directly
+ * Players Routes - Proxies to player-service.
  */
 const express = require('express');
+const { ObjectId } = require('mongodb');
 const router = express.Router();
 
-// GET /api/players - List all players
+const {
+  ensureSuccess,
+  normalizeEntity,
+  normalizeList,
+  requestJson,
+  sendGatewayError,
+  unwrapPayload,
+} = require('../utils/serviceClient');
+
+const playerServiceUrl = (process.env.PLAYER_SERVICE_URL || 'http://player-service:8000').replace(/\/$/, '');
+const analyticsServiceUrl = (process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8012').replace(/\/$/, '');
+const playerRequestTimeoutMs = Number(process.env.PLAYER_SERVICE_TIMEOUT_MS || 2500);
+const analyticsRequestTimeoutMs = Number(process.env.ANALYTICS_SERVICE_TIMEOUT_MS || 2500);
+
+function toFiniteNumber(value, fallback = null) {
+  if (value === null || value === undefined || value === '') {
+    return fallback;
+  }
+
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
+function deriveAgeFromBirthDate(value) {
+  if (!value) {
+    return null;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+
+  const today = new Date();
+  const age = today.getFullYear() - parsed.getFullYear() - (
+    today.getMonth() < parsed.getMonth() ||
+    (today.getMonth() === parsed.getMonth() && today.getDate() < parsed.getDate())
+      ? 1
+      : 0
+  );
+
+  return age >= 0 ? age : null;
+}
+
+function hasMeaningfulValue(value) {
+  return value !== undefined && value !== null && value !== '';
+}
+
+function mergePlayerEntity(base = {}, source = {}, overwriteExisting = true) {
+  const merged = { ...base };
+
+  Object.entries(normalizeEntity(source || {})).forEach(([key, value]) => {
+    if (!hasMeaningfulValue(value)) {
+      return;
+    }
+
+    if (overwriteExisting || !hasMeaningfulValue(merged[key])) {
+      merged[key] = value;
+    }
+  });
+
+  return merged;
+}
+
+function buildPlayerLookup(playerId) {
+  const lookups = [];
+  const seen = new Set();
+
+  const addLookup = (field, value) => {
+    if (!hasMeaningfulValue(value)) {
+      return;
+    }
+
+    const key = `${field}:${String(value)}`;
+    if (seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    lookups.push({ [field]: value });
+  };
+
+  const addIdentifierVariants = (value) => {
+    if (!hasMeaningfulValue(value)) {
+      return;
+    }
+
+    const normalized = String(value).trim();
+    if (!normalized) {
+      return;
+    }
+
+    addLookup('id', normalized);
+    addLookup('uID', normalized);
+    addLookup('scoutpro_id', normalized);
+    addLookup('opta_uid', normalized);
+
+    if (/^p\d+$/i.test(normalized)) {
+      const numericVariant = normalized.slice(1);
+      addLookup('uID', numericVariant);
+      addLookup('opta_uid', numericVariant);
+      addLookup('provider_ids.opta', numericVariant);
+    }
+
+    if (/^\d+$/.test(normalized)) {
+      addLookup('uID', Number(normalized));
+      addLookup('uID', `p${normalized}`);
+      addLookup('opta_uid', `p${normalized}`);
+      addLookup('provider_ids.opta', normalized);
+    }
+  };
+
+  addIdentifierVariants(playerId);
+
+  if (ObjectId.isValid(playerId)) {
+    lookups.push({ _id: new ObjectId(playerId) });
+  }
+
+  return lookups;
+}
+
+function playerSnapshotScore(player = {}) {
+  let score = 0;
+
+  if (hasMeaningfulValue(player.scoutpro_id)) {
+    score += 5;
+  }
+  if (hasMeaningfulValue(player.name)) {
+    score += 4;
+  }
+  if (hasMeaningfulValue(player.position)) {
+    score += 3;
+  }
+  if (hasMeaningfulValue(player.detailed_position) || hasMeaningfulValue(player.detailedPosition)) {
+    score += 2;
+  }
+  if (hasMeaningfulValue(player.team_name) || hasMeaningfulValue(player.teamName) || hasMeaningfulValue(player.club)) {
+    score += 2;
+  }
+  if (hasMeaningfulValue(player.birth_date) || hasMeaningfulValue(player.birthDate)) {
+    score += 1;
+  }
+
+  return score;
+}
+
+function buildAnalyticsCandidateIds(requestedPlayerId, player = {}) {
+  const candidates = [];
+
+  const addCandidate = (value) => {
+    if (!hasMeaningfulValue(value)) {
+      return;
+    }
+
+    const normalized = String(value).trim();
+    if (!normalized || candidates.includes(normalized)) {
+      return;
+    }
+
+    candidates.push(normalized);
+
+    if (/^p\d+$/i.test(normalized)) {
+      const numericVariant = normalized.slice(1);
+      if (!candidates.includes(numericVariant)) {
+        candidates.push(numericVariant);
+      }
+    }
+
+    if (/^\d+$/.test(normalized)) {
+      const prefixedVariant = `p${normalized}`;
+      if (!candidates.includes(prefixedVariant)) {
+        candidates.push(prefixedVariant);
+      }
+    }
+  };
+
+  addCandidate(player.provider_ids?.opta);
+  addCandidate(player.opta_uid);
+  addCandidate(player.uID);
+  addCandidate(requestedPlayerId);
+  addCandidate(player.scoutpro_id);
+  addCandidate(player.id);
+
+  return candidates;
+}
+
+function analyticsPayloadHasSignal(payload) {
+  const summary = payload?.summary || {};
+  const player = normalizeEntity(payload?.player || {});
+
+  if (Object.keys(player).length > 0) {
+    return true;
+  }
+
+  return [
+    summary.rating,
+    summary.goals,
+    summary.assists,
+    summary.appearances,
+    summary.passAccuracy,
+    summary.club,
+    summary.position,
+    summary.age,
+  ].some(hasMeaningfulValue);
+}
+
+async function findAnalyticsSummary(requestedPlayerId, basePlayer = {}) {
+  const candidates = buildAnalyticsCandidateIds(requestedPlayerId, basePlayer);
+  let fallbackPayload = null;
+
+  for (const candidate of candidates) {
+    const result = await requestJson(analyticsServiceUrl, `/api/v2/analytics/insights/player/${candidate}`, {
+      timeoutMs: analyticsRequestTimeoutMs,
+    }).catch((error) => {
+      console.warn(`Analytics summary request failed for ${candidate}:`, error.message);
+      return null;
+    });
+
+    if (!result?.ok) {
+      continue;
+    }
+
+    fallbackPayload = result.payload;
+    if (analyticsPayloadHasSignal(result.payload)) {
+      return result.payload;
+    }
+  }
+
+  return fallbackPayload;
+}
+
+async function findPlayerSnapshot(db, playerId) {
+  if (!db) {
+    return null;
+  }
+
+  const docs = await db.collection('players').find({ $or: buildPlayerLookup(playerId) }).limit(10).toArray();
+  if (!docs.length) {
+    return null;
+  }
+
+  const merged = docs
+    .sort((left, right) => playerSnapshotScore(right) - playerSnapshotScore(left))
+    .reduce((player, doc) => mergePlayerEntity(player, doc, false), {});
+
+  return normalizeEntity({
+    ...merged,
+    id: String(merged.scoutpro_id || merged.id || merged.uID || playerId),
+  });
+}
+
+function mergePlayerReadModel(basePlayer = {}, analyticsPayload = null) {
+  const analyticsPlayer = normalizeEntity(analyticsPayload?.player || {});
+  const summary = analyticsPayload?.summary || {};
+  const merged = normalizeEntity({ ...basePlayer, ...analyticsPlayer });
+  const resolvedName = merged.name || [merged.first_name || merged.firstName, merged.last_name || merged.lastName].filter(Boolean).join(' ');
+
+  return {
+    ...merged,
+    id: String(merged.id || analyticsPayload?.player_id || ''),
+    name: resolvedName || 'Unknown Player',
+    firstName: merged.firstName || merged.first_name || null,
+    lastName: merged.lastName || merged.last_name || null,
+    position: merged.position || merged.detailed_position || summary.position || null,
+    club: merged.club || merged.team_name || summary.club || null,
+    age: merged.age ?? summary.age ?? deriveAgeFromBirthDate(merged.birth_date || merged.birthDate),
+    rating: toFiniteNumber(summary.rating, merged.rating ?? null),
+    overallRating: toFiniteNumber(summary.rating, merged.overallRating ?? merged.rating ?? null),
+    goals: toFiniteNumber(summary.goals, merged.goals ?? 0),
+    assists: toFiniteNumber(summary.assists, merged.assists ?? 0),
+    appearances: toFiniteNumber(summary.appearances, merged.appearances ?? 0),
+    passAccuracy: toFiniteNumber(summary.passAccuracy, merged.passAccuracy ?? 0),
+    shirtNumber: merged.shirtNumber || merged.shirt_number || null,
+    analyticsInsights: analyticsPayload?.insights || [],
+    analyticsUpdatedAt: analyticsPayload?.last_updated || null,
+  };
+}
+
 router.get('/', async (req, res) => {
   try {
-    const db = req.app.locals.db;
-    if (!db) return res.json([]);
+    const payload = ensureSuccess(
+      await requestJson(playerServiceUrl, '/api/v2/players', {
+        query: {
+          q: req.query.search || req.query.q,
+          team: req.query.team,
+          club: req.query.club,
+          position: req.query.position,
+          nationality: req.query.nationality,
+          age_min: req.query.ageMin || req.query.age_min,
+          age_max: req.query.ageMax || req.query.age_max,
+          limit: req.query.limit || 50,
+        },
+      }),
+      'Failed to fetch players'
+    );
 
-    const { position, club, nationality, ageMin, ageMax, search, limit = 50, skip = 0 } = req.query;
-    
-    let filter = {};
-    if (position) filter.position = { $in: Array.isArray(position) ? position : [position] };
-    if (club) filter.club = { $in: Array.isArray(club) ? club : [club] };
-    if (nationality) filter.nationality = nationality;
-    if (ageMin || ageMax) {
-      filter.age = {};
-      if (ageMin) filter.age.$gte = parseInt(ageMin);
-      if (ageMax) filter.age.$lte = parseInt(ageMax);
-    }
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { club: { $regex: search, $options: 'i' } },
-        { nationality: { $regex: search, $options: 'i' } }
-      ];
-    }
-
-    const players = await db.collection('players')
-      .find(filter)
-      .skip(parseInt(skip))
-      .limit(parseInt(limit))
-      .toArray();
-
-    // Normalize _id to id
-    const normalized = players.map(p => ({
-      ...p,
-      id: p.id || p._id?.toString(),
-      _id: undefined
-    }));
-
-    res.json(normalized);
+    res.json(normalizeList(payload.players || unwrapPayload(payload)));
   } catch (error) {
     console.error('Players list error:', error);
-    res.status(500).json({ error: 'Failed to fetch players' });
+    sendGatewayError(res, error, 'Failed to fetch players');
   }
 });
 
-// GET /api/players/search - Search players
 router.get('/search', async (req, res) => {
   try {
-    const db = req.app.locals.db;
-    if (!db) return res.json([]);
+    const payload = ensureSuccess(
+      await requestJson(playerServiceUrl, '/api/v2/players/search', {
+        query: {
+          q: req.query.q,
+          limit: req.query.limit || 20,
+        },
+      }),
+      'Search failed'
+    );
 
-    const { q, limit = 20 } = req.query;
-    if (!q) return res.json([]);
-
-    const players = await db.collection('players')
-      .find({
-        $or: [
-          { name: { $regex: q, $options: 'i' } },
-          { club: { $regex: q, $options: 'i' } },
-          { position: { $regex: q, $options: 'i' } },
-          { nationality: { $regex: q, $options: 'i' } }
-        ]
-      })
-      .limit(parseInt(limit))
-      .toArray();
-
-    const normalized = players.map(p => ({
-      ...p,
-      id: p.id || p._id?.toString(),
-      _id: undefined
-    }));
-
-    res.json(normalized);
+    res.json(normalizeList(payload.players || unwrapPayload(payload)));
   } catch (error) {
     console.error('Players search error:', error);
-    res.status(500).json({ error: 'Search failed' });
+    sendGatewayError(res, error, 'Search failed');
   }
 });
 
-// GET /api/players/:id - Get player by ID
+/**
+ * GET /api/players/statistics
+ * Returns player statistics (goals, shots, passes, etc.) aggregated from match events.
+ */
+router.get('/statistics', async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    if (!db) {
+      return res.status(503).json({ success: false, error: 'Database not available' });
+    }
+
+    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+    const skip = Math.max(parseInt(req.query.skip) || 0, 0);
+    const sortBy = req.query.sortBy || 'goals';
+    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
+
+    // Fetch player statistics
+    const stats = await db
+      .collection('player_statistics')
+      .find({})
+      .sort({ [sortBy]: sortOrder })
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    const total = await db.collection('player_statistics').countDocuments({});
+
+    res.json({
+      success: true,
+      data: stats,
+      pagination: {
+        total,
+        skip,
+        limit,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error('Player statistics error:', error);
+    sendGatewayError(res, error, 'Failed to fetch player statistics');
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const db = req.app.locals.db;
-    if (!db) return res.status(404).json({ error: 'Player not found' });
+    const [playerResult, dbPlayer] = await Promise.all([
+      requestJson(playerServiceUrl, `/api/v2/players/${req.params.id}`, {
+        timeoutMs: playerRequestTimeoutMs,
+      }).catch((error) => {
+        console.warn(`Player service request failed for ${req.params.id}:`, error.message);
+        return null;
+      }),
+      findPlayerSnapshot(db, req.params.id).catch((error) => {
+        console.warn(`Mongo player fallback failed for ${req.params.id}:`, error.message);
+        return null;
+      }),
+    ]);
 
-    let player = await db.collection('players').findOne({ id: req.params.id });
-    if (!player) {
-      try {
-        const { ObjectId } = require('mongodb');
-        player = await db.collection('players').findOne({ _id: new ObjectId(req.params.id) });
-      } catch (e) { /* ignore invalid ObjectId */ }
-    }
-    
-    if (!player) return res.status(404).json({ error: 'Player not found' });
-
-    player.id = player.id || player._id?.toString();
-    delete player._id;
-    res.json(player);
-  } catch (error) {
-    console.error('Player get error:', error);
-    res.status(500).json({ error: 'Failed to fetch player' });
-  }
-});
-
-// POST /api/players - Create player
-router.post('/', async (req, res) => {
-  try {
-    const db = req.app.locals.db;
-    if (!db) return res.status(503).json({ error: 'Database unavailable' });
-
-    const { v4: uuidv4 } = require('uuid');
-    const player = {
-      id: uuidv4(),
-      ...req.body,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-
-    await db.collection('players').insertOne(player);
-    res.status(201).json(player);
-  } catch (error) {
-    console.error('Player create error:', error);
-    res.status(500).json({ error: 'Failed to create player' });
-  }
-});
-
-// PUT /api/players/:id - Update player
-router.put('/:id', async (req, res) => {
-  try {
-    const db = req.app.locals.db;
-    if (!db) return res.status(503).json({ error: 'Database unavailable' });
-
-    const result = await db.collection('players').findOneAndUpdate(
-      { id: req.params.id },
-      { $set: { ...req.body, updatedAt: new Date().toISOString() } },
-      { returnDocument: 'after' }
+    const playerPayload = playerResult?.ok ? unwrapPayload(playerResult.payload) : null;
+    const resolvedPlayer = mergePlayerEntity(
+      mergePlayerEntity({}, dbPlayer || {}, false),
+      playerPayload || {},
+      true,
+    );
+    const analyticsPayload = await findAnalyticsSummary(req.params.id, resolvedPlayer);
+    const basePlayer = mergePlayerEntity(
+      mergePlayerEntity({}, resolvedPlayer || {}, true),
+      analyticsPayload?.player || {},
+      true,
     );
 
-    if (!result) return res.status(404).json({ error: 'Player not found' });
-    res.json(result);
+    if (hasMeaningfulValue(basePlayer.scoutpro_id)) {
+      basePlayer.id = String(basePlayer.scoutpro_id);
+    } else if (hasMeaningfulValue(basePlayer.id)) {
+      basePlayer.id = String(basePlayer.id);
+    } else if (hasMeaningfulValue(basePlayer.uID)) {
+      basePlayer.id = String(basePlayer.uID);
+    }
+
+    if (!Object.keys(basePlayer || {}).length && !analyticsPayload?.player) {
+      if (playerResult && !playerResult.ok) {
+        return sendGatewayError(res, ensureSuccess(playerResult, 'Failed to fetch player'), 'Failed to fetch player');
+      }
+
+      return res.status(404).json({
+        error: 'Player not found',
+        message: `Player ${req.params.id} could not be resolved from available backends.`,
+      });
+    }
+
+    res.json(mergePlayerReadModel(basePlayer || {}, analyticsPayload));
+  } catch (error) {
+    console.error('Player get error:', error);
+    sendGatewayError(res, error, 'Failed to fetch player');
+  }
+});
+
+router.post('/', async (req, res) => {
+  try {
+    const payload = ensureSuccess(
+      await requestJson(playerServiceUrl, '/api/v2/players', {
+        method: 'POST',
+        body: req.body,
+      }),
+      'Failed to create player'
+    );
+
+    res.status(201).json(unwrapPayload(payload));
+  } catch (error) {
+    console.error('Player create error:', error);
+    sendGatewayError(res, error, 'Failed to create player');
+  }
+});
+
+router.put('/:id', async (req, res) => {
+  try {
+    const payload = ensureSuccess(
+      await requestJson(playerServiceUrl, `/api/v2/players/${req.params.id}`, {
+        method: 'PUT',
+        body: req.body,
+      }),
+      'Failed to update player'
+    );
+
+    res.json(unwrapPayload(payload));
   } catch (error) {
     console.error('Player update error:', error);
-    res.status(500).json({ error: 'Failed to update player' });
+    sendGatewayError(res, error, 'Failed to update player');
+  }
+});
+
+/**
+ * POST /api/players/enrich/statsbomb
+ * Triggers the StatsBomb enrichment pipeline in player-service.
+ * Reads StatsBomb CSV files, aggregates per-player xG/OBV/pass stats,
+ * and writes statsbombEnrichment onto matching player documents.
+ *
+ * Query params:
+ *   match_id (optional) – specific StatsBomb match_id; omit for all CSVs
+ */
+router.post('/enrich/statsbomb', async (req, res) => {
+  try {
+    const qs = req.query.match_id ? `?match_id=${encodeURIComponent(req.query.match_id)}` : '';
+    const payload = ensureSuccess(
+      await requestJson(playerServiceUrl, `/api/v2/players/enrich/statsbomb${qs}`, {
+        method: 'POST',
+        timeoutMs: 30000,  // enrichment can take a moment
+      }),
+      'Failed to run StatsBomb enrichment'
+    );
+    res.json(unwrapPayload(payload));
+  } catch (error) {
+    console.error('StatsBomb enrichment error:', error);
+    sendGatewayError(res, error, 'StatsBomb enrichment failed');
+  }
+});
+
+/**
+ * GET /api/players/statistics
+ * Returns player statistics (goals, shots, passes, etc.) aggregated from match events.
+ */
+router.get('/statistics', async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    if (!db) {
+      return res.status(503).json({ success: false, error: 'Database not available' });
+    }
+
+    const limit = Math.min(parseInt(req.query.limit) || 100, 500);
+    const skip = Math.max(parseInt(req.query.skip) || 0, 0);
+    const sortBy = req.query.sortBy || 'goals';
+    const sortOrder = req.query.sortOrder === 'asc' ? 1 : -1;
+
+    // Fetch player statistics
+    const stats = await db
+      .collection('player_statistics')
+      .find({})
+      .sort({ [sortBy]: sortOrder })
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    const total = await db.collection('player_statistics').countDocuments({});
+
+    res.json({
+      success: true,
+      data: stats,
+      pagination: {
+        total,
+        skip,
+        limit,
+        pages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    console.error('Player statistics error:', error);
+    sendGatewayError(res, error, 'Failed to fetch player statistics');
+  }
+});
+
+/**
+ * GET /api/players/:id/statistics
+ * Returns statistics for a specific player.
+ */
+router.get('/:id/statistics', async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    if (!db) {
+      return res.status(503).json({ success: false, error: 'Database not available' });
+    }
+
+    const playerIdNum = parseInt(req.params.id);
+    const stats = await db.collection('player_statistics').findOne({ player_id: playerIdNum });
+
+    if (!stats) {
+      return res.status(404).json({ success: false, error: 'Player statistics not found' });
+    }
+
+    res.json({ success: true, data: stats });
+  } catch (error) {
+    console.error('Player statistics error:', error);
+    sendGatewayError(res, error, 'Failed to fetch player statistics');
+  }
+});
+
+router.get('/:id/events', async (req, res) => {
+  try {
+    const payload = ensureSuccess(
+      await requestJson(playerServiceUrl, `/api/v2/players/${req.params.id}/events`, {
+        query: {
+          match_id: req.query.match_id,
+          event_type: req.query.event_type,
+          limit: req.query.limit || 100,
+        },
+      }),
+      'Failed to fetch player events'
+    );
+
+    res.json(unwrapPayload(payload) || []);
+  } catch (error) {
+    console.error('Player events error:', error);
+    sendGatewayError(res, error, 'Failed to fetch player events');
+  }
+});
+
+router.get('/:id/matches', async (req, res) => {
+  try {
+    const payload = ensureSuccess(
+      await requestJson(playerServiceUrl, `/api/v2/players/${req.params.id}/matches`, {
+        query: {
+          limit: req.query.limit || 50,
+        },
+      }),
+      'Failed to fetch player matches'
+    );
+
+    const raw = unwrapPayload(payload);
+    const matches = Array.isArray(raw) ? raw : (raw?.matches || []);
+    res.json(matches.map(toFrontendMatch));
+  } catch (error) {
+    console.error('Player matches error:', error);
+    sendGatewayError(res, error, 'Failed to fetch player matches');
   }
 });
 

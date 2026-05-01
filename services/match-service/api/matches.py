@@ -12,25 +12,6 @@ from dependencies import get_match_service
 
 router = APIRouter(prefix="/api/v2/matches", tags=["matches"])
 
-
-@router.get("/{match_id}", response_model=APIResponse)
-async def get_match(
-    match_id: str,
-    service: MatchService = Depends(get_match_service)
-):
-    """Get match by ID"""
-    match = await service.get_match(match_id)
-
-    if not match:
-        raise HTTPException(status_code=404, detail=f"Match {match_id} not found")
-
-    return APIResponse(
-        success=True,
-        data=match.dict(),
-        message="Match retrieved successfully"
-    )
-
-
 @router.get("", response_model=APIResponse)
 async def list_matches(
     competition_id: Optional[int] = Query(None),
@@ -105,6 +86,24 @@ async def get_matches_by_date_range(
         success=True,
         data=[m.dict() for m in matches],
         message=f"Retrieved {len(matches)} matches"
+    )
+
+
+@router.get("/{match_id}", response_model=APIResponse)
+async def get_match(
+    match_id: str,
+    service: MatchService = Depends(get_match_service)
+):
+    """Get match by ID"""
+    match = await service.get_match(match_id)
+
+    if not match:
+        raise HTTPException(status_code=404, detail=f"Match {match_id} not found")
+
+    return APIResponse(
+        success=True,
+        data=match.dict(),
+        message="Match retrieved successfully"
     )
 
 

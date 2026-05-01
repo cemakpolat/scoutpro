@@ -1,0 +1,62 @@
+name: Gateway Smoke
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/gateway-smoke.yml'
+      - 'docker-compose.yml'
+      - 'scripts/gateway_smoke.py'
+      - 'services/**'
+      - 'shared/**'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/gateway-smoke.yml'
+      - 'docker-compose.yml'
+      - 'scripts/gateway_smoke.py'
+      - 'services/**'
+      - 'shared/**'
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Show Docker versions
+        run: |
+          docker --version
+          docker compose version
+
+      - name: Start ScoutPro stack
+        run: docker compose up -d --build
+
+      - name: Run gateway smoke suite
+        env:
+          SCOUTPRO_GATEWAY_URL: http://localhost:3001
+          SCOUTPRO_LIVE_INGESTION_URL: http://localhost:28006
+          SCOUTPRO_WEBSOCKET_SERVICE_URL: http://localhost:28080
+        run: python3 scripts/gateway_smoke.py --wait-seconds 240
+
+      - name: Show compose status
+        if: always()
+        run: docker compose ps
+
+      - name: Show key service logs
+        if: failure()
+        run: |
+          docker compose logs --tail=200 api-gateway analytics-service live-ingestion-service websocket-server ml-service search-service notification-service
+
+      - name: Tear down ScoutPro stack
+        if: always()
+        run: docker compose down -v --remove-orphans

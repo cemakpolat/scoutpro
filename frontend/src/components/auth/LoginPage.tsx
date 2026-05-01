@@ -26,7 +26,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onSwitchToRegister }) => {
       await login({ email, password });
       // Redirect handled by App.tsx based on auth state
     } catch (err) {
-      setError('Invalid email or password. Please try again.');
+      setError(err instanceof Error ? err.message : 'Login failed. Please try again.');
       console.error('Login error:', err);
     }
   };
@@ -149,11 +149,11 @@ const LoginPage: React.FC<LoginPageProps> = ({ onSwitchToRegister }) => {
             </button>
           </form>
 
-          {/* Demo Credentials */}
           <div className="mt-6 p-4 bg-blue-900/20 border border-blue-500/30 rounded-lg">
-            <p className="text-sm text-blue-300 font-medium mb-2">Demo Credentials:</p>
-            <p className="text-xs text-blue-300/80">Email: demo@scoutpro.com</p>
-            <p className="text-xs text-blue-300/80">Password: Any password (mock mode)</p>
+            <p className="text-sm text-blue-300 font-medium mb-2">Gateway Authentication</p>
+            <p className="text-xs text-blue-300/80">
+              Sign in with a valid ScoutPro account from the API gateway. New users can register below.
+            </p>
           </div>
 
           {/* Register Link */}

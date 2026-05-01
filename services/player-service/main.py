@@ -10,7 +10,7 @@ sys.path.append('/app')
 from shared.utils.logger import setup_logger
 from config.settings import get_settings
 try:
-    from api.endpoints.players import router as players_router
+    from api.players import router as players_router
 except Exception as e:
     logger = logging.getLogger(__name__)
     logger.warning(f"Player routes unavailable at startup: {e}")

@@ -5,6 +5,7 @@ Orchestrates periodic synchronization jobs for all providers and entities.
 """
 
 import asyncio
+import os
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
 from enum import Enum
@@ -15,6 +16,7 @@ from sync.player_syncer import PlayerSyncer
 from sync.team_syncer import TeamSyncer
 from sync.match_syncer import MatchSyncer
 from sync.event_syncer import EventSyncer
+from sync.provider_batch_sync import EventBatchSyncer
 from sync.base_syncer import SyncResult
 
 
@@ -26,6 +28,78 @@ class SyncFrequency(Enum):
     DAILY = "daily"
     WEEKLY = "weekly"
     MANUAL = "manual"
+
+
+DEFAULT_PROVIDER_SYNC_PROFILES: Dict[str, Dict[str, Any]] = {
+    'opta': {
+        'weekly_match_volume': 10,
+        'notes': (
+            'Assumes one domestic league competition with roughly 10 fixtures per '
+            'week. Refresh squads daily, fixtures hourly, and recent F24 event '
+            'windows every 15 minutes for the last 72 hours.'
+        ),
+        'jobs': {
+            'teams': SyncFrequency.DAILY,
+            'players': SyncFrequency.DAILY,
+            'matches': SyncFrequency.HOURLY,
+            'events': SyncFrequency.FREQUENT,
+        },
+        'event_batch': {
+            'online': True,
+            'lookback_days': 3,
+            'lookahead_days': 1,
+            'max_matches': 20,
+            'batch_size': 5,
+        },
+    },
+    'statsbomb': {
+        'weekly_match_volume': 10,
+        'notes': (
+            'StatsBomb event delivery is usually post-match rather than live. Poll '
+            'matches daily and ingest recent event files hourly with a wider 7-day '
+            'lookback window.'
+        ),
+        'jobs': {
+            'teams': SyncFrequency.DAILY,
+            'players': SyncFrequency.DAILY,
+            'matches': SyncFrequency.DAILY,
+            'events': SyncFrequency.HOURLY,
+        },
+        'event_batch': {
+            'online': True,
+            'lookback_days': 7,
+            'lookahead_days': 0,
+            'max_matches': 20,
+            'batch_size': 5,
+        },
+    },
+}
+
+
+def get_provider_sync_profile(provider: str) -> Dict[str, Any]:
+    profile = DEFAULT_PROVIDER_SYNC_PROFILES.get(provider, DEFAULT_PROVIDER_SYNC_PROFILES['opta'])
+    return {
+        'weekly_match_volume': profile['weekly_match_volume'],
+        'notes': profile['notes'],
+        'jobs': dict(profile['jobs']),
+        'event_batch': dict(profile['event_batch']),
+    }
+
+
+def list_provider_sync_profiles(providers: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
+    selected = providers or list(DEFAULT_PROVIDER_SYNC_PROFILES.keys())
+    profiles: Dict[str, Dict[str, Any]] = {}
+
+    for provider in selected:
+        profile = get_provider_sync_profile(provider)
+        profiles[provider] = {
+            'weekly_match_volume': profile['weekly_match_volume'],
+            'notes': profile['notes'],
+            'jobs': {name: frequency.value for name, frequency in profile['jobs'].items()},
+            'event_batch': profile['event_batch'],
+        }
+
+    return profiles
 
 
 class SyncJob:
@@ -273,64 +347,72 @@ class SyncScheduler:
         }
 
 
-def create_default_scheduler(providers: List[str] = ['opta'], competitions: List[str] = ['8']) -> SyncScheduler:
+def create_default_scheduler(providers: List[str] = ['opta'], competitions: List[str] = None) -> SyncScheduler:
     """
     Create a scheduler with default jobs
 
     Args:
         providers: List of provider names
-        competitions: List of competition IDs
+        competitions: List of competition IDs (defaults to env OPTA_COMPETITION_ID or '115')
 
     Returns:
         Configured SyncScheduler
-
-    Example:
-        scheduler = create_default_scheduler(
-            providers=['opta', 'statsbomb'],
-            competitions=['8', '55']  # Premier League, Champions League
-        )
-        await scheduler.start()
     """
+    if competitions is None:
+        competitions = [os.environ.get('OPTA_COMPETITION_ID', '115')]
+
     scheduler = SyncScheduler()
 
     for provider in providers:
+        profile = get_provider_sync_profile(provider)
+
         for competition_id in competitions:
             config = {
                 'competition_id': competition_id,
-                'season_id': '2023',
-                'db_name': 'statsfabrik',
-                'db_host': 'localhost',
-                'db_port': 27017
+                'season_id': os.environ.get('OPTA_SEASON_ID', '2019'),
+                'db_name': os.environ.get('MONGODB_DATABASE', 'scoutpro'),
+                'db_host': os.environ.get('MONGODB_HOST', 'mongo'),
+                'db_port': int(os.environ.get('MONGODB_PORT', '27017')),
+                'online': provider in ('opta', 'statsbomb'),
             }
 
-            # Teams (daily sync)
+            # Teams
             scheduler.add_job(
                 name=f"{provider}_{competition_id}_teams",
                 syncer_class=TeamSyncer,
                 provider=provider,
                 config=config,
-                frequency=SyncFrequency.DAILY
+                frequency=profile['jobs']['teams']
             )
 
-            # Players (daily sync)
+            # Players
             scheduler.add_job(
                 name=f"{provider}_{competition_id}_players",
                 syncer_class=PlayerSyncer,
                 provider=provider,
                 config=config,
-                frequency=SyncFrequency.DAILY
+                frequency=profile['jobs']['players']
             )
 
-            # Matches (daily sync)
+            # Matches
             scheduler.add_job(
                 name=f"{provider}_{competition_id}_matches",
                 syncer_class=MatchSyncer,
                 provider=provider,
                 config=config,
-                frequency=SyncFrequency.DAILY
+                frequency=profile['jobs']['matches']
             )
 
-            # Events are synced per match, not as a bulk job
-            # They would be triggered by match sync or external events
+            # Events are pulled in batches from the provider server.
+            scheduler.add_job(
+                name=f"{provider}_{competition_id}_event_batches",
+                syncer_class=EventBatchSyncer,
+                provider=provider,
+                config={
+                    **config,
+                    **profile['event_batch'],
+                },
+                frequency=profile['jobs']['events']
+            )
 
     return scheduler

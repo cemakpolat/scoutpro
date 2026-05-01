@@ -1,80 +1,297 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { 
-  Layers, Play, Pause, RotateCcw, Zap, Target, Activity,
-  Users, ArrowRight, ArrowUp, ArrowDown, Circle, Square,
-  Triangle, Hexagon, Settings, Eye, Download, Share2, Loader2
+  Layers, Zap, Target, Activity, Eye, Loader2
 } from 'lucide-react';
 import apiService from '../services/api';
-import { useData } from '../context/DataContext';
+import { useApi } from '../hooks/useApi';
+import { buildMatchCatalog, filterMatchCatalog, formatMatchLabel, getAvailableLeagues, getAvailableYears } from '../utils/matchFilters';
+
+const FORMATION_LAYOUTS: Record<string, Array<{ role: string; left: string; top: string; tone: string }>> = {
+  '4-3-3': [
+    { role: 'GK', left: '50%', top: '87%', tone: 'bg-blue-500' },
+    { role: 'LB', left: '22%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'CB', left: '40%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'CB', left: '60%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'RB', left: '78%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'CM', left: '32%', top: '52%', tone: 'bg-green-400' },
+    { role: 'DM', left: '50%', top: '58%', tone: 'bg-green-400' },
+    { role: 'CM', left: '68%', top: '52%', tone: 'bg-green-400' },
+    { role: 'LW', left: '24%', top: '28%', tone: 'bg-red-400' },
+    { role: 'ST', left: '50%', top: '24%', tone: 'bg-red-400' },
+    { role: 'RW', left: '76%', top: '28%', tone: 'bg-red-400' }
+  ],
+  '4-2-3-1': [
+    { role: 'GK', left: '50%', top: '87%', tone: 'bg-blue-500' },
+    { role: 'LB', left: '22%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'CB', left: '40%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'CB', left: '60%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'RB', left: '78%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'DM', left: '38%', top: '57%', tone: 'bg-green-400' },
+    { role: 'DM', left: '62%', top: '57%', tone: 'bg-green-400' },
+    { role: 'LW', left: '24%', top: '36%', tone: 'bg-yellow-400' },
+    { role: 'AM', left: '50%', top: '40%', tone: 'bg-yellow-400' },
+    { role: 'RW', left: '76%', top: '36%', tone: 'bg-yellow-400' },
+    { role: 'ST', left: '50%', top: '22%', tone: 'bg-red-400' }
+  ],
+  '3-5-2': [
+    { role: 'GK', left: '50%', top: '87%', tone: 'bg-blue-500' },
+    { role: 'LCB', left: '32%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'CB', left: '50%', top: '74%', tone: 'bg-blue-400' },
+    { role: 'RCB', left: '68%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'LWB', left: '18%', top: '52%', tone: 'bg-green-400' },
+    { role: 'CM', left: '38%', top: '50%', tone: 'bg-green-400' },
+    { role: 'DM', left: '50%', top: '58%', tone: 'bg-green-400' },
+    { role: 'CM', left: '62%', top: '50%', tone: 'bg-green-400' },
+    { role: 'RWB', left: '82%', top: '52%', tone: 'bg-green-400' },
+    { role: 'ST', left: '40%', top: '24%', tone: 'bg-red-400' },
+    { role: 'ST', left: '60%', top: '24%', tone: 'bg-red-400' }
+  ],
+  '4-4-2': [
+    { role: 'GK', left: '50%', top: '87%', tone: 'bg-blue-500' },
+    { role: 'LB', left: '22%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'CB', left: '40%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'CB', left: '60%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'RB', left: '78%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'LM', left: '18%', top: '48%', tone: 'bg-green-400' },
+    { role: 'CM', left: '40%', top: '52%', tone: 'bg-green-400' },
+    { role: 'CM', left: '60%', top: '52%', tone: 'bg-green-400' },
+    { role: 'RM', left: '82%', top: '48%', tone: 'bg-green-400' },
+    { role: 'ST', left: '40%', top: '24%', tone: 'bg-red-400' },
+    { role: 'ST', left: '60%', top: '24%', tone: 'bg-red-400' }
+  ],
+  '3-4-3': [
+    { role: 'GK', left: '50%', top: '87%', tone: 'bg-blue-500' },
+    { role: 'LCB', left: '32%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'CB', left: '50%', top: '74%', tone: 'bg-blue-400' },
+    { role: 'RCB', left: '68%', top: '72%', tone: 'bg-blue-400' },
+    { role: 'LM', left: '20%', top: '50%', tone: 'bg-green-400' },
+    { role: 'CM', left: '42%', top: '54%', tone: 'bg-green-400' },
+    { role: 'CM', left: '58%', top: '54%', tone: 'bg-green-400' },
+    { role: 'RM', left: '80%', top: '50%', tone: 'bg-green-400' },
+    { role: 'LW', left: '24%', top: '24%', tone: 'bg-red-400' },
+    { role: 'ST', left: '50%', top: '22%', tone: 'bg-red-400' },
+    { role: 'RW', left: '76%', top: '24%', tone: 'bg-red-400' }
+  ]
+};
+
+const normalizePercent = (value: unknown, multiplier = 1): number => {
+  const numericValue = Number(value) || 0;
+  if (numericValue <= 1) {
+    return Math.round(numericValue * 100 * multiplier);
+  }
+
+  return Math.round(numericValue * multiplier);
+};
+
+const resolveLiveMatchLabel = (match: any): string => {
+  const homeTeamId = String(match?.homeTeamId || match?.home_team_id || '').trim();
+  const awayTeamId = String(match?.awayTeamId || match?.away_team_id || '').trim();
+  const homeTeam = match?.homeTeam || match?.home_team || (homeTeamId && homeTeamId !== '0' ? `Team ${homeTeamId}` : 'Home');
+  const awayTeam = match?.awayTeam || match?.away_team || (awayTeamId && awayTeamId !== '0' ? `Team ${awayTeamId}` : 'Away');
+  return `${homeTeam} vs ${awayTeam}`;
+};
+
+const hasConcreteTeamContext = (match: any): boolean => {
+  const homeTeamId = String(match?.homeTeamId || match?.home_team_id || '').trim();
+  const awayTeamId = String(match?.awayTeamId || match?.away_team_id || '').trim();
+  return Boolean(homeTeamId && awayTeamId && homeTeamId !== '0' && awayTeamId !== '0');
+};
+
+const createLocalResponse = <T,>(data: T) => ({
+  success: true,
+  data,
+  meta: { timestamp: new Date().toISOString(), source: 'client' },
+});
 
 const TacticalAnalyzer: React.FC = () => {
   const [selectedFormation, setSelectedFormation] = useState('4-3-3');
   const [analysisMode, setAnalysisMode] = useState('live');
   const [selectedPhase, setSelectedPhase] = useState('attack');
-  const [loading, setLoading] = useState(true);
-  const [apiTactical, setApiTactical] = useState<any>(null);
+  const [selectedMatchId, setSelectedMatchId] = useState('');
+  const [selectedYear, setSelectedYear] = useState('all');
+  const [selectedLeague, setSelectedLeague] = useState('all');
+  
+  const { data: enrichedMatches } = useApi(() => apiService.getMatchesEnriched(10, 0), []);
+  const {
+    data: matchEventsData,
+    loading: eventsLoading,
+    error: eventsError,
+  } = useApi(
+    () => selectedMatchId ? apiService.getMatchEvents(selectedMatchId) : Promise.resolve(createLocalResponse<any[]>([])),
+    [selectedMatchId]
+  );
+  const {
+    data: tacticalOverviewData,
+    loading: overviewLoading,
+    error: overviewError,
+  } = useApi(
+    () => selectedMatchId ? apiService.getTacticalOverview(selectedFormation, selectedPhase, selectedMatchId) : Promise.resolve(createLocalResponse<any>(null)),
+    [selectedFormation, selectedPhase, selectedMatchId]
+  );
 
-  const { players: contextPlayers, teams } = useData();
+  const matchOptions = enrichedMatches?.data || [];
+  const matchCatalog = useMemo(() => buildMatchCatalog(matchOptions), [matchOptions]);
+  const availableYears = useMemo(() => getAvailableYears(matchCatalog), [matchCatalog]);
+  const availableLeagues = useMemo(
+    () => getAvailableLeagues(matchCatalog, selectedYear),
+    [matchCatalog, selectedYear],
+  );
+  const filteredMatchOptions = useMemo(
+    () => filterMatchCatalog(matchCatalog, { year: selectedYear, league: selectedLeague }).map((entry) => entry.source),
+    [matchCatalog, selectedYear, selectedLeague],
+  );
+  const matchEvents = Array.isArray(matchEventsData) ? matchEventsData : [];
+  const tacticalOverview = tacticalOverviewData && typeof tacticalOverviewData === 'object' ? tacticalOverviewData : null;
+  const loading = eventsLoading || overviewLoading;
+  const tacticalError = eventsError || overviewError || '';
 
-  // Fetch tactical data from API
   useEffect(() => {
-    setLoading(true);
-    Promise.all([
-      apiService.getTacticalPatterns().catch(() => null),
-      apiService.getTeamRankings('points', 5).catch(() => null),
-    ]).then(([patterns, rankings]) => {
-      setApiTactical({ patterns: patterns?.data, rankings: rankings?.data });
-    }).finally(() => setLoading(false));
-  }, []);
+    if (selectedYear !== 'all' && !availableYears.includes(selectedYear)) {
+      setSelectedYear('all');
+    }
+  }, [availableYears, selectedYear]);
 
-  const formations = [
-    { id: '4-3-3', name: '4-3-3', popularity: 34, effectiveness: 87 },
-    { id: '4-2-3-1', name: '4-2-3-1', popularity: 28, effectiveness: 84 },
-    { id: '3-5-2', name: '3-5-2', popularity: 18, effectiveness: 82 },
-    { id: '4-4-2', name: '4-4-2', popularity: 12, effectiveness: 79 },
-    { id: '3-4-3', name: '3-4-3', popularity: 8, effectiveness: 85 }
+  useEffect(() => {
+    if (selectedLeague !== 'all' && !availableLeagues.includes(selectedLeague)) {
+      setSelectedLeague('all');
+    }
+  }, [availableLeagues, selectedLeague]);
+
+  useEffect(() => {
+    if (!selectedMatchId && filteredMatchOptions.length > 0) {
+      setSelectedMatchId(String(filteredMatchOptions[0].id || filteredMatchOptions[0].matchId));
+      return;
+    }
+
+    if (selectedMatchId && !filteredMatchOptions.some((match: any) => String(match.id || match.matchId) === String(selectedMatchId))) {
+      setSelectedMatchId(filteredMatchOptions.length > 0 ? String(filteredMatchOptions[0].id || filteredMatchOptions[0].matchId) : '');
+    }
+  }, [filteredMatchOptions, selectedMatchId]);
+
+  const filteredMatchEvents = selectedPhase === 'attack'
+    ? matchEvents.filter((event: any) => ['shot', 'pass', 'duel'].includes(event.type_name))
+    : selectedPhase === 'defense'
+      ? matchEvents.filter((event: any) => ['tackle', 'interception', 'clearance', 'ball_control'].includes(event.type_name))
+      : matchEvents.filter((event: any) => ['pass', 'duel', 'ball_control', 'take_on', 'carries'].includes(event.type_name));
+
+  // Build tactical data from match events
+  const tacticalPatterns = filteredMatchEvents.reduce((acc: any[], event: any) => {
+    const type = event.type_name || 'unknown';
+    const existing = acc.find(p => p.name === type);
+    if (existing) {
+      existing.frequency += 1;
+      existing.success += event.is_successful ? 1 : 0;
+    } else {
+      acc.push({ name: type, frequency: 1, success: event.is_successful ? 1 : 0 });
+    }
+    return acc;
+  }, []).map((pattern: any) => ({
+    name: pattern.name.charAt(0).toUpperCase() + pattern.name.slice(1),
+    frequency: Math.round((pattern.frequency / Math.max(filteredMatchEvents.length, 1)) * 100),
+    success: pattern.frequency > 0 ? Math.round((pattern.success / pattern.frequency) * 100) : 0,
+    zones: ['Mid Field', 'Attack', 'Defense'],
+    impact: (pattern.frequency / Math.max(filteredMatchEvents.length, 1)) > 0.2 ? 'High' : 'Medium',
+    trend: 'stable'
+  })).slice(0, 4);
+
+  // Formation options with static scouting benchmarks
+  const FORMATION_STATS: Record<string, { effectiveness: number; popularity: number }> = {
+    '4-3-3':   { effectiveness: 72, popularity: 38 },
+    '4-2-3-1': { effectiveness: 75, popularity: 31 },
+    '3-5-2':   { effectiveness: 63, popularity: 15 },
+    '4-4-2':   { effectiveness: 68, popularity: 12 },
+    '3-4-3':   { effectiveness: 65, popularity: 4  },
+  };
+  const fallbackFormations = Object.keys(FORMATION_LAYOUTS).map((id) => ({
+    id,
+    name: id,
+    ...(FORMATION_STATS[id] || { effectiveness: 65, popularity: 10 }),
+  }));
+  const formations = Array.isArray(tacticalOverview?.formations) && tacticalOverview.formations.length > 0
+    ? tacticalOverview.formations
+    : fallbackFormations;
+
+  // Prefer actual event end locations now that the event store carries them.
+  const playerMovements = filteredMatchEvents
+    .filter((event: any) => event.location?.x != null && event.location?.y != null)
+    .map((event: any, index: number, events: any[]) => {
+      const fallbackTarget = events[index + 1]?.location;
+      const targetLocation = event.end_location?.x != null && event.end_location?.y != null
+        ? event.end_location
+        : fallbackTarget;
+
+      if (!targetLocation?.x && targetLocation?.x !== 0) {
+        return null;
+      }
+
+      return {
+        id: event.event_id || index,
+        from: [event.location.x, event.location.y],
+        to: [targetLocation.x, targetLocation.y],
+        type: event.type_name || 'pass',
+        success: Boolean(event.is_successful),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+
+  // Zone-based heatmap aggregation (Defensive / Middle / Attacking thirds)
+  const PITCH_ZONES = [
+    { zone: 'Defensive Third',  xMin: 0,  xMax: 33  },
+    { zone: 'Middle Third',     xMin: 33, xMax: 67  },
+    { zone: 'Attacking Third',  xMin: 67, xMax: 100 },
   ];
+  const fallbackHeatmapData = PITCH_ZONES.map(({ zone, xMin, xMax }) => {
+    const zoneEvents = filteredMatchEvents.filter(
+      (e: any) => typeof e.location?.x === 'number' && e.location.x >= xMin && e.location.x < xMax,
+    );
+    const successful = zoneEvents.filter((e: any) => e.is_successful).length;
+    const total = zoneEvents.length;
+    return {
+      zone,
+      intensity: filteredMatchEvents.length > 0 ? Math.min(100, Math.round((total / filteredMatchEvents.length) * 200)) : 0,
+      effectiveness: total > 0 ? Math.round((successful / total) * 100) : 0,
+    };
+  }).filter((z) => z.intensity > 0);
+  const heatmapData = Array.isArray(tacticalOverview?.heatmap) && tacticalOverview.heatmap.length > 0
+    ? tacticalOverview.heatmap
+    : fallbackHeatmapData;
 
-  // Build tactical patterns from API data or fallback
-  const tacticalPatterns = apiTactical?.patterns?.length > 0
-    ? apiTactical.patterns.slice(0, 4).map((p: any) => ({
-        name: p.name || p.pattern || 'Pattern',
-        frequency: p.frequency || p.usage || 50,
-        success: p.successRate || p.success || 60,
-        zones: p.zones || ['Midfield'],
-        impact: (p.successRate || p.success || 60) > 65 ? 'High' : 'Medium',
-        trend: p.trend || 'stable',
-      }))
-    : [
-        { name: 'High Pressing', frequency: 78, success: 67, zones: ['Final Third', 'Midfield'], impact: 'High', trend: 'increasing' },
-        { name: 'Counter-Attack', frequency: 45, success: 73, zones: ['Defensive Third', 'Wide Areas'], impact: 'Medium', trend: 'stable' },
-        { name: 'Possession Play', frequency: 89, success: 62, zones: ['Midfield', 'Wide Areas'], impact: 'High', trend: 'increasing' },
-        { name: 'Set Piece Routine', frequency: 23, success: 34, zones: ['Penalty Area'], impact: 'Medium', trend: 'decreasing' },
-      ];
+  const sequenceInsights = tacticalOverview?.sequenceInsights || null;
 
-  // Build player movements from context players or fallback
-  const playerMovements = contextPlayers.length > 0
-    ? contextPlayers.slice(0, 4).map((p: any, i: number) => ({
-        player: p.name?.split(' ').pop() || `Player ${i + 1}`,
-        from: [20 + i * 15, 30 + i * 10],
-        to: [60 + i * 10, 25 + i * 8],
-        type: i % 2 === 0 ? 'run' : 'pass',
-        success: i % 3 !== 2,
-      }))
-    : [
-        { player: 'Player 1', from: [20, 30], to: [80, 25], type: 'run', success: true },
-        { player: 'Player 2', from: [40, 60], to: [65, 45], type: 'pass', success: true },
-        { player: 'Player 3', from: [60, 70], to: [75, 30], type: 'dribble', success: false },
-        { player: 'Player 4', from: [45, 50], to: [55, 40], type: 'pass', success: true },
-      ];
+  // Tactical analytics computed from loaded match events
+  const passEvents       = filteredMatchEvents.filter((e: any) => e.type_name === 'pass');
+  const passSuccessful   = passEvents.filter((e: any) => e.is_successful).length;
+  const tackleEvents     = filteredMatchEvents.filter((e: any) => e.type_name === 'tackle');
+  const duelEvents       = filteredMatchEvents.filter((e: any) => e.type_name === 'duel');
+  const interceptEvents  = filteredMatchEvents.filter((e: any) => e.type_name === 'interception');
+  const clearanceEvents  = filteredMatchEvents.filter((e: any) => e.type_name === 'clearance');
+  const aerialEvents     = filteredMatchEvents.filter((e: any) => e.type_name === 'aerial');
+  const aerialWon        = aerialEvents.filter((e: any) => e.is_successful).length;
+  const foulEvents       = filteredMatchEvents.filter((e: any) => e.type_name === 'foul');
+  const shotEvents       = filteredMatchEvents.filter((e: any) => e.type_name === 'shot');
+  const goalEvents       = shotEvents.filter((e: any) => e.is_goal);
+  const fallbackTacticalAnalytics = {
+    pressingTriggers: filteredMatchEvents.length > 0 ? [
+      { label: 'Tackle count',       value: tackleEvents.length,       suffix: '' },
+      { label: 'Interception rate',  value: Math.round(interceptEvents.length / Math.max(1, filteredMatchEvents.length) * 100) },
+      { label: 'Duel involvement',   value: duelEvents.length,         suffix: '' },
+    ] : [],
+    buildupPatterns: filteredMatchEvents.length > 0 ? [
+      { label: 'Passes attempted',   value: passEvents.length,         suffix: '' },
+      { label: 'Pass success rate',  value: Math.round(passSuccessful / Math.max(1, passEvents.length) * 100) },
+      { label: 'Goals from shots',   value: goalEvents.length,         suffix: '' },
+    ] : [],
+    defensiveActions: filteredMatchEvents.length > 0 ? [
+      { label: 'Clearances',         value: clearanceEvents.length,    suffix: '' },
+      { label: 'Aerial duels won',   value: aerialWon,                 suffix: '' },
+      { label: 'Fouls committed',    value: foulEvents.length,         suffix: '' },
+    ] : [],
+  };
+  const tacticalAnalytics = tacticalOverview?.analytics || fallbackTacticalAnalytics;
 
-  const heatmapData = [
-    { zone: 'Left Wing', intensity: 85, effectiveness: 72 },
-    { zone: 'Right Wing', intensity: 78, effectiveness: 68 },
-    { zone: 'Central Midfield', intensity: 92, effectiveness: 84 },
-    { zone: 'Penalty Area', intensity: 67, effectiveness: 91 },
-    { zone: 'Defensive Third', intensity: 45, effectiveness: 76 }
-  ];
+  const selectedMatch = filteredMatchOptions.find((m: any) => String(m.id || m.matchId) === selectedMatchId);
+  const selectedFormationLayout = FORMATION_LAYOUTS[selectedFormation] || FORMATION_LAYOUTS['4-3-3'];
 
   return (
     <div className="space-y-8">
@@ -84,6 +301,39 @@ const TacticalAnalyzer: React.FC = () => {
           Tactical Analyzer
         </h1>
         <div className="flex items-center space-x-4">
+          <select
+            value={selectedYear}
+            onChange={(e) => setSelectedYear(e.target.value)}
+            className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg"
+          >
+            <option value="all">All Years</option>
+            {availableYears.map((year) => (
+              <option key={year} value={year}>{year}</option>
+            ))}
+          </select>
+          <select
+            value={selectedLeague}
+            onChange={(e) => setSelectedLeague(e.target.value)}
+            className="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg"
+          >
+            <option value="all">All Leagues</option>
+            {availableLeagues.map((league) => (
+              <option key={league} value={league}>{league}</option>
+            ))}
+          </select>
+          {filteredMatchOptions.length > 0 && (
+            <select
+              value={selectedMatchId}
+              onChange={(e) => setSelectedMatchId(e.target.value)}
+              className="max-w-xs truncate px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg"
+            >
+              {filteredMatchOptions.map((match: any) => (
+                <option key={String(match.id || match.matchId)} value={String(match.id || match.matchId)}>
+                  {formatMatchLabel(match)}
+                </option>
+              ))}
+            </select>
+          )}
           <select
             value={analysisMode}
             onChange={(e) => setAnalysisMode(e.target.value)}
@@ -99,6 +349,19 @@ const TacticalAnalyzer: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {tacticalError && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {tacticalError}
+        </div>
+      )}
+
+      {loading && (
+        <div className="flex items-center justify-center rounded-xl bg-slate-800 px-6 py-20 text-slate-300">
+          <Loader2 className="mr-3 h-5 w-5 animate-spin text-purple-400" />
+          Loading tactical analysis...
+        </div>
+      )}
 
       {/* Formation Analysis */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
@@ -117,61 +380,26 @@ const TacticalAnalyzer: React.FC = () => {
             </div>
 
             {/* Player Positions */}
-            {selectedFormation === '4-3-3' && (
-              <>
-                {/* Goalkeeper */}
-                <div className="absolute bottom-4 left-1/2 w-8 h-8 bg-blue-500 rounded-full flex items-center justify-center text-xs font-bold transform -translate-x-1/2">
-                  GK
-                </div>
-                
-                {/* Defense */}
-                <div className="absolute bottom-16 left-1/4 w-6 h-6 bg-blue-400 rounded-full flex items-center justify-center text-xs transform -translate-x-1/2">
-                  LB
-                </div>
-                <div className="absolute bottom-16 left-2/5 w-6 h-6 bg-blue-400 rounded-full flex items-center justify-center text-xs transform -translate-x-1/2">
-                  CB
-                </div>
-                <div className="absolute bottom-16 right-2/5 w-6 h-6 bg-blue-400 rounded-full flex items-center justify-center text-xs transform translate-x-1/2">
-                  CB
-                </div>
-                <div className="absolute bottom-16 right-1/4 w-6 h-6 bg-blue-400 rounded-full flex items-center justify-center text-xs transform translate-x-1/2">
-                  RB
-                </div>
-
-                {/* Midfield */}
-                <div className="absolute bottom-32 left-1/3 w-6 h-6 bg-green-400 rounded-full flex items-center justify-center text-xs transform -translate-x-1/2">
-                  CM
-                </div>
-                <div className="absolute bottom-32 left-1/2 w-6 h-6 bg-green-400 rounded-full flex items-center justify-center text-xs transform -translate-x-1/2">
-                  CM
-                </div>
-                <div className="absolute bottom-32 right-1/3 w-6 h-6 bg-green-400 rounded-full flex items-center justify-center text-xs transform translate-x-1/2">
-                  CM
-                </div>
-
-                {/* Attack */}
-                <div className="absolute bottom-48 left-1/4 w-6 h-6 bg-red-400 rounded-full flex items-center justify-center text-xs transform -translate-x-1/2">
-                  LW
-                </div>
-                <div className="absolute bottom-48 left-1/2 w-6 h-6 bg-red-400 rounded-full flex items-center justify-center text-xs transform -translate-x-1/2">
-                  ST
-                </div>
-                <div className="absolute bottom-48 right-1/4 w-6 h-6 bg-red-400 rounded-full flex items-center justify-center text-xs transform translate-x-1/2">
-                  RW
-                </div>
-              </>
-            )}
+            {selectedFormationLayout.map((player) => (
+              <div
+                key={`${selectedFormation}-${player.role}-${player.left}-${player.top}`}
+                className={`absolute z-10 flex h-7 w-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full text-[10px] font-bold text-white ${player.tone}`}
+                style={{ left: player.left, top: player.top }}
+              >
+                {player.role}
+              </div>
+            ))}
 
             {/* Player Movements */}
-            {playerMovements.map((movement, index) => (
-              <div key={index} className="absolute">
+            {playerMovements.map((movement: any, index: number) => (
+              <div key={movement.id || index} className="absolute inset-0">
                 <div 
                   className={`w-2 h-2 rounded-full ${movement.success ? 'bg-green-400' : 'bg-red-400'}`}
-                  style={{ left: `${movement.from[0]}%`, top: `${movement.from[1]}%` }}
+                  style={{ left: `${movement.from[0]}%`, top: `${movement.from[1]}%`, position: 'absolute' }}
                 ></div>
                 <div 
                   className={`w-1 h-1 rounded-full ${movement.success ? 'bg-green-300' : 'bg-red-300'}`}
-                  style={{ left: `${movement.to[0]}%`, top: `${movement.to[1]}%` }}
+                  style={{ left: `${movement.to[0]}%`, top: `${movement.to[1]}%`, position: 'absolute' }}
                 ></div>
                 <svg className="absolute inset-0 pointer-events-none">
                   <line
@@ -191,7 +419,7 @@ const TacticalAnalyzer: React.FC = () => {
 
           {/* Formation Selector */}
           <div className="flex space-x-2 mb-4">
-            {formations.map((formation) => (
+            {formations.map((formation: any) => (
               <button
                 key={formation.id}
                 onClick={() => setSelectedFormation(formation.id)}
@@ -228,7 +456,7 @@ const TacticalAnalyzer: React.FC = () => {
         <div className="bg-slate-800 rounded-xl p-6">
           <h3 className="text-xl font-semibold mb-6">Formation Statistics</h3>
           <div className="space-y-4">
-            {formations.map((formation) => (
+            {formations.length > 0 ? formations.map((formation: any) => (
               <div key={formation.id} className="p-4 bg-slate-700 rounded-lg">
                 <div className="flex justify-between items-center mb-2">
                   <span className="font-semibold">{formation.name}</span>
@@ -244,7 +472,11 @@ const TacticalAnalyzer: React.FC = () => {
                   ></div>
                 </div>
               </div>
-            ))}
+            )) : (
+              <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
+                No live formation data available.
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -257,7 +489,7 @@ const TacticalAnalyzer: React.FC = () => {
             Tactical Patterns
           </h3>
           <div className="space-y-4">
-            {tacticalPatterns.map((pattern, index) => (
+            {tacticalPatterns.length > 0 ? tacticalPatterns.map((pattern: any, index: number) => (
               <div key={index} className="p-4 bg-slate-700 rounded-lg">
                 <div className="flex items-center justify-between mb-2">
                   <span className="font-semibold">{pattern.name}</span>
@@ -290,7 +522,11 @@ const TacticalAnalyzer: React.FC = () => {
                   Active in: {pattern.zones.join(', ')}
                 </div>
               </div>
-            ))}
+            )) : (
+              <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
+                No tactical pattern data available.
+              </div>
+            )}
           </div>
         </div>
 
@@ -301,7 +537,7 @@ const TacticalAnalyzer: React.FC = () => {
             Activity Heat Map
           </h3>
           <div className="space-y-4">
-            {heatmapData.map((zone, index) => (
+            {heatmapData.length > 0 ? heatmapData.map((zone: any, index: number) => (
               <div key={index} className="p-4 bg-slate-700 rounded-lg">
                 <div className="flex justify-between items-center mb-3">
                   <span className="font-semibold">{zone.zone}</span>
@@ -323,71 +559,138 @@ const TacticalAnalyzer: React.FC = () => {
                   </div>
                 </div>
               </div>
-            ))}
+            )) : (
+              <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
+                No live heatmap data available.
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       {/* Advanced Analytics */}
+      {sequenceInsights && (
+        <div className="bg-slate-800 rounded-xl p-6">
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h3 className="text-xl font-semibold flex items-center">
+                <Zap className="h-6 w-6 mr-2 text-emerald-400" />
+                Live Sequence Intelligence
+              </h3>
+              <p className="text-sm text-slate-400 mt-1">
+                {sequenceInsights.matchLabel} • Providers: {(sequenceInsights.providers || []).join(', ') || 'mixed event feed'}
+              </p>
+            </div>
+            <div className="text-sm text-slate-400">
+              Top sequences are ranked by territory gain, box entry, and shot-ending actions.
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            {(sequenceInsights.teamSummaries || []).map((summary: any) => (
+              <div key={summary.teamId} className="rounded-xl bg-slate-700 p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="text-lg font-semibold">{summary.teamName}</h4>
+                  <span className="text-sm text-slate-400">{summary.totalSequences} sequences</span>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                  <div>
+                    <div className="text-slate-400">Direct Attacks</div>
+                    <div className="text-lg font-bold text-emerald-400">{summary.directAttacks}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Final-Third Entries</div>
+                    <div className="text-lg font-bold text-blue-400">{summary.finalThirdEntries}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Rapid Regains / Second Balls</div>
+                    <div className="text-lg font-bold text-yellow-400">{summary.rapidRegains}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Box Entries</div>
+                    <div className="text-lg font-bold text-purple-400">{summary.boxEntries}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Average Actions</div>
+                    <div className="text-lg font-bold text-cyan-400">{summary.averageActions}</div>
+                  </div>
+                  <div>
+                    <div className="text-slate-400">Average Duration</div>
+                    <div className="text-lg font-bold text-rose-400">{summary.averageDurationSeconds}s</div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div>
+            <h4 className="font-semibold text-slate-200 mb-4">Top Live Sequences</h4>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {(sequenceInsights.topSequences || []).map((sequence: any, index: number) => (
+                <div key={`${sequence.teamId}-${sequence.startMinute}-${index}`} className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="font-semibold text-slate-100">{sequence.teamName}</span>
+                    <span className="text-xs px-2 py-1 rounded bg-slate-700 text-slate-300">
+                      {sequence.startMinute}' - {sequence.endMinute}'
+                    </span>
+                  </div>
+                  <div className="text-sm text-slate-300 mb-3">
+                    {sequence.actions} actions through the {sequence.route.toLowerCase()} with {sequence.territoryGain}% territory gain.
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <div className="text-slate-500">Sequence Type</div>
+                      <div className="text-slate-100">
+                        {sequence.directAttack ? 'Direct attack' : sequence.sustainedPressure ? 'Sustained pressure' : 'Progression'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Outcome</div>
+                      <div className="text-slate-100">
+                        {sequence.endedWithGoal ? 'Goal' : sequence.endedWithShot ? 'Shot ending' : sequence.boxEntry ? 'Box entry' : 'Territory gain'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Duration</div>
+                      <div className="text-slate-100">{sequence.durationSeconds}s</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Direct Ball Start</div>
+                      <div className="text-slate-100">{sequence.directPlay ? 'Yes' : 'No'}</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="bg-slate-800 rounded-xl p-6">
         <h3 className="text-xl font-semibold mb-6 flex items-center">
           <Zap className="h-6 w-6 mr-2 text-purple-400" />
           Advanced Tactical Analytics
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          <div className="p-4 bg-slate-700 rounded-lg">
-            <h4 className="font-semibold mb-3 text-blue-400">Pressing Triggers</h4>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span>Ball Loss in Final Third</span>
-                <span className="text-green-400">87%</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Goalkeeper Distribution</span>
-                <span className="text-yellow-400">64%</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Wide Area Possession</span>
-                <span className="text-red-400">43%</span>
-              </div>
-            </div>
-          </div>
-
-          <div className="p-4 bg-slate-700 rounded-lg">
-            <h4 className="font-semibold mb-3 text-green-400">Build-up Patterns</h4>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span>Short Passing</span>
-                <span className="text-green-400">78%</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Long Ball</span>
-                <span className="text-yellow-400">23%</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Wing Play</span>
-                <span className="text-blue-400">56%</span>
+          {[
+            { title: 'Pressing Triggers', tone: 'text-blue-400', items: tacticalAnalytics.pressingTriggers },
+            { title: 'Build-up Patterns', tone: 'text-green-400', items: tacticalAnalytics.buildupPatterns },
+            { title: 'Defensive Actions', tone: 'text-red-400', items: tacticalAnalytics.defensiveActions }
+          ].map((section) => (
+            <div key={section.title} className="p-4 bg-slate-700 rounded-lg">
+              <h4 className={`font-semibold mb-3 ${section.tone}`}>{section.title}</h4>
+              <div className="space-y-2 text-sm">
+                {section.items?.length > 0 ? section.items.map((item: any) => (
+                  <div key={item.label} className="flex justify-between">
+                    <span>{item.label}</span>
+                    <span className="text-slate-200">{item.value}{item.suffix || '%'}</span>
+                  </div>
+                )) : (
+                  <div className="text-slate-400">No analytics available.</div>
+                )}
               </div>
             </div>
-          </div>
-
-          <div className="p-4 bg-slate-700 rounded-lg">
-            <h4 className="font-semibold mb-3 text-red-400">Defensive Actions</h4>
-            <div className="space-y-2 text-sm">
-              <div className="flex justify-between">
-                <span>High Press Success</span>
-                <span className="text-green-400">67%</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Interceptions</span>
-                <span className="text-blue-400">89</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Tackles Won</span>
-                <span className="text-yellow-400">73%</span>
-              </div>
-            </div>
-          </div>
+          ))}
         </div>
       </div>
     </div>

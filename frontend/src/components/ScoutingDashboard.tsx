@@ -1,40 +1,53 @@
 import React from 'react';
 import { Search, Filter, Star, TrendingUp, Users, Target, Brain, AlertCircle } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
-import { useDataContext } from '../context/DataContext';
 import apiService from '../services/api';
 import { Player, AIInsight } from '../types';
+import { deriveAge } from '../utils/dataTransformers';
 
 interface ScoutingDashboardProps {
   onPlayerSelect?: (player: Player) => void;
 }
 
 const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect }) => {
-  const { state } = useDataContext();
   const [searchTerm, setSearchTerm] = React.useState('');
   const [selectedPosition, setSelectedPosition] = React.useState<string>('all');
   const [ageRange, setAgeRange] = React.useState({ min: 16, max: 35 });
-
-  // API calls for scouting data
-  // Placeholder for scouting reports (not yet implemented in API)
-  const scoutingReports = null;
-  const reportsLoading = false;
-
-  const { data: aiRecommendations, loading: aiLoading } = useApi(
-    () => apiService.getAIInsights('scouting'),
-    []
-  );
 
   const { data: targetPlayers, loading: targetsLoading } = useApi(
     () => apiService.getPlayers({
       position: selectedPosition !== 'all' ? [selectedPosition] : undefined,
       ageMin: ageRange.min,
       ageMax: ageRange.max
+    }, {
+      search: searchTerm.trim() || undefined,
     }),
     [selectedPosition, ageRange, searchTerm]
   );
 
+  // Get player statistics for scouting recommendations
+  const { data: playerStats, loading: statsLoading } = useApi(
+    () => apiService.getPlayerStatisticsRealtime(10, 0, 'goals'),
+    []
+  );
+
+  // Transform stats into AI recommendations
+  const aiRecommendations = (playerStats?.data || []).map((p: any, idx: number) => ({
+    id: `stat-${idx}`,
+    title: `${p.player_name} - High Performer`,
+    description: `${p.goals} goals, ${p.shots} shots, ${p.passes} passes - ${p.pass_accuracy}% accuracy`,
+    priority: p.goals > 0 ? 'high' : 'medium',
+    confidence: p.goals > 0 ? 0.86 : 0.68,
+  }));
+  const aiLoading = statsLoading;
+
   const positions = ['all', 'GK', 'CB', 'LB', 'RB', 'CDM', 'CM', 'CAM', 'LW', 'RW', 'ST'];
+  const shortlistCount = Math.min(targetPlayers?.length || 0, 12);
+  const recentActivity = (aiRecommendations || []).slice(0, 3).map((insight: AIInsight) => ({
+    id: insight.id,
+    message: insight.title,
+    detail: insight.description,
+  }));
 
   const handlePlayerClick = (player: Player) => {
     if (onPlayerSelect) {
@@ -179,32 +192,33 @@ const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect })
               <div className="flex items-center justify-between">
                 <span className="text-slate-400">Reports This Week</span>
                 <span className="font-semibold text-green-400">
-                  {reportsLoading ? '...' : scoutingReports?.length || 0}
+                  {aiRecommendations.length}
                 </span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-slate-400">Shortlisted</span>
-                <span className="font-semibold text-orange-400">12</span>
+                <span className="font-semibold text-orange-400">{shortlistCount}</span>
               </div>
             </div>
           </div>
 
           <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700 p-6">
             <h3 className="text-lg font-semibold text-white mb-4">Recent Activity</h3>
-            <div className="space-y-3">
-              <div className="flex items-center space-x-3">
-                <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                <span className="text-sm text-slate-400">New report: Marcus Silva</span>
+            {recentActivity.length > 0 ? (
+              <div className="space-y-3">
+                {recentActivity.map((activity) => (
+                  <div key={activity.id} className="flex items-start space-x-3">
+                    <div className="mt-2 h-2 w-2 rounded-full bg-green-500"></div>
+                    <div>
+                      <div className="text-sm text-slate-200">{activity.message}</div>
+                      <div className="text-xs text-slate-400">{activity.detail}</div>
+                    </div>
+                  </div>
+                ))}
               </div>
-              <div className="flex items-center space-x-3">
-                <div className="w-2 h-2 bg-blue-500 rounded-full"></div>
-                <span className="text-sm text-slate-400">Target added: João Santos</span>
-              </div>
-              <div className="flex items-center space-x-3">
-                <div className="w-2 h-2 bg-orange-500 rounded-full"></div>
-                <span className="text-sm text-slate-400">Price update: €2.5M → €3M</span>
-              </div>
-            </div>
+            ) : (
+              <div className="text-sm text-slate-400">No scouting activity is available from the backend right now.</div>
+            )}
           </div>
         </div>
       </div>
@@ -252,13 +266,16 @@ const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect })
                     />
                     <div className="flex-1">
                       <h3 className="font-medium text-white">{player.name}</h3>
-                      <p className="text-sm text-slate-400">{player.position} • {player.team}</p>
+                      <p className="text-sm text-slate-400">{player.position || (player as any).detailed_position || 'Unknown'} • {player.club || (player as any).team || (player as any).team_name || 'Unknown club'}</p>
                       <div className="flex items-center space-x-2 mt-1">
                         <span className="text-xs bg-blue-900/40 text-blue-300 px-2 py-1 rounded">
-                          {player.age} years
+                          {deriveAge((player as any).age, (player as any).birth_date || (player as any).birthDate) ?? 'Age unavailable'}
+                          {typeof deriveAge((player as any).age, (player as any).birth_date || (player as any).birthDate) === 'number' ? ' years' : ''}
                         </span>
                         <span className="text-xs text-slate-400">
-                          €{(player.marketValue / 1000000).toFixed(1)}M
+                          €{typeof player.marketValue === 'number'
+                            ? (player.marketValue / 1000000).toFixed(1)
+                            : parseFloat(String(player.marketValue || '0').replace(/[€M,]/g, '')) || '—'}M
                         </span>
                       </div>
                     </div>

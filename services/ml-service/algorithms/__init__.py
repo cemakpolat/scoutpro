@@ -2,23 +2,18 @@
 Algorithms package exports for the ML service.
 
 This module exposes the stable, engine-compatible algorithm classes
-implemented in this package. Legacy or third-party algorithm files
-that are not part of the `MLAlgorithm` interface should not be
-exported here to avoid accidental imports.
+implemented in this package.
+
+Only the engine-compatible algorithms are exported here. The legacy
+files in this directory still reference an old `src.danalyticAPI`
+package that is not part of the current service image, so importing
+them from `__init__` breaks application startup.
 """
 
 from .clustering import ClusteringAlgorithm
 from .regression import RegressionAlgorithm
-from .linearreg import LinearRegressionAlgorithm
-try:
-	from .logisticreg import LogisticRegressionAlgorithm
-except Exception:
-	# optional/legacy file may be missing in some worktrees
-	LogisticRegressionAlgorithm = None
 
 __all__ = [
 	"ClusteringAlgorithm",
 	"RegressionAlgorithm",
-	"LinearRegressionAlgorithm",
-	"LogisticRegressionAlgorithm",
 ]

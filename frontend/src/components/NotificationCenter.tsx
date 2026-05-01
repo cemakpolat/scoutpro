@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Bell, X, Check, AlertTriangle, TrendingUp, Activity, Users } from 'lucide-react';
 import apiService from '../services/api';
+import { useWebSocket } from '../hooks/useWebSocket';
 
 interface NotificationCenterProps {
   notifications: any[];
@@ -9,6 +10,46 @@ interface NotificationCenterProps {
 
 const NotificationCenter: React.FC<NotificationCenterProps> = ({ notifications, setNotifications }) => {
   const [showNotifications, setShowNotifications] = useState(false);
+  const notificationsRef = useRef(notifications);
+  notificationsRef.current = notifications;
+
+  const { subscribe } = useWebSocket();
+
+  // Subscribe to incoming WebSocket notifications and live match topics
+  useEffect(() => {
+    const unsubNotification = subscribe('notification', (data: any) => {
+      if (!data) return;
+      const incoming = {
+        id: data.id ?? Date.now(),
+        type: data.type ?? 'info',
+        title: data.title ?? data.message ?? 'New notification',
+        message: data.message ?? data.description ?? '',
+        time: data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : 'just now',
+        read: false,
+      };
+      setNotifications([incoming, ...notificationsRef.current]);
+    });
+
+    const unsubMatch = subscribe('match_update', (data: any) => {
+      if (!data) return;
+      const incoming = {
+        id: Date.now(),
+        type: 'tactical',
+        title: `Live Match Update`,
+        message: data.score
+          ? `Score: ${data.score}`
+          : data.event ?? 'Live match event',
+        time: 'just now',
+        read: false,
+      };
+      setNotifications([incoming, ...notificationsRef.current]);
+    });
+
+    return () => {
+      if (typeof unsubNotification === 'function') unsubNotification();
+      if (typeof unsubMatch === 'function') unsubMatch();
+    };
+  }, [subscribe, setNotifications]);
 
   const markAsRead = (id: number) => {
     setNotifications(notifications.map(n => 

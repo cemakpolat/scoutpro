@@ -1,0 +1,50 @@
+{
+  "SoccerFeed": {
+    "SoccerDocument": {
+      "@attributes": {
+        "uID": "f935592",
+        "competition_id": "115",
+        "competition_name": "Turkish Süper Lig",
+        "season_id": "2017",
+        "Type": "Fixture"
+      },
+      "MatchData": {
+        "MatchInfo": {
+          "Date": "20170812T180000+0300"
+        },
+        "TeamData": [
+          {
+            "@attributes": {
+              "TeamRef": "t2134",
+              "Side": "Home"
+            }
+          },
+          {
+            "@attributes": {
+              "TeamRef": "t3073",
+              "Side": "Away"
+            }
+          }
+        ]
+      },
+      "Team": [
+        {
+          "Country": "Turkey",
+          "Name": "Gençlerbirligi",
+          "@attributes": {
+            "uID": "t2134",
+            "short_club_name": "Genclerbirligi"
+          }
+        },
+        {
+          "Country": "Turkey",
+          "Name": "Karabükspor",
+          "@attributes": {
+            "uID": "t3073",
+            "short_club_name": "Karabukspor"
+          }
+        }
+      ]
+    }
+  }
+}

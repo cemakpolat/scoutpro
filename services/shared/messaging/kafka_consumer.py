@@ -308,7 +308,7 @@ class EventSubscriber:
         """Background task for consuming and routing events"""
         try:
             async for event in self.consumer.consume():
-                event_type_str = event.get('event_type')
+                event_type_str = event.get('event_type') or event.get('type')
                 if not event_type_str:
                     logger.warning(f"Event missing event_type: {event}")
                     continue

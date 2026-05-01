@@ -4,7 +4,7 @@ import {
   Target, Bell, ChevronDown, Zap, TrendingUp, Shield, Menu, X, LogOut, User as UserIcon, Film,
   Calendar as CalendarIcon, Upload
 } from 'lucide-react';
-import { Database, Layers, DollarSign, LineChart } from 'lucide-react';
+import { Database, Layers, LineChart } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 
 interface NavigationProps {
@@ -27,6 +27,7 @@ const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab, notifi
     { id: 'collaboration', label: 'Collaboration Hub', icon: Users },
     { id: 'calendar', label: 'Calendar & Schedule', icon: CalendarIcon },
     { id: 'match-centre', label: 'Match Centre', icon: Activity },
+    { id: 'match-analysis', label: 'Match Analysis', icon: Target },
     { id: 'multi-match', label: 'Multi-Match Analysis', icon: BarChart3 },
     { id: 'players', label: 'Player Profiles', icon: Users },
     { id: 'scouting', label: 'Scouting Hub', icon: Target },
@@ -36,7 +37,6 @@ const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab, notifi
     { id: 'data-management', label: 'Data Management', icon: Database },
     { id: 'data-importer', label: 'Data Import/Export', icon: Upload },
     { id: 'tactical-analyzer', label: 'Tactical Analyzer', icon: Layers },
-    { id: 'transfer-hub', label: 'Transfer Hub', icon: DollarSign },
     { id: 'performance-tracker', label: 'Performance Tracker', icon: LineChart },
     { id: 'admin', label: 'Admin Console', icon: Shield },
   ];

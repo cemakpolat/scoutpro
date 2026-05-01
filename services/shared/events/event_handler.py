@@ -3,24 +3,20 @@ This class handles the F24 events data and distributes to the related event hand
 Author: Cem Akpolat, Doruk Sahinel
 
 """
-import sys
-
-sys.path.append("..")  # Adds higher directory to python modules path.
-from src.events.Events import EventIDs
-from src.events.Events import EventTypesHelper
-from src.events.PassEvent import PassEvent as PassEvents
-from src.events.AerialDuelEvents import AerialDuelEvents
-from src.events.FoulEvents import FoulEvents
-from src.events.AssistEvents import AssistEvents
-from src.events.BallControlEvents import BallControlEvents
-from src.events.ShotandGoalEvents import ShotandGoalEvents
-from src.events.DuelEvents import DuelEvents
-from src.events.TakeOnEvents import TakeOnEvents
-from src.events.GoalkeeperEvents import GoalkeeperEvents
-from src.events.CardEvents import CardEvents
-from src.events.GamesandMinutesEvents import GamesandMinutesEvents
-from src.events.TouchEvents import TouchEvents
-from src.events.EventMinutes import EventMinutes
+from .Events import EventIDs, EventTypesHelper
+from .PassEvent import PassEvent as PassEvents
+from .AerialDuelEvents import AerialDuelEvents
+from .FoulEvents import FoulEvents
+from .AssistEvents import AssistEvents
+from .BallControlEvents import BallControlEvents
+from .ShotandGoalEvents import ShotandGoalEvents
+from .DuelEvents import DuelEvents
+from .TakeOnEvents import TakeOnEvents
+from .GoalkeeperEvents import GoalkeeperEvents
+from .CardEvents import CardEvents
+from .GamesandMinutesEvents import GamesandMinutesEvents
+from .TouchEvents import TouchEvents
+from .EventMinutes import EventMinutes
 
 
 class EventHandler:

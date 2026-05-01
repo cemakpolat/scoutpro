@@ -1,6 +1,7 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Search, Filter, Download, Plus, X } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
+import { usePlayerSequenceCoverage } from '../hooks/usePlayerSequenceCoverage';
 import { useData } from '../context/DataContext';
 import apiService from '../services/api';
 import { exportService } from '../services/exportService';
@@ -12,6 +13,8 @@ const PlayerDatabase: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedPlayer, setSelectedPlayer] = useState(null);
   const [positionFilter, setPositionFilter] = useState('all');
+  const [coverageFilter, setCoverageFilter] = useState<'all' | 'sequence-ready' | 'profile-only'>('all');
+  const [sortMode, setSortMode] = useState<'rating' | 'sequence-ready' | 'sequence-volume'>('rating');
   const [filters, setFilters] = useState<PlayerFilters>({});
   const [queryParams, setQueryParams] = useState<QueryParams>({
     page: 1,
@@ -29,11 +32,13 @@ const PlayerDatabase: React.FC = () => {
   const [newPlayerClub, setNewPlayerClub] = useState('');
   const [newPlayerHeight, setNewPlayerHeight] = useState('');
   const [newPlayerFoot, setNewPlayerFoot] = useState('Right');
+  const [isCreatingPlayer, setIsCreatingPlayer] = useState(false);
+  const [createPlayerError, setCreatePlayerError] = useState<string | null>(null);
 
   // Advanced filters state
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
 
-  const { players, loading, errors, addPlayer } = useData();
+  const { players, errors } = useData();
 
   // Fetch players with filters
   const { data: playersData, loading: playersLoading, refetch } = useApi(
@@ -55,15 +60,76 @@ const PlayerDatabase: React.FC = () => {
   };
 
   const displayPlayers = playersData || players;
+  const coveragePlayerIds = useMemo(
+    () => displayPlayers.map((player: any) => String(player.id)).filter(Boolean),
+    [displayPlayers]
+  );
+  const { coverageByPlayerId, loading: coverageLoading, sequenceReadyCount } = usePlayerSequenceCoverage(coveragePlayerIds);
+
+  const filteredPlayers = displayPlayers.filter((player: any) => {
+    if (coverageFilter === 'all' || Object.keys(coverageByPlayerId).length === 0) {
+      return true;
+    }
+
+    const coverage = coverageByPlayerId[String(player.id)];
+    if (coverageFilter === 'sequence-ready') {
+      return coverage?.hasCoverage === true;
+    }
+
+    return coverage?.hasCoverage === false;
+  });
+
+  const sortedPlayers = useMemo(() => {
+    const nextPlayers = [...filteredPlayers];
+
+    const metricsFor = (player: any) => {
+      const coverage = coverageByPlayerId[String(player.id)] || {};
+      return {
+        hasCoverage: coverage?.hasCoverage === true ? 1 : 0,
+        totalSequences: Number(coverage?.totalSequences || 0),
+        matchesAnalyzed: Number(coverage?.matchesAnalyzed || 0),
+        rating: typeof player.rating === 'number' && Number.isFinite(player.rating) ? player.rating : 0,
+        name: String(player.name || ''),
+      };
+    };
+
+    nextPlayers.sort((left: any, right: any) => {
+      const leftMetrics = metricsFor(left);
+      const rightMetrics = metricsFor(right);
+
+      if (sortMode === 'sequence-ready') {
+        return rightMetrics.hasCoverage - leftMetrics.hasCoverage
+          || rightMetrics.totalSequences - leftMetrics.totalSequences
+          || rightMetrics.matchesAnalyzed - leftMetrics.matchesAnalyzed
+          || rightMetrics.rating - leftMetrics.rating
+          || leftMetrics.name.localeCompare(rightMetrics.name);
+      }
+
+      if (sortMode === 'sequence-volume') {
+        return rightMetrics.totalSequences - leftMetrics.totalSequences
+          || rightMetrics.matchesAnalyzed - leftMetrics.matchesAnalyzed
+          || rightMetrics.hasCoverage - leftMetrics.hasCoverage
+          || rightMetrics.rating - leftMetrics.rating
+          || leftMetrics.name.localeCompare(rightMetrics.name);
+      }
+
+      return rightMetrics.rating - leftMetrics.rating
+        || rightMetrics.hasCoverage - leftMetrics.hasCoverage
+        || rightMetrics.totalSequences - leftMetrics.totalSequences
+        || leftMetrics.name.localeCompare(rightMetrics.name);
+    });
+
+    return nextPlayers;
+  }, [coverageByPlayerId, filteredPlayers, sortMode]);
 
   const handleExport = async () => {
-    if (!displayPlayers || displayPlayers.length === 0) {
+    if (!sortedPlayers || sortedPlayers.length === 0) {
       alert('No players to export');
       return;
     }
 
     try {
-      const exportData = displayPlayers.map((player: any) => ({
+      const exportData = sortedPlayers.map((player: any) => ({
         Name: player.name,
         Position: player.position,
         Age: player.age,
@@ -92,25 +158,7 @@ const PlayerDatabase: React.FC = () => {
     }
   };
 
-  const handleAddPlayer = () => {
-    const newPlayer = {
-      id: `player_${Date.now()}`,
-      name: newPlayerName,
-      position: newPlayerPosition,
-      age: parseInt(newPlayerAge) || 0,
-      nationality: newPlayerNationality,
-      club: newPlayerClub,
-      height: parseInt(newPlayerHeight) || 0,
-      foot: newPlayerFoot,
-      rating: 0,
-      marketValue: 'TBD',
-      stats: {}
-    };
-
-    // For now, show success message (backend integration will replace this)
-    alert(`✅ Player "${newPlayerName}" added successfully!\n\n(Note: This will be saved to database once backend is connected)`);
-
-    // Reset form
+  const resetPlayerForm = () => {
     setNewPlayerName('');
     setNewPlayerPosition('ST');
     setNewPlayerAge('');
@@ -118,10 +166,49 @@ const PlayerDatabase: React.FC = () => {
     setNewPlayerClub('');
     setNewPlayerHeight('');
     setNewPlayerFoot('Right');
-    setShowAddPlayer(false);
+    setCreatePlayerError(null);
+  };
 
-    // Trigger refetch to show updated list (when backend is ready)
-    refetch?.();
+  const handleAddPlayer = async () => {
+    const trimmedName = newPlayerName.trim();
+    const trimmedNationality = newPlayerNationality.trim();
+    const trimmedClub = newPlayerClub.trim();
+
+    if (!trimmedName || !trimmedNationality || !trimmedClub || !newPlayerAge) {
+      setCreatePlayerError('Name, age, nationality, and club are required.');
+      return;
+    }
+
+    const nameParts = trimmedName.split(/\s+/);
+    const lastName = nameParts.length > 1 ? nameParts.pop() : undefined;
+    const firstName = nameParts.length > 0 ? nameParts.join(' ') : undefined;
+
+    setIsCreatingPlayer(true);
+    setCreatePlayerError(null);
+
+    const response = await apiService.createPlayer({
+      id: `manual_${Date.now()}`,
+      name: trimmedName,
+      first: firstName,
+      last: lastName,
+      position: newPlayerPosition,
+      age: Number.parseInt(newPlayerAge, 10) || undefined,
+      nationality: trimmedNationality,
+      club: trimmedClub,
+      height: newPlayerHeight ? `${Number.parseInt(newPlayerHeight, 10) || newPlayerHeight}` : undefined,
+      preferredFoot: newPlayerFoot,
+    });
+
+    setIsCreatingPlayer(false);
+
+    if (!response.success) {
+      setCreatePlayerError(response.error.message || 'Player could not be created.');
+      return;
+    }
+
+    resetPlayerForm();
+    setShowAddPlayer(false);
+    await refetch();
   };
 
   if (selectedPlayer) {
@@ -170,6 +257,26 @@ const PlayerDatabase: React.FC = () => {
           <option value="LW">Left Winger</option>
           <option value="RW">Right Winger</option>
           <option value="ST">Striker</option>
+        </select>
+
+        <select
+          value={coverageFilter}
+          onChange={(e) => setCoverageFilter(e.target.value as 'all' | 'sequence-ready' | 'profile-only')}
+          className="px-4 py-3 bg-slate-800 border border-slate-700 rounded-lg focus:ring-2 focus:ring-green-500"
+        >
+          <option value="all">All Coverage</option>
+          <option value="sequence-ready">Sequence Ready</option>
+          <option value="profile-only">Profile Only</option>
+        </select>
+
+        <select
+          value={sortMode}
+          onChange={(e) => setSortMode(e.target.value as 'rating' | 'sequence-ready' | 'sequence-volume')}
+          className="px-4 py-3 bg-slate-800 border border-slate-700 rounded-lg focus:ring-2 focus:ring-green-500"
+        >
+          <option value="rating">Sort: Rating</option>
+          <option value="sequence-ready">Sort: Sequence Coverage</option>
+          <option value="sequence-volume">Sort: Sequence Volume</option>
         </select>
 
         <button
@@ -302,17 +409,22 @@ const PlayerDatabase: React.FC = () => {
 
       {/* Results Summary */}
       <div className="text-slate-400">
-        Showing {displayPlayers.length} players
+        Showing {sortedPlayers.length} of {displayPlayers.length} players
         {playersLoading && <span className="ml-2">Loading...</span>}
+        {coverageLoading && <span className="ml-2">Checking sequence coverage...</span>}
+        {!coverageLoading && Object.keys(coverageByPlayerId).length > 0 && (
+          <span className="ml-2">• {sequenceReadyCount} sequence-ready</span>
+        )}
         {errors.players && <span className="ml-2 text-red-400">Error: {errors.players}</span>}
       </div>
 
       {/* Player Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-        {displayPlayers.map((player) => (
+        {sortedPlayers.map((player: any) => (
           <PlayerCard
             key={player.id}
             player={player}
+            coverage={coverageByPlayerId[String(player.id)]}
             onClick={() => setSelectedPlayer(player)}
           />
         ))}
@@ -333,6 +445,12 @@ const PlayerDatabase: React.FC = () => {
             </div>
 
             <div className="space-y-4">
+              {createPlayerError && (
+                <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+                  {createPlayerError}
+                </div>
+              )}
+
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <label className="block text-sm font-medium mb-2">Player Name *</label>
@@ -430,13 +548,16 @@ const PlayerDatabase: React.FC = () => {
               <div className="flex items-center space-x-3 pt-4">
                 <button
                   onClick={handleAddPlayer}
-                  disabled={!newPlayerName.trim() || !newPlayerAge || !newPlayerNationality.trim() || !newPlayerClub.trim()}
+                  disabled={isCreatingPlayer || !newPlayerName.trim() || !newPlayerAge || !newPlayerNationality.trim() || !newPlayerClub.trim()}
                   className="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Add Player
+                  {isCreatingPlayer ? 'Creating...' : 'Add Player'}
                 </button>
                 <button
-                  onClick={() => setShowAddPlayer(false)}
+                  onClick={() => {
+                    resetPlayerForm();
+                    setShowAddPlayer(false);
+                  }}
                   className="flex-1 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors"
                 >
                   Cancel

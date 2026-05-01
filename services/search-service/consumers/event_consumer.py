@@ -9,7 +9,8 @@ import sys
 sys.path.append('/app')
 
 from shared.messaging import EventSubscriber, EventType
-from search.elasticsearch_client import ElasticsearchClient
+from config.settings import get_settings
+from search.elasticsearch_client import SearchClient
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,13 @@ class SearchEventConsumer:
         self.subscriber = EventSubscriber(
             group_id='search-service-consumer',
         )
-        self.es_client = ElasticsearchClient()
+        settings = get_settings()
+        self.es_client = SearchClient(settings.elasticsearch_url, settings.mongodb_url)
+
+    @staticmethod
+    def _entity_payload(event: dict, key: str) -> dict:
+        data = event.get('data', {})
+        return data.get(key, data)
 
     async def start(self):
         """Start consuming events"""
@@ -61,8 +68,9 @@ class SearchEventConsumer:
     async def handle_player_created(self, event: dict):
         """Handle player created event"""
         try:
-            player_data = event['data']
-            player_id = player_data.get('player_id')
+            data = event['data']
+            player_data = self._entity_payload(event, 'player')
+            player_id = data.get('player_id') or player_data.get('uID')
 
             logger.info(f"Indexing new player: {player_id}")
 
@@ -73,7 +81,7 @@ class SearchEventConsumer:
                 document={
                     'player_id': player_id,
                     'name': player_data.get('name'),
-                    'team': player_data.get('team'),
+                    'club': player_data.get('club'),
                     'position': player_data.get('position'),
                     'nationality': player_data.get('nationality'),
                     'age': player_data.get('age'),
@@ -89,8 +97,9 @@ class SearchEventConsumer:
     async def handle_player_updated(self, event: dict):
         """Handle player updated event"""
         try:
-            player_data = event['data']
-            player_id = player_data.get('player_id')
+            data = event['data']
+            player_data = self._entity_payload(event, 'player')
+            player_id = data.get('player_id') or player_data.get('uID')
 
             logger.info(f"Updating player index: {player_id}")
 
@@ -100,7 +109,7 @@ class SearchEventConsumer:
                 document_id=player_id,
                 document={
                     'name': player_data.get('name'),
-                    'team': player_data.get('team'),
+                    'club': player_data.get('club'),
                     'position': player_data.get('position'),
                     'nationality': player_data.get('nationality'),
                     'age': player_data.get('age'),
@@ -118,8 +127,9 @@ class SearchEventConsumer:
     async def handle_team_created(self, event: dict):
         """Handle team created event"""
         try:
-            team_data = event['data']
-            team_id = team_data.get('team_id')
+            data = event['data']
+            team_data = self._entity_payload(event, 'team')
+            team_id = data.get('team_id') or team_data.get('uID')
 
             logger.info(f"Indexing new team: {team_id}")
 
@@ -145,8 +155,9 @@ class SearchEventConsumer:
     async def handle_team_updated(self, event: dict):
         """Handle team updated event"""
         try:
-            team_data = event['data']
-            team_id = team_data.get('team_id')
+            data = event['data']
+            team_data = self._entity_payload(event, 'team')
+            team_id = data.get('team_id') or team_data.get('uID')
 
             logger.info(f"Updating team index: {team_id}")
 
@@ -173,8 +184,9 @@ class SearchEventConsumer:
     async def handle_match_created(self, event: dict):
         """Handle match created event"""
         try:
-            match_data = event['data']
-            match_id = match_data.get('match_id')
+            data = event['data']
+            match_data = self._entity_payload(event, 'match')
+            match_id = data.get('match_id') or match_data.get('uID')
 
             logger.info(f"Indexing new match: {match_id}")
 
@@ -184,12 +196,12 @@ class SearchEventConsumer:
                 document_id=match_id,
                 document={
                     'match_id': match_id,
-                    'home_team': match_data.get('home_team'),
-                    'away_team': match_data.get('away_team'),
-                    'competition': match_data.get('competition'),
+                    'home_team_id': match_data.get('homeTeamID'),
+                    'away_team_id': match_data.get('awayTeamID'),
+                    'competition': match_data.get('competitionID'),
                     'date': match_data.get('date'),
                     'venue': match_data.get('venue'),
-                    'status': 'scheduled',
+                    'status': match_data.get('status', 'scheduled'),
                     'indexed_at': event['timestamp']
                 }
             )
@@ -202,8 +214,9 @@ class SearchEventConsumer:
     async def handle_match_updated(self, event: dict):
         """Handle match updated event"""
         try:
-            match_data = event['data']
-            match_id = match_data.get('match_id')
+            data = event['data']
+            match_data = self._entity_payload(event, 'match')
+            match_id = data.get('match_id') or match_data.get('uID')
 
             logger.info(f"Updating match index: {match_id}")
 
@@ -212,8 +225,8 @@ class SearchEventConsumer:
                 index='matches',
                 document_id=match_id,
                 document={
-                    'home_score': match_data.get('home_score'),
-                    'away_score': match_data.get('away_score'),
+                    'home_score': match_data.get('homeScore', match_data.get('home_score')),
+                    'away_score': match_data.get('awayScore', match_data.get('away_score')),
                     'status': match_data.get('status'),
                     'minute': match_data.get('minute'),
                     'updated_at': event['timestamp']
@@ -228,8 +241,9 @@ class SearchEventConsumer:
     async def handle_match_ended(self, event: dict):
         """Handle match ended event"""
         try:
-            match_data = event['data']
-            match_id = match_data.get('match_id')
+            data = event['data']
+            match_data = self._entity_payload(event, 'match')
+            match_id = data.get('match_id') or match_data.get('uID')
 
             logger.info(f"Finalizing match index: {match_id}")
 
@@ -238,8 +252,8 @@ class SearchEventConsumer:
                 index='matches',
                 document_id=match_id,
                 document={
-                    'home_score': match_data.get('home_score'),
-                    'away_score': match_data.get('away_score'),
+                    'home_score': match_data.get('homeScore', match_data.get('home_score')),
+                    'away_score': match_data.get('awayScore', match_data.get('away_score')),
                     'status': 'completed',
                     'completed_at': event['timestamp']
                 }
@@ -268,3 +282,4 @@ async def stop_consumer():
     global _consumer
     if _consumer:
         await _consumer.stop()
+        _consumer = None

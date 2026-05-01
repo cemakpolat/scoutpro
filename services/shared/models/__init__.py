@@ -10,6 +10,7 @@ from .base import (
     APIError,
     PositionEnum
 )
+from .provider_mapping import ProviderMapping
 
 __all__ = [
     'Player',
@@ -18,5 +19,6 @@ __all__ = [
     'PlayerStatistics',
     'APIResponse',
     'APIError',
-    'PositionEnum'
+    'PositionEnum',
+    'ProviderMapping'
 ]

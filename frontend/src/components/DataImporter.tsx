@@ -1,167 +1,221 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useRef, useState } from 'react';
 import {
-  Upload, Download, FileText, CheckCircle, AlertCircle,
-  X, Play, Pause, RefreshCw, Eye, Settings, Database,
-  ArrowRight, File, Table, List, BarChart3
+  Upload,
+  Download,
+  FileText,
+  CheckCircle,
+  AlertCircle,
+  X,
+  Play,
+  RefreshCw,
+  Eye,
+  Database,
+  File,
+  List,
 } from 'lucide-react';
-import { ImportJob, ImportTemplate, ImportType } from '../types/import';
+import { useApi } from '../hooks/useApi';
+import { ImportJob, ImportPreview, ImportTemplate, ImportType } from '../types/import';
 import apiService from '../services/api';
+
+const inferFormat = (fileName: string): 'csv' | 'excel' | 'json' => {
+  const lowerName = fileName.toLowerCase();
+  if (lowerName.endsWith('.json')) return 'json';
+  if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) return 'excel';
+  return 'csv';
+};
+
+const formatFileSize = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1048576) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / 1048576).toFixed(1)} MB`;
+};
+
+const getStatusColor = (status: ImportJob['status']) => {
+  const colors = {
+    pending: 'bg-slate-600',
+    processing: 'bg-blue-600',
+    completed: 'bg-green-600',
+    failed: 'bg-red-600',
+    partial: 'bg-yellow-600'
+  };
+  return colors[status];
+};
+
+const downloadBlob = (blob: Blob, fileName: string) => {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.click();
+  URL.revokeObjectURL(url);
+};
+
+const buildPreview = async (file: File): Promise<ImportPreview> => {
+  const format = inferFormat(file.name);
+
+  if (format === 'csv') {
+    const text = await file.text();
+    const lines = text.split(/\r?\n/).filter(Boolean);
+    const headers = lines[0]?.split(',').map((value) => value.trim()) || [];
+    const rows = lines.slice(1, 4).map((line) => line.split(',').map((value) => value.trim()));
+
+    return {
+      headers,
+      rows,
+      totalRows: Math.max(0, lines.length - 1)
+    };
+  }
+
+  if (format === 'json') {
+    try {
+      const parsed = JSON.parse(await file.text());
+      const data = Array.isArray(parsed) ? parsed : [parsed];
+      const firstRow = data[0] || {};
+      const headers = Object.keys(firstRow);
+      const rows = data.slice(0, 3).map((row) => headers.map((header) => String(row?.[header] ?? '')));
+
+      return {
+        headers,
+        rows,
+        totalRows: data.length
+      };
+    } catch {
+      return {
+        headers: ['File', 'Format', 'Preview'],
+        rows: [[file.name, format, 'JSON preview unavailable']],
+        totalRows: 1
+      };
+    }
+  }
+
+  return {
+    headers: ['File', 'Size', 'Format'],
+    rows: [[file.name, formatFileSize(file.size), format.toUpperCase()]],
+    totalRows: 1
+  };
+};
 
 const DataImporter: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'import' | 'history' | 'templates'>('import');
   const [selectedType, setSelectedType] = useState<ImportType>('players');
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [showPreview, setShowPreview] = useState(false);
-  const [importJobs, setImportJobs] = useState<ImportJob[]>([]);
+  const [previewData, setPreviewData] = useState<ImportPreview | null>(null);
+  const [actionMessage, setActionMessage] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [expandedJobId, setExpandedJobId] = useState<string | null>(null);
+  const [expandedTemplateId, setExpandedTemplateId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch import history from API on mount (fall back to mock data)
-  useEffect(() => {
-    apiService.getDashboardOverview().then((res: any) => {
-      // Use overview as a signal that backend is available
-      console.log('📦 DataImporter: Backend connected');
-    }).catch(() => {});
-  }, []);
+  const {
+    data: importJobs = [],
+    loading: jobsLoading,
+    error: jobsError,
+    refetch: refetchJobs,
+  } = useApi(() => apiService.listImportJobs(), []);
 
-  // Mock data
-  const mockJobs: ImportJob[] = [
-    {
-      id: 'job1',
-      type: 'players',
-      format: 'csv',
-      fileName: 'premier_league_players.csv',
-      fileSize: 245000,
-      totalRows: 500,
-      processedRows: 500,
-      successRows: 487,
-      failedRows: 13,
-      status: 'completed',
-      errors: [
-        { row: 45, column: 'age', error: 'Invalid age value', value: 'twenty' },
-        { row: 127, column: 'marketValue', error: 'Market value exceeds maximum', value: '99999999999' },
-      ],
-      createdBy: 'admin@scoutpro.com',
-      createdAt: '2024-10-01T10:30:00Z',
-      completedAt: '2024-10-01T10:32:15Z',
-      progress: 100
-    },
-    {
-      id: 'job2',
-      type: 'matches',
-      format: 'excel',
-      fileName: 'laliga_matches_2024.xlsx',
-      fileSize: 180000,
-      totalRows: 380,
-      processedRows: 200,
-      successRows: 195,
-      failedRows: 5,
-      status: 'processing',
-      errors: [],
-      createdBy: 'analyst@scoutpro.com',
-      createdAt: '2024-10-02T09:15:00Z',
-      progress: 53
-    },
-    {
-      id: 'job3',
-      type: 'stats',
-      format: 'json',
-      fileName: 'player_stats_batch_1.json',
-      fileSize: 520000,
-      totalRows: 1200,
-      processedRows: 0,
-      successRows: 0,
-      failedRows: 0,
-      status: 'pending',
-      errors: [],
-      createdBy: 'admin@scoutpro.com',
-      createdAt: '2024-10-02T11:00:00Z',
-      progress: 0
-    }
-  ];
+  const {
+    data: importTemplates = [],
+    loading: templatesLoading,
+    error: templatesError,
+    refetch: refetchTemplates,
+  } = useApi(() => apiService.listImportTemplates(), []);
 
-  const mockTemplates: ImportTemplate[] = [
-    {
-      id: 't1',
-      name: 'Player Import Template',
-      type: 'players',
-      description: 'Standard template for importing player data',
-      requiredFields: ['name', 'position', 'age', 'nationality'],
-      optionalFields: ['club', 'marketValue', 'height', 'foot', 'rating'],
-      sampleData: [
-        { name: 'John Doe', position: 'ST', age: 24, nationality: 'England', club: 'Manchester United' }
-      ],
-      mapping: {
-        'Player Name': 'name',
-        'Position': 'position',
-        'Age': 'age',
-        'Country': 'nationality'
-      }
-    },
-    {
-      id: 't2',
-      name: 'Match Import Template',
-      type: 'matches',
-      description: 'Template for importing match data',
-      requiredFields: ['homeTeam', 'awayTeam', 'date', 'competition'],
-      optionalFields: ['venue', 'score', 'attendance', 'referee'],
-      sampleData: [
-        { homeTeam: 'Barcelona', awayTeam: 'Real Madrid', date: '2024-10-26', competition: 'La Liga' }
-      ],
-      mapping: {
-        'Home': 'homeTeam',
-        'Away': 'awayTeam',
-        'Date': 'date',
-        'League': 'competition'
-      }
-    }
-  ];
-
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (file) {
-      setUploadedFile(file);
-      setShowPreview(true);
+    if (!file) return;
+
+    setUploadedFile(file);
+    setShowPreview(true);
+    setActionMessage('');
+
+    try {
+      const preview = await buildPreview(file);
+      setPreviewData(preview);
+    } catch (error) {
+      console.error('Preview generation error:', error);
+      setPreviewData({
+        headers: ['File', 'Size'],
+        rows: [[file.name, formatFileSize(file.size)]],
+        totalRows: 1
+      });
+    }
+  };
+
+  const resetUploadState = () => {
+    setUploadedFile(null);
+    setPreviewData(null);
+    setShowPreview(false);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  const handleStartImport = async () => {
+    if (!uploadedFile) return;
+
+    setIsSubmitting(true);
+    setActionMessage('');
+
+    try {
+      const response = await apiService.createImportJob({
+        type: selectedType,
+        fileName: uploadedFile.name,
+        fileSize: uploadedFile.size,
+        format: inferFormat(uploadedFile.name),
+        totalRows: previewData?.totalRows,
+        preview: previewData,
+        createdBy: 'current_user@scoutpro.com'
+      });
+
+      if (response.success) {
+        setActionMessage(`Import job started for ${uploadedFile.name}.`);
+        resetUploadState();
+        setActiveTab('history');
+        refetchJobs();
+      }
+    } catch (error) {
+      console.error('Create import job error:', error);
+      setActionMessage('Import could not be started.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleRetryImport = async (jobId: string) => {
+    try {
+      await apiService.retryImportJob(jobId);
+      setActionMessage(`Retry started for import job ${jobId}.`);
+      refetchJobs();
+    } catch (error) {
+      console.error('Retry import job error:', error);
+      setActionMessage('Retry failed.');
+    }
+  };
+
+  const handleDownloadReport = async (jobId: string) => {
+    try {
+      const blob = await apiService.downloadImportJobReport(jobId);
+      downloadBlob(blob, `import-report-${jobId}.json`);
+    } catch (error) {
+      console.error('Download import report error:', error);
+      setActionMessage('Import report could not be downloaded.');
     }
   };
 
   const handleDownloadTemplate = (template: ImportTemplate) => {
-    // Create CSV content
     const headers = [...template.requiredFields, ...template.optionalFields].join(',');
-    const sampleRow = template.sampleData[0];
+    const sampleRow = template.sampleData[0] || {};
     const values = [...template.requiredFields, ...template.optionalFields]
-      .map(field => sampleRow[field as keyof typeof sampleRow] || '')
+      .map((field) => sampleRow[field as keyof typeof sampleRow] || '')
       .join(',');
 
-    const csvContent = `${headers}\n${values}`;
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${template.name.replace(/\s+/g, '_')}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  const getStatusColor = (status: ImportJob['status']) => {
-    const colors = {
-      pending: 'bg-slate-600',
-      processing: 'bg-blue-600',
-      completed: 'bg-green-600',
-      failed: 'bg-red-600',
-      partial: 'bg-yellow-600'
-    };
-    return colors[status];
-  };
-
-  const formatFileSize = (bytes: number): string => {
-    if (bytes < 1024) return bytes + ' B';
-    if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
-    return (bytes / 1048576).toFixed(1) + ' MB';
+    const blob = new Blob([`${headers}\n${values}`], { type: 'text/csv' });
+    downloadBlob(blob, `${template.name.replace(/\s+/g, '_')}.csv`);
   };
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <h1 className="text-3xl font-bold flex items-center">
           <Database className="h-8 w-8 mr-3 text-orange-500" />
@@ -169,7 +223,13 @@ const DataImporter: React.FC = () => {
         </h1>
       </div>
 
-      {/* Tabs */}
+      {actionMessage && (
+        <div className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 px-4 py-3 text-sm text-green-300">
+          <CheckCircle className="h-4 w-4 text-green-400" />
+          <span>{actionMessage}</span>
+        </div>
+      )}
+
       <div className="flex items-center space-x-2 border-b border-slate-700">
         <button
           onClick={() => setActiveTab('import')}
@@ -206,10 +266,8 @@ const DataImporter: React.FC = () => {
         </button>
       </div>
 
-      {/* Import Tab */}
       {activeTab === 'import' && (
         <div className="space-y-6">
-          {/* Data Type Selection */}
           <div className="bg-slate-800 rounded-xl p-6">
             <h3 className="text-lg font-semibold mb-4">Select Data Type</h3>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -232,10 +290,8 @@ const DataImporter: React.FC = () => {
             </div>
           </div>
 
-          {/* File Upload */}
           <div className="bg-slate-800 rounded-xl p-6">
             <h3 className="text-lg font-semibold mb-4">Upload File</h3>
-
             <div
               onClick={() => fileInputRef.current?.click()}
               className="border-2 border-dashed border-slate-600 rounded-xl p-12 text-center hover:border-orange-500 transition-colors cursor-pointer"
@@ -248,10 +304,9 @@ const DataImporter: React.FC = () => {
                   <File className="h-4 w-4 text-green-400" />
                   <span className="text-sm font-medium">{uploadedFile.name}</span>
                   <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setUploadedFile(null);
-                      setShowPreview(false);
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      resetUploadState();
                     }}
                     className="p-1 hover:bg-slate-600 rounded"
                   >
@@ -272,15 +327,12 @@ const DataImporter: React.FC = () => {
             {uploadedFile && (
               <div className="mt-4 flex items-center space-x-3">
                 <button
-                  onClick={() => {
-                    alert(`✅ Import started for ${uploadedFile.name}!\n\nType: ${selectedType}\n\n(Note: Import will process once backend is connected)`);
-                    setUploadedFile(null);
-                    setShowPreview(false);
-                  }}
-                  className="flex-1 flex items-center justify-center space-x-2 px-4 py-3 bg-orange-600 hover:bg-orange-700 rounded-lg transition-colors"
+                  onClick={handleStartImport}
+                  disabled={isSubmitting}
+                  className="flex-1 flex items-center justify-center space-x-2 px-4 py-3 bg-orange-600 hover:bg-orange-700 disabled:bg-slate-600 rounded-lg transition-colors"
                 >
                   <Play className="h-4 w-4" />
-                  <span>Start Import</span>
+                  <span>{isSubmitting ? 'Starting...' : 'Start Import'}</span>
                 </button>
                 <button
                   onClick={() => setShowPreview(!showPreview)}
@@ -293,51 +345,64 @@ const DataImporter: React.FC = () => {
             )}
           </div>
 
-          {/* Preview */}
-          {showPreview && uploadedFile && (
+          {showPreview && uploadedFile && previewData && (
             <div className="bg-slate-800 rounded-xl p-6">
               <h3 className="text-lg font-semibold mb-4">Data Preview</h3>
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
                     <tr className="border-b border-slate-700">
-                      <th className="text-left py-2 px-3">Name</th>
-                      <th className="text-left py-2 px-3">Position</th>
-                      <th className="text-left py-2 px-3">Age</th>
-                      <th className="text-left py-2 px-3">Nationality</th>
-                      <th className="text-left py-2 px-3">Club</th>
+                      {previewData.headers.map((header) => (
+                        <th key={header} className="text-left py-2 px-3">{header}</th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
-                    <tr className="border-b border-slate-700">
-                      <td className="py-2 px-3">Sample Player 1</td>
-                      <td className="py-2 px-3">ST</td>
-                      <td className="py-2 px-3">24</td>
-                      <td className="py-2 px-3">England</td>
-                      <td className="py-2 px-3">Manchester United</td>
-                    </tr>
-                    <tr className="border-b border-slate-700">
-                      <td className="py-2 px-3">Sample Player 2</td>
-                      <td className="py-2 px-3">CM</td>
-                      <td className="py-2 px-3">26</td>
-                      <td className="py-2 px-3">Spain</td>
-                      <td className="py-2 px-3">Barcelona</td>
-                    </tr>
+                    {previewData.rows.map((row, index) => (
+                      <tr key={index} className="border-b border-slate-700">
+                        {row.map((cell, cellIndex) => (
+                          <td key={`${index}-${cellIndex}`} className="py-2 px-3">{cell}</td>
+                        ))}
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
               <div className="mt-4 text-sm text-slate-400">
-                Preview showing 2 of 500 rows
+                Preview showing {previewData.rows.length} of {previewData.totalRows} rows
               </div>
             </div>
           )}
         </div>
       )}
 
-      {/* History Tab */}
       {activeTab === 'history' && (
         <div className="space-y-4">
-          {mockJobs.map((job) => (
+          <div className="flex justify-end">
+            <button
+              onClick={() => refetchJobs()}
+              className="flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600 transition-colors"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Refresh History
+            </button>
+          </div>
+
+          {jobsError && (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+              {jobsError}
+            </div>
+          )}
+
+          {jobsLoading ? (
+            <div className="rounded-xl bg-slate-800 px-6 py-16 text-center text-slate-300">
+              Loading import jobs...
+            </div>
+          ) : importJobs.length === 0 ? (
+            <div className="rounded-xl bg-slate-800 px-6 py-16 text-center text-slate-400">
+              No backend import jobs found.
+            </div>
+          ) : importJobs.map((job: ImportJob) => (
             <div key={job.id} className="bg-slate-800 rounded-xl p-6">
               <div className="flex items-start justify-between mb-4">
                 <div className="flex-1">
@@ -360,7 +425,6 @@ const DataImporter: React.FC = () => {
                 </div>
               </div>
 
-              {/* Progress Bar */}
               {job.status === 'processing' && (
                 <div className="mb-4">
                   <div className="flex items-center justify-between text-sm mb-1">
@@ -376,7 +440,6 @@ const DataImporter: React.FC = () => {
                 </div>
               )}
 
-              {/* Stats */}
               <div className="grid grid-cols-3 gap-4 mb-4">
                 <div className="bg-slate-700 rounded-lg p-3">
                   <div className="text-2xl font-bold text-green-400">{job.successRows}</div>
@@ -392,7 +455,6 @@ const DataImporter: React.FC = () => {
                 </div>
               </div>
 
-              {/* Errors */}
               {job.errors.length > 0 && (
                 <div className="bg-red-900/20 border border-red-600/50 rounded-lg p-4">
                   <div className="flex items-center space-x-2 mb-2">
@@ -400,8 +462,8 @@ const DataImporter: React.FC = () => {
                     <span className="font-semibold text-red-400">{job.errors.length} Errors</span>
                   </div>
                   <div className="space-y-1">
-                    {job.errors.slice(0, 3).map((error, idx) => (
-                      <div key={idx} className="text-sm text-red-300">
+                    {job.errors.slice(0, 3).map((error, index) => (
+                      <div key={index} className="text-sm text-red-300">
                         Row {error.row}: {error.error}
                       </div>
                     ))}
@@ -409,21 +471,16 @@ const DataImporter: React.FC = () => {
                 </div>
               )}
 
-              {/* Actions */}
               <div className="flex items-center space-x-2 mt-4">
                 <button
-                  onClick={() => {
-                    alert(`📊 Import Job Details\n\nFile: ${job.fileName}\nType: ${job.type}\nStatus: ${job.status}\nTotal Rows: ${job.totalRows}\nSuccess: ${job.successRows}\nFailed: ${job.failedRows}\n\n(Full details will be available once backend is connected)`);
-                  }}
+                  onClick={() => setExpandedJobId(expandedJobId === job.id ? null : job.id)}
                   className="px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded text-sm transition-colors"
                 >
-                  View Details
+                  {expandedJobId === job.id ? 'Hide Details' : 'View Details'}
                 </button>
-                {job.status === 'completed' && (
+                {(job.status === 'completed' || job.status === 'partial') && (
                   <button
-                    onClick={() => {
-                      alert(`📥 Downloading import report for "${job.fileName}"...\n\n(Report download will be available once backend is connected)`);
-                    }}
+                    onClick={() => handleDownloadReport(job.id)}
                     className="px-3 py-1.5 bg-green-600 hover:bg-green-700 rounded text-sm transition-colors"
                   >
                     Download Report
@@ -431,76 +488,113 @@ const DataImporter: React.FC = () => {
                 )}
                 {job.status === 'failed' && (
                   <button
-                    onClick={() => {
-                      alert(`🔄 Retrying import for "${job.fileName}"...\n\n(Retry functionality will be available once backend is connected)`);
-                    }}
+                    onClick={() => handleRetryImport(job.id)}
                     className="px-3 py-1.5 bg-orange-600 hover:bg-orange-700 rounded text-sm transition-colors"
                   >
                     Retry Import
                   </button>
                 )}
               </div>
+
+              {expandedJobId === job.id && (
+                <div className="mt-4 rounded-lg border border-slate-700 bg-slate-900/40 p-4 text-sm text-slate-300">
+                  <div>Created by: {job.createdBy}</div>
+                  <div>Started: {job.startedAt ? new Date(job.startedAt).toLocaleString() : 'Pending'}</div>
+                  <div>Completed: {job.completedAt ? new Date(job.completedAt).toLocaleString() : 'Pending'}</div>
+                  <div>Format: {job.format}</div>
+                </div>
+              )}
             </div>
           ))}
         </div>
       )}
 
-      {/* Templates Tab */}
       {activeTab === 'templates' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {mockTemplates.map((template) => (
-            <div key={template.id} className="bg-slate-800 rounded-xl p-6">
-              <div className="flex items-start justify-between mb-4">
-                <div>
-                  <h3 className="text-lg font-semibold mb-2">{template.name}</h3>
-                  <p className="text-sm text-slate-400">{template.description}</p>
-                </div>
-                <FileText className="h-8 w-8 text-orange-400" />
-              </div>
+        <div className="space-y-4">
+          <div className="flex justify-end">
+            <button
+              onClick={() => refetchTemplates()}
+              className="flex items-center gap-2 rounded-lg bg-slate-700 px-4 py-2 text-sm hover:bg-slate-600 transition-colors"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Refresh Templates
+            </button>
+          </div>
 
-              <div className="space-y-3 mb-4">
-                <div>
-                  <div className="text-sm font-medium mb-1">Required Fields ({template.requiredFields.length})</div>
-                  <div className="flex flex-wrap gap-1">
-                    {template.requiredFields.map((field) => (
-                      <span key={field} className="px-2 py-1 bg-red-900/30 text-red-400 rounded text-xs">
-                        {field}*
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <div className="text-sm font-medium mb-1">Optional Fields ({template.optionalFields.length})</div>
-                  <div className="flex flex-wrap gap-1">
-                    {template.optionalFields.map((field) => (
-                      <span key={field} className="px-2 py-1 bg-slate-700 text-slate-300 rounded text-xs">
-                        {field}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center space-x-2">
-                <button
-                  onClick={() => handleDownloadTemplate(template)}
-                  className="flex-1 flex items-center justify-center space-x-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 rounded-lg text-sm transition-colors"
-                >
-                  <Download className="h-4 w-4" />
-                  <span>Download Template</span>
-                </button>
-                <button
-                  onClick={() => {
-                    alert(`👁️ Template Preview: ${template.name}\n\nRequired Fields:\n${template.requiredFields.join(', ')}\n\nOptional Fields:\n${template.optionalFields.join(', ')}\n\nSample Data:\n${JSON.stringify(template.sampleData[0], null, 2)}\n\n(Full preview will be available once backend is connected)`);
-                  }}
-                  className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition-colors"
-                  title="Preview Template"
-                >
-                  <Eye className="h-4 w-4" />
-                </button>
-              </div>
+          {templatesError && (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+              {templatesError}
             </div>
-          ))}
+          )}
+
+          {templatesLoading ? (
+            <div className="rounded-xl bg-slate-800 px-6 py-16 text-center text-slate-300">
+              Loading import templates...
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {importTemplates.map((template: ImportTemplate) => (
+                <div key={template.id} className="bg-slate-800 rounded-xl p-6">
+                  <div className="flex items-start justify-between mb-4">
+                    <div>
+                      <h3 className="text-lg font-semibold mb-2">{template.name}</h3>
+                      <p className="text-sm text-slate-400">{template.description}</p>
+                    </div>
+                    <FileText className="h-8 w-8 text-orange-400" />
+                  </div>
+
+                  <div className="space-y-3 mb-4">
+                    <div>
+                      <div className="text-sm font-medium mb-1">Required Fields ({template.requiredFields.length})</div>
+                      <div className="flex flex-wrap gap-1">
+                        {template.requiredFields.map((field) => (
+                          <span key={field} className="px-2 py-1 bg-red-900/30 text-red-400 rounded text-xs">
+                            {field}*
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-sm font-medium mb-1">Optional Fields ({template.optionalFields.length})</div>
+                      <div className="flex flex-wrap gap-1">
+                        {template.optionalFields.map((field) => (
+                          <span key={field} className="px-2 py-1 bg-slate-700 text-slate-300 rounded text-xs">
+                            {field}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => handleDownloadTemplate(template)}
+                      className="flex-1 flex items-center justify-center space-x-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 rounded-lg text-sm transition-colors"
+                    >
+                      <Download className="h-4 w-4" />
+                      <span>Download Template</span>
+                    </button>
+                    <button
+                      onClick={() => setExpandedTemplateId(expandedTemplateId === template.id ? null : template.id)}
+                      className="px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg text-sm transition-colors"
+                      title="Preview Template"
+                    >
+                      <Eye className="h-4 w-4" />
+                    </button>
+                  </div>
+
+                  {expandedTemplateId === template.id && (
+                    <div className="mt-4 rounded-lg border border-slate-700 bg-slate-900/40 p-4 text-sm text-slate-300">
+                      <div className="font-medium mb-2">Sample Data</div>
+                      <pre className="overflow-x-auto whitespace-pre-wrap text-xs text-slate-400">
+                        {JSON.stringify(template.sampleData[0] || {}, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
     </div>

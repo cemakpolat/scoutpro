@@ -82,4 +82,16 @@ router.get('/valuations', async (req, res) => {
   }
 });
 
+// GET /api/market  (root — summary of market endpoints)
+router.get('/', (req, res) => {
+  res.json({
+    status: 'active',
+    endpoints: {
+      trends: '/api/market/trends',
+      predictions: '/api/market/predictions',
+      valuations: '/api/market/valuations',
+    },
+  });
+});
+
 module.exports = router;

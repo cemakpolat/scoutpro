@@ -1,1202 +1,762 @@
 """
-Author: Cem Akpolat
+Parser — New Architecture
 
+Replaces the legacy src.restapi / src.events / src.utils parser chain.
+Reads Opta JSON feed files from disk and normalises them into plain dicts
+that the rest of the system (repositories, Kafka producers) can consume.
+
+Supported feeds
+---------------
+f1   – Season schedule
+f9   – Match lineups & summary stats
+f24  – Event-by-event data  (primary feed)
+f40  – Squad lists
 """
-import sys
 
-sys.path.append("..")  # Adds higher directory to python modules path.
-import requests
-from src.restapi import APIHelpers
-from src.events import Constructor
+from __future__ import annotations
+
 import json
+import logging
 import os
-import jsonpickle
-import time
-from src.utils.Utils import get_src_path
-from src.utils import config
+from typing import Any, Dict, List, Optional
 
+logger = logging.getLogger(__name__)
 
-url = config.url
-config_competition_id = config.competition_id
-config_season_id = config.season_id
-username = config.username
-password = config.password
-debug = False
-API = APIHelpers
+# Canonical feed-name shortcuts
+FEED_NAME_MAP: Dict[str, str] = {
+    "feed40": "f40", "f40": "f40",
+    "feed1":  "f1",  "f1":  "f1",
+    "feed9":  "f9",  "f9":  "f9",
+    "feed24": "f24", "f24": "f24",
+}
+
+DATA_ROOT = os.environ.get(
+    "DATA_ROOT",
+    os.path.join(os.path.dirname(__file__), "../../../../data"),
+)
 
 
 class Feeds:
-    f1 = "f1"
-    f9 = "f9"
-    f24 = "f24"
-    f40 = "f40"
-    feed1 = "feed1"
-    feed9 = "feed9"
-    feed24 = "feed24"
-    feed40 = "feed40"
-    feed124 = "feed124"
-    feed130 = "feed130"
-    feed140 = "feed140"
-    feed340 = "feed340"
-    feed1DB = "feed1"
-    feed9DB = "feed9"
-    feed24DB = "feed24"
-    feed40DB = "feed40"
-    feedConfigs = "feedConfigs"
+    """Feed-name constants kept for backward compatibility."""
+    f1  = "f1";  f9  = "f9";  f24 = "f24"; f40 = "f40"
+    feed1  = "feed1";  feed9  = "feed9"
+    feed24 = "feed24"; feed40 = "feed40"
 
 
-# Check the codes in https://www.programiz.com/python-programming/json
-def getFeed(
+# Opta F24 numeric type_id → human-readable event name
+# Source: Opta F24 event type documentation
+OPTA_F24_TYPE_MAP: Dict[int, str] = {
+    1:  "pass",
+    2:  "offside_pass",
+    3:  "take_on",
+    4:  "foul",
+    5:  "out",
+    6:  "corner_awarded",
+    7:  "tackle",
+    8:  "interception",
+    9:  "turnover",
+    10: "save",
+    11: "claim",
+    12: "clearance",
+    13: "miss",
+    14: "post",
+    15: "attempt_saved",
+    16: "goal",
+    17: "card",
+    18: "player_off",
+    19: "player_on",
+    20: "player_changed_position",
+    21: "player_retired",
+    22: "player_returns",
+    23: "player_becomes_goalkeeper",
+    24: "goalkeeper_becomes_player",
+    25: "condition_change",
+    27: "start_delay",
+    28: "end_delay",
+    30: "end",
+    32: "start_period",
+    34: "end_period",
+    35: "stop_page_play",
+    37: "resume",
+    38: "temp_goal",
+    40: "goal_confirmed",
+    41: "ball_recovery",
+    43: "blocked_pass",
+    44: "pre_match",
+    45: "formation",
+    48: "punch",
+    49: "good_skill",
+    50: "deleted_event",
+    51: "fifty_fifty",
+    52: "failed_to_block",
+    53: "pre_match_pass",
+    54: "aerial_lost",
+    55: "challenge",
+    56: "ball_touch",
+    57: "error",
+    58: "dispossessed",
+    59: "fifty_fifty",
+    60: "keeper_pickup",
+    61: "chance_missed",
+    63: "keeper_saves",
+    64: "possession",
+    65: "good_skill",
+    67: "blocked_pass",
+    68: "attempt_blocked",
+    70: "goalkeeper_save",
+    71: "good_skill",
+    73: "block",
+    74: "blocked_shot",
+    75: "dribble",
+    76: "error",
+    77: "keeper_sweeper",
+}
+
+
+class Parser:
+    """Static helpers for locating and loading Opta feed files."""
+
+    Feeds = Feeds
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def parseFeed(
         feed_name: str,
         competition_id: int,
         season_id: int,
-        game_id: int = None
-):
-    if feed_name == "feed40":
-        feed_name = "f40"
-    elif feed_name == "feed1":
-        feed_name = "f1"
-    elif feed_name == "feed9":
-        feed_name = "f9"
-    elif feed_name == "feed24":
-        feed_name = "f24"
-    path1 = get_src_path(
-        f"\\src\\data\\feeds\\{competition_id}\\{season_id}\\"
-    )
-    path2 = get_src_path(
-        f"\\src\\data\\feeds\\{season_id}\\{competition_id}\\"
-    )
-    filename1 = f"{feed_name}_{competition_id}_{season_id}"
-    filename2 = f"{feed_name}_{season_id}_{competition_id}"
-    parsed_data = dict()
-    possible_paths = [
-        path1,
-        path2
-    ]
-    possible_file_names = [
-        filename1,
-        filename2
-    ]
-    if game_id is not None:
-        for index, file_name in enumerate(possible_file_names):
-            file_name += f"_{game_id}"
-            possible_file_names[index] = file_name
-    objective = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            for filename in possible_file_names:
-                file = os.path.join(path, filename)
-                if os.path.isfile(file):
-                    objective = file
-                    break
-        if objective is not None:
-            break
-    if objective is None:
-        print(
-            "Data could not be found in local folder."
-            "Please make sure that the data exists in"
-            "the one of the following directories: "
+        game_id: Optional[int] = None,
+        online: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Load an Opta feed.
+
+        When *online* is False (default) the feed is read from the local
+        data directory.  Live / API access is handled by the
+        live-ingestion-service and is out of scope here.
+        """
+        if online:
+            logger.warning(
+                "Online feed fetch requested but not implemented in the new "
+                "architecture — use live-ingestion-service instead."
+            )
+            return {}
+
+        return Parser._load_local(feed_name, competition_id, season_id, game_id)
+
+    # ------------------------------------------------------------------
+    # F24 helpers (events)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def extract_events(raw_feed: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        Flatten Opta F24 JSON into a list of normalised event dicts.
+
+        The Opta JSON wraps everything like:
+          { "Games": { "Game": { "@attributes": {...}, "Event": [...] } } }
+
+        Each event dict will have at minimum:
+          id, type_id, period_id, min, sec, player_id, team_id,
+          outcome, x, y, timestamp + qualifiers list
+        """
+        game_node = (
+            raw_feed.get("Games", {})
+                    .get("Game", raw_feed.get("Game", {}))
         )
-        for index, path in enumerate(possible_paths):
-            print(
-                f"-{index}) {path}"
-            )
-    else:
-        try:
-            with open(objective) as f:
-                parsed_data = json.load(f)
-        except IOError:
-            print(
-                "File could not be read, please check that the "
-                f"data could be parsed in JSON form: {objective}"
-            )
-    return parsed_data
 
-def getFeedFromOpta(feedName, competition, season_id, gameId=None):
-    if debug is False:  # this is not used until now
-        URL = url
-        if Feeds.feed1 in feedName:
-            URL = (
-                config.url
-                + "feed_type="
-                + Feeds.f1
-                + "&competition="
-                + str(competition)
-                + "&season_id="
-                + str(season_id)
-            )
-        elif Feeds.feed9 in feedName:
-            print("feed9", gameId)
-            URL = (
-                config.url24
-                + "game_id="
-                + str(gameId)
-                + "&feed_type="
-                + Feeds.f9
-                + "&competition="
-                + str(competition)
-                + "&season_id="
-                + str(season_id)
-            )
-        elif Feeds.feed24 in feedName:
-            print("feed24", gameId)
-            gameId = gameId.replace("g", "")
-            URL = (
-                config.url24
-                + "game_id="
-                + str(gameId)
-                + "&feed_type="
-                + Feeds.f24
-                + "&competition="
-                + str(competition)
-                + "&season_id="
-                + str(season_id)
-            )
-        elif Feeds.feed40 in feedName:
-            URL = (
-                config.url
-                + "feed_type="
-                + Feeds.f40
-                + "&competition="
-                + str(competition)
-                + "&season_id="
-                + str(season_id)
-            )
-        else:
-            print("Feed doesn't exist!")
-            return
+        game_attrs = game_node.get("@attributes", {})
+        raw_events = game_node.get("Event", [])
 
-        URL = URL + "&user=" + username + "&psw=" + password + "&json"
+        # Opta sometimes returns a single event as a dict, not a list
+        if isinstance(raw_events, dict):
+            raw_events = [raw_events]
 
-        PARAMS = {}
-        data = requests.get(url=URL, params=PARAMS)
+        events: List[Dict[str, Any]] = []
+        for raw_ev in raw_events:
+            attrs = raw_ev.get("@attributes", raw_ev)
+            type_id = _int(attrs.get("type_id"))
+            event: Dict[str, Any] = {
+                "id":         attrs.get("id"),
+                "event_id":   attrs.get("event_id", attrs.get("id")),
+                "type_id":    type_id,
+                "type_name":  OPTA_F24_TYPE_MAP.get(type_id, f"type_{type_id}") if type_id is not None else None,
+                "period_id":  _int(attrs.get("period_id")),
+                "min":        _int(attrs.get("min")),
+                "sec":        _int(attrs.get("sec")),
+                "player_id":  attrs.get("player_id"),
+                "team_id":    attrs.get("team_id"),
+                "outcome":    _int(attrs.get("outcome")),
+                "x":          _float(attrs.get("x")),
+                "y":          _float(attrs.get("y")),
+                "timestamp":  attrs.get("timestamp"),
+                "game_id":    game_attrs.get("id"),
+                "competition_id": game_attrs.get("competition_id"),
+                "season_id":  game_attrs.get("season_id"),
+                "qualifiers": Parser._parse_qualifiers(raw_ev.get("Q", [])),
+            }
+            events.append(event)
 
-        return data.json()
-    else:
-        print("debug mode is enabled, we need to read file")
+        return events
 
-
-# Parsing methods
-def parseCompetitionData(data):
-    competition = API.Competition(
-        data["Country"], data["Name"], data["@attributes"]["uID"]
-    )
-    stats = []
-    for key in data["Stat"]:
-        stats.append(API.Stat(key["@value"], key["@attributes"]["Type"]))
-    competition.setFeature("Stat", stats)
-    return competition
-
-
-def parseTeams(teamData):
-    teams = []
-    for data in teamData:
-        team = API.Team(data["Name"], data["@attributes"]["uID"])
-        if "Country" in data:
-            team.setFeature("Country", data["Country"])
-        if "Player" in data:
-            players = []
-            for key in data["Player"]:
-                known = None
-
-                if "Known" in key["PersonName"]:
-                    known = key["PersonName"]["Known"]
-                players.append(
-                    API.Player(key["@attributes"]["Position"])
-                    .setFeature("uID", key["@attributes"]["uID"])
-                    .setFeature("First", key["PersonName"]["First"])
-                    .setFeature("Last", key["PersonName"]["Last"])
-                    .setFeature("Known", known)
-                )
-
-            team.setFeature("Player", players)
-
-        if "Kit" in data:
-            kit = API.Kit(
-                data["Kit"]["@attributes"]["id"],
-                data["Kit"]["@attributes"]["colour1"],
-                data["Kit"]["@attributes"]["type"],
-            )
-            if "colour2" in data["Kit"]["@attributes"]:
-                kit.setSecondColour(data["Kit"]["@attributes"]["colour2"])
-            team.setFeature("Kit", kit)
-
-        if "TeamOfficial" in data:
-            if isinstance(data["TeamOfficial"], list):
-                officials = []
-                for official in data["TeamOfficial"]:
-                    officials.append(
-                        API.TeamOfficial(
-                            official["PersonName"]["First"],
-                            official["PersonName"]["Last"],
-                            official["@attributes"]["Type"],
-                            official["@attributes"]["uID"],
-                        )
-                    )
-                # team officials
-                team.setFeature("TeamOfficial", officials)
-            elif isinstance(data["TeamOfficial"], dict):
-                team.setFeature(
-                    "TeamOfficial",
-                    API.TeamOfficial(
-                        data["TeamOfficial"]["PersonName"]["First"],
-                        data["TeamOfficial"]["PersonName"]["Last"],
-                        data["TeamOfficial"]["@attributes"]["Type"],
-                        data["TeamOfficial"]["@attributes"]["uID"],
-                    ),
-                )
-        teams.append(team)
-    return teams
-
-
-def parseMatchInfo(item):
-    minfo = API.MatchInfo(item["MatchInfo"]["Date"])
-    if "TZ" in item["MatchInfo"]:
-        minfo.setFeature("TZ", item["MatchInfo"]["TZ"])
-    if "Result" in item["MatchInfo"]:
-        result = API.Result(item["MatchInfo"]["Result"]["@attributes"]["Type"])
-        if "Winner" in item["MatchInfo"]["Result"]["@attributes"]:
-            result.setWinner(item["MatchInfo"]["Result"]["@attributes"]["Winner"])
-        minfo.setResult(result)
-
-    mitemp = item["MatchInfo"]["@attributes"]
-    minfo.setFeature("MatchType", mitemp["MatchType"]).setFeature(
-        "Period", mitemp["Period"]
-    )
-
-    if "MatchDay" in mitemp:
-        minfo.setFeature("MatchDay", mitemp["MatchDay"])
-    if "Venue_id" in mitemp:
-        minfo.setFeature("Venue_id", mitemp["Venue_id"])
-    if "MatchWinner" in mitemp:
-        minfo.setFeature("MatchWinner", mitemp["MatchWinner"])
-    if "PlayerRef" in mitemp:
-        minfo.setFeature("PlayerRef", mitemp["PlayerRef"])
-    if "Status" in mitemp:
-        minfo.setFeature("Status", mitemp["Status"])
-    if "TeamRef" in mitemp:
-        minfo.setFeature("TeamRef", mitemp["TeamRef"])
-    if "TimeStamp" in mitemp:
-        minfo.setFeature("TimeStamp", mitemp["TimeStamp"])
-    if "VAR_Reason" in mitemp:
-        minfo.setFeature("VAR_Reason", mitemp["VAR_Reason"])
-    if "Leg" in mitemp:
-        minfo.setFeature("Leg", mitemp["Leg"])
-    if "FirstLegId" in mitemp:
-        minfo.setFeature("FirstLegId", mitemp["FirstLegId"])
-    if "LegWinner" in mitemp:
-        minfo.setFeature("LegWinner", mitemp["LegWinner"])
-    if "NextMatch" in mitemp:
-        minfo.setFeature("NextMatch", mitemp["NextMatch"])
-    if "NextMatchLoser" in mitemp:
-        minfo.setFeature("NextMatchLoser", mitemp["NextMatchLoser"])
-    if "RoundNumber" in mitemp:
-        minfo.setFeature("RoundNumber", mitemp["RoundNumber"])
-    if "RoundType" in mitemp:
-        minfo.setFeature("RoundType", mitemp["RoundType"])
-    if "GroupName" in mitemp:
-        minfo.setFeature("GroupName", mitemp["GroupName"])
-    if "GameWinner" in mitemp:
-        minfo.setFeature("GameWinner", mitemp["GameWinner"])
-    if "GameWinnerType" in mitemp:
-        minfo.setFeature("GameWinnerType", mitemp["GameWinnerType"])
-    if "Timestamp" in mitemp:
-        minfo.setFeature("Timestamp", mitemp["Timestamp"])
-
-    return minfo
-
-
-def parseMatchOfficials(item):
-    if "OfficialName" in item:
-        if "MatchOfficials" in item:
-            officials = []
-            for official in item["MatchOfficials"]["MatchOfficial"]:
-                officials.append(
-                    API.MatchOfficial(
-                        official["OfficialName"]["First"],
-                        official["OfficialName"]["Last"],
-                        official["@attributes"]["uID"],
-                        official["OfficialData"]["OfficialRef"]["@attributes"]["Type"],
-                    )
-                )
-            return officials
-        elif "MatchOfficial" in item:
-            mofffical = API.MatchOfficial(
-                item["MatchOfficial"]["OfficialName"]["First"],
-                item["MatchOfficial"]["OfficialName"]["Last"],
-                item["MatchOfficial"]["@attributes"]["uID"],
-                item["MatchOfficial"]["OfficialData"]["OfficialRef"]["@attributes"][
-                    "Type"
-                ],
-            )
-        return mofffical
-    else:
-        officials = []
-        if "MatchOfficials" in item:
-            for official in item["MatchOfficials"]["MatchOfficial"]:
-                officials.append(
-                    API.MatchOfficial(
-                        official["@attributes"]["FirstName"],
-                        official["@attributes"]["LastName"],
-                        official["@attributes"]["uID"],
-                        official["@attributes"]["Type"],
-                    )
-                )
-            return officials
-        elif "MatchOfficial" in item:
-            mofffical = API.MatchOfficial(
-                item["MatchOfficial"]["OfficialName"]["First"],
-                item["MatchOfficial"]["OfficialName"]["Last"],
-                item["MatchOfficial"]["@attributes"]["uID"],
-                item["MatchOfficial"]["OfficialData"]["OfficialRef"]["@attributes"][
-                    "Type"
-                ],
-            )
-            return mofffical
-
-
-def parseAssistantOfficials(data):
-    officals = []
-    for official in data["AssistantOfficials"]["AssistantOfficial"]:
-        officals.append(
-            API.AssistantOfficial(
-                official["@attributes"]["FirstName"],
-                official["@attributes"]["LastName"],
-                official["@attributes"]["Type"],
-                official["@attributes"]["uID"],
-            )
+    @staticmethod
+    def extract_game_meta(raw_feed: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the top-level game attributes from an F24 / F9 feed."""
+        game_node = (
+            raw_feed.get("Games", {})
+                    .get("Game", raw_feed.get("Game", {}))
         )
-    return officals
+        return game_node.get("@attributes", {})
+
+    # ------------------------------------------------------------------
+    # F1 helpers (season schedule)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def extract_schedule(raw_feed: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Parse Opta F1 (season schedule) feed.
+
+        Returns a dict with:
+          competition: {uID, name, country}
+          teams: [{uID, name}]
+          matches: [{uID, date, tz, match_day, match_type, period, venue_id,
+                     match_winner, home_team_id, away_team_id,
+                     home_score, away_score, home_ht_score, away_ht_score,
+                     goals: [{player_ref, period, type, min, sec, assist}],
+                     referee: {first, last, uID}}]
+        """
+        doc = (
+            raw_feed.get("SoccerFeed", {})
+                    .get("SoccerDocument", raw_feed)
+        )
+
+        # --- Competition ---
+        comp_raw = doc.get("Competition", {})
+        competition: Dict[str, Any] = {
+            "uID":     comp_raw.get("@attributes", {}).get("uID"),
+            "name":    comp_raw.get("Name"),
+            "country": comp_raw.get("Country"),
+        }
+        for s in (comp_raw.get("Stat") or []):
+            if isinstance(s, dict):
+                competition[s.get("@attributes", {}).get("Type", "unknown")] = s.get("@value")
+
+        # --- Teams ---
+        raw_teams = doc.get("Team", [])
+        if isinstance(raw_teams, dict):
+            raw_teams = [raw_teams]
+        teams = [
+            {"uID": t.get("@attributes", {}).get("uID"), "name": t.get("Name")}
+            for t in raw_teams
+        ]
+
+        # --- Matches ---
+        raw_matches = doc.get("MatchData", [])
+        if isinstance(raw_matches, dict):
+            raw_matches = [raw_matches]
+
+        matches: List[Dict[str, Any]] = []
+        for m in raw_matches:
+            attrs = m.get("@attributes", {})
+            uid = attrs.get("uID", "").lstrip("g")
+
+            mi = m.get("MatchInfo", {})
+            mi_attrs = mi.get("@attributes", {})
+
+            # Parse team data (home/away scores)
+            home_team_id = away_team_id = None
+            home_score = away_score = None
+            home_ht = away_ht = None
+            goals: List[Dict[str, Any]] = []
+
+            raw_td = m.get("TeamData", [])
+            if isinstance(raw_td, dict):
+                raw_td = [raw_td]
+
+            for td in raw_td:
+                ta = td.get("@attributes", {})
+                team_ref = ta.get("TeamRef", "").lstrip("t")
+                side = ta.get("Side", "").lower()
+                score = _int(ta.get("Score"))
+                ht = _int(ta.get("HalfScore"))
+
+                if side == "home":
+                    home_team_id = team_ref
+                    home_score = score
+                    home_ht = ht
+                elif side == "away":
+                    away_team_id = team_ref
+                    away_score = score
+                    away_ht = ht
+
+                # Goals
+                raw_goals = td.get("Goal", [])
+                if isinstance(raw_goals, dict):
+                    raw_goals = [raw_goals]
+                for g in raw_goals:
+                    ga = g.get("@attributes", {})
+                    goal: Dict[str, Any] = {
+                        "player_ref": ga.get("PlayerRef", "").lstrip("p"),
+                        "period":     ga.get("Period"),
+                        "type":       ga.get("Type"),
+                        "min":        _int(ga.get("Min")),
+                        "sec":        _int(ga.get("Sec")),
+                        "team_id":    team_ref,
+                        "side":       side,
+                    }
+                    if "Assist" in g:
+                        assist_attrs = g["Assist"].get("@attributes", {})
+                        goal["assist"] = {
+                            "player_ref": assist_attrs.get("PlayerRef", "").lstrip("p"),
+                        }
+                    goals.append(goal)
+
+            # Referee
+            referee: Optional[Dict[str, Any]] = None
+            raw_off = m.get("MatchOfficials", {})
+            if raw_off:
+                off_list = raw_off.get("MatchOfficial", [])
+                if isinstance(off_list, dict):
+                    off_list = [off_list]
+                for off in off_list:
+                    if off.get("@attributes", {}).get("Type", "").lower() == "referee":
+                        referee = {
+                            "uID":   off.get("@attributes", {}).get("uID"),
+                            "first": off.get("@attributes", {}).get("FirstName"),
+                            "last":  off.get("@attributes", {}).get("LastName"),
+                        }
+                        break
+
+            match: Dict[str, Any] = {
+                "uID":           uid,
+                "date":          mi.get("Date"),
+                "tz":            mi.get("TZ"),
+                "match_day":     _int(mi_attrs.get("MatchDay")),
+                "match_type":    mi_attrs.get("MatchType"),
+                "period":        mi_attrs.get("Period"),
+                "venue_id":      mi_attrs.get("Venue_id"),
+                "match_winner":  mi_attrs.get("MatchWinner", "").lstrip("t") or None,
+                "home_team_id":  home_team_id,
+                "away_team_id":  away_team_id,
+                "home_score":    home_score,
+                "away_score":    away_score,
+                "home_ht_score": home_ht,
+                "away_ht_score": away_ht,
+                "goals":         goals,
+                "referee":       referee,
+                "last_modified": attrs.get("last_modified"),
+            }
+            matches.append(match)
+
+        return {"competition": competition, "teams": teams, "matches": matches}
+
+    # ------------------------------------------------------------------
+    # F9 helpers (match summary / lineups)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def extract_match_summary(raw_feed: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Parse Opta F9 (match summary) feed.
+
+        Returns a dict with:
+          match_id: str (from doc uID, e.g. "f1081234" → stripped to "1081234")
+          competition: {uID, name, country, season_id, season_name, match_day}
+          match_info: {period, match_type, timestamp, additional_info}
+          match_time: int (current match minute)
+          stats: {type: value}  (match-level stats)
+          referee: {uID, first, last}
+          assistant_officials: [{uID, first, last, type}]
+          teams: [{team_ref, side, score, half_score,
+                   goals: [...], bookings: [...], substitutions: [...],
+                   lineup: [{player_ref, position, shirt_number, status,
+                             is_captain, stats: {type: value}}],
+                   team_stats: [{type, value, fh, sh}]}]
+        """
+        doc = (
+            raw_feed.get("SoccerFeed", {})
+                    .get("SoccerDocument", raw_feed)
+        )
+
+        doc_attrs = doc.get("@attributes", {})
+        match_id = doc_attrs.get("uID", "").lstrip("f")
+
+        # --- Competition ---
+        comp_raw = doc.get("Competition", {})
+        competition: Dict[str, Any] = {
+            "uID":     comp_raw.get("@attributes", {}).get("uID"),
+            "name":    comp_raw.get("Name"),
+            "country": comp_raw.get("Country"),
+        }
+        for s in (comp_raw.get("Stat") or []):
+            if isinstance(s, dict):
+                competition[s.get("@attributes", {}).get("Type", "unknown")] = s.get("@value")
+
+        mdata = doc.get("MatchData", {})
+        mi = mdata.get("MatchInfo", {})
+        mi_attrs = mi.get("@attributes", {})
+
+        match_info = {
+            "period":          mi_attrs.get("Period"),
+            "match_type":      mi_attrs.get("MatchType"),
+            "timestamp":       mi_attrs.get("TimeStamp"),
+            "additional_info": mi_attrs.get("AdditionalInfo"),
+            "date":            mi.get("Date"),
+        }
+
+        # Match-level stats (match_time, first_half_start, etc.)
+        raw_stats = mdata.get("Stat", [])
+        if isinstance(raw_stats, dict):
+            raw_stats = [raw_stats]
+        stats: Dict[str, Any] = {}
+        for s in raw_stats:
+            stats[s.get("@attributes", {}).get("Type", "unknown")] = s.get("@value")
+
+        # --- Referee ---
+        referee: Optional[Dict[str, Any]] = None
+        raw_ref = mdata.get("MatchOfficial", {})
+        if raw_ref:
+            on = raw_ref.get("OfficialName", {})
+            referee = {
+                "uID":   raw_ref.get("@attributes", {}).get("uID"),
+                "first": on.get("First"),
+                "last":  on.get("Last"),
+            }
+
+        # --- Assistant Officials ---
+        asst_officials: List[Dict[str, Any]] = []
+        raw_asst = mdata.get("AssistantOfficials", {}).get("AssistantOfficial", [])
+        if isinstance(raw_asst, dict):
+            raw_asst = [raw_asst]
+        for ao in raw_asst:
+            a = ao.get("@attributes", {})
+            asst_officials.append({
+                "uID":   a.get("uID"),
+                "first": a.get("FirstName"),
+                "last":  a.get("LastName"),
+                "type":  a.get("Type"),
+            })
+
+        # --- TeamData ---
+        raw_td_list = mdata.get("TeamData", [])
+        if isinstance(raw_td_list, dict):
+            raw_td_list = [raw_td_list]
+
+        teams: List[Dict[str, Any]] = []
+        for td in raw_td_list:
+            ta = td.get("@attributes", {})
+            team_ref = ta.get("TeamRef", "").lstrip("t")
+            side = ta.get("Side", "").lower()
+
+            # Goals
+            goals = Parser._parse_f9_goals(td.get("Goal", []))
+
+            # Bookings
+            bookings: List[Dict[str, Any]] = []
+            raw_bk = td.get("Booking", [])
+            if isinstance(raw_bk, dict):
+                raw_bk = [raw_bk]
+            for bk in raw_bk:
+                ba = bk.get("@attributes", {})
+                bookings.append({
+                    "player_ref": ba.get("PlayerRef", "").lstrip("p"),
+                    "card":       ba.get("Card"),
+                    "card_type":  ba.get("CardType"),
+                    "reason":     ba.get("Reason"),
+                    "period":     ba.get("Period"),
+                    "min":        _int(ba.get("Min")),
+                    "sec":        _int(ba.get("Sec")),
+                    "event_id":   ba.get("EventID"),
+                })
+
+            # Substitutions
+            substitutions: List[Dict[str, Any]] = []
+            raw_subs = td.get("Substitution", [])
+            if isinstance(raw_subs, dict):
+                raw_subs = [raw_subs]
+            for sub in raw_subs:
+                sa = sub.get("@attributes", {})
+                substitutions.append({
+                    "sub_on":    sa.get("SubOn", "").lstrip("p"),
+                    "sub_off":   sa.get("SubOff", "").lstrip("p"),
+                    "period":    sa.get("Period"),
+                    "min":       _int(sa.get("Min")),
+                    "sec":       _int(sa.get("Sec")),
+                    "reason":    sa.get("Reason"),
+                    "event_id":  sa.get("EventID"),
+                })
+
+            # Lineup
+            lineup: List[Dict[str, Any]] = []
+            raw_lineup = td.get("PlayerLineUp", {})
+            if raw_lineup:
+                raw_players = raw_lineup.get("MatchPlayer", [])
+                if isinstance(raw_players, dict):
+                    raw_players = [raw_players]
+                for mp in raw_players:
+                    mpa = mp.get("@attributes", {})
+                    player_stats: Dict[str, Any] = {}
+                    raw_pstats = mp.get("Stat", [])
+                    if isinstance(raw_pstats, dict):
+                        raw_pstats = [raw_pstats]
+                    for ps in raw_pstats:
+                        player_stats[ps.get("@attributes", {}).get("Type", "?")] = ps.get("@value")
+                    lineup.append({
+                        "player_ref":   mpa.get("PlayerRef", "").lstrip("p"),
+                        "position":     mpa.get("Position"),
+                        "shirt_number": _int(mpa.get("ShirtNumber")),
+                        "status":       mpa.get("Status"),
+                        "is_captain":   mpa.get("Captain") == "True",
+                        "stats":        player_stats,
+                    })
+
+            # Team-level stats
+            team_stats: List[Dict[str, Any]] = []
+            raw_ts = td.get("Stat", [])
+            if isinstance(raw_ts, dict):
+                raw_ts = [raw_ts]
+            for ts in raw_ts:
+                tsa = ts.get("@attributes", {})
+                team_stats.append({
+                    "type":  tsa.get("Type"),
+                    "value": ts.get("@value"),
+                    "fh":    tsa.get("FH"),
+                    "sh":    tsa.get("SH"),
+                })
+
+            teams.append({
+                "team_ref":     team_ref,
+                "side":         side,
+                "score":        _int(ta.get("Score")),
+                "half_score":   _int(ta.get("HalfScore")),
+                "goals":        goals,
+                "bookings":     bookings,
+                "substitutions": substitutions,
+                "lineup":       lineup,
+                "team_stats":   team_stats,
+            })
+
+        return {
+            "match_id":           match_id,
+            "competition":        competition,
+            "match_info":         match_info,
+            "stats":              stats,
+            "referee":            referee,
+            "assistant_officials": asst_officials,
+            "teams":              teams,
+        }
+
+    @staticmethod
+    def _parse_f9_goals(raw_goals) -> List[Dict[str, Any]]:
+        if isinstance(raw_goals, dict):
+            raw_goals = [raw_goals]
+        goals: List[Dict[str, Any]] = []
+        for g in raw_goals:
+            ga = g.get("@attributes", {})
+            goal: Dict[str, Any] = {
+                "player_ref": ga.get("PlayerRef", "").lstrip("p"),
+                "period":     ga.get("Period"),
+                "type":       ga.get("Type"),
+                "min":        _int(ga.get("Min")),
+                "sec":        _int(ga.get("Sec")),
+                "event_id":   ga.get("EventID"),
+            }
+            if "Assist" in g:
+                assist_attrs = g["Assist"].get("@attributes", g["Assist"])
+                goal["assist"] = {
+                    "player_ref": assist_attrs.get("PlayerRef", "").lstrip("p"),
+                    "event_id":   assist_attrs.get("EventID"),
+                }
+            goals.append(goal)
+        return goals
+
+    # ------------------------------------------------------------------
+    # F40 helpers (squad lists)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def extract_squads(raw_feed: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Parse Opta F40 (squad list) feed.
+
+        Returns a dict with:
+          teams: [{uID, name, country, manager,
+                   players: [{uID, name, first, last, known,
+                              position, nationality, birth_date,
+                              height, weight, preferred_foot,
+                              shirt_number, real_position, status}]}]
+        """
+        doc = (
+            raw_feed.get("SoccerFeed", {})
+                    .get("SoccerDocument", raw_feed)
+        )
+
+        raw_teams = doc.get("Team", [])
+        if isinstance(raw_teams, dict):
+            raw_teams = [raw_teams]
+
+        teams: List[Dict[str, Any]] = []
+        for t in raw_teams:
+            ta = t.get("@attributes", {})
+            team_uid = ta.get("uID", "").lstrip("t")
+
+            # Manager
+            manager: Optional[str] = None
+            raw_off = t.get("TeamOfficial", {})
+            if isinstance(raw_off, list):
+                raw_off = raw_off[0] if raw_off else {}
+            if raw_off:
+                pn = raw_off.get("PersonName", {})
+                manager = f"{pn.get('First', '')} {pn.get('Last', '')}".strip() or None
+
+            # Players
+            raw_players = t.get("Player", [])
+            if isinstance(raw_players, dict):
+                raw_players = [raw_players]
+
+            players: List[Dict[str, Any]] = []
+            for p in raw_players:
+                pa = p.get("@attributes", {})
+                pn = p.get("PersonName", p.get("Name", {}))
+                if isinstance(pn, str):
+                    name_str = pn
+                    first = last = known = None
+                else:
+                    first = pn.get("First") or pn.get("first")
+                    last = pn.get("Last") or pn.get("last")
+                    known = pn.get("Known") or pn.get("known")
+                    name_str = known or f"{first or ''} {last or ''}".strip()
+
+                # Stats (height, weight, preferredFoot, birthDate, etc.)
+                raw_stats_list = p.get("Stat", [])
+                if isinstance(raw_stats_list, dict):
+                    raw_stats_list = [raw_stats_list]
+                pstats: Dict[str, Any] = {}
+                for s in raw_stats_list:
+                    pstats[s.get("@attributes", {}).get("Type", "?")] = s.get("@value")
+
+                players.append({
+                    "uID":           pa.get("uID", "").lstrip("p"),
+                    "name":          p.get("Name") or name_str,
+                    "first":         first,
+                    "last":          last,
+                    "known":         known,
+                    "position":      pa.get("Position"),
+                    "nationality":   pstats.get("nationality") or pstats.get("Nationality"),
+                    "birth_date":    pstats.get("birth_date") or pstats.get("BirthDate"),
+                    "height":        _int(pstats.get("height") or pstats.get("Height")),
+                    "weight":        _int(pstats.get("weight") or pstats.get("Weight")),
+                    "preferred_foot": pstats.get("preferred_foot") or pstats.get("PreferredFoot") or pstats.get("preferredFoot"),
+                    "shirt_number":  _int(pstats.get("shirt_number") or pstats.get("ShirtNumber")),
+                    "real_position": pstats.get("real_position") or pstats.get("RealPosition"),
+                    "status":        pa.get("Status"),
+                })
+
+            teams.append({
+                "uID":     team_uid,
+                "name":    t.get("Name"),
+                "country": t.get("Country"),
+                "manager": manager,
+                "players": players,
+            })
+
+        return {"teams": teams}
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _load_local(
+        feed_name: str,
+        competition_id: int,
+        season_id: int,
+        game_id: Optional[int],
+    ) -> Dict[str, Any]:
+        short = FEED_NAME_MAP.get(feed_name, feed_name)
+
+        base   = f"{short}_{competition_id}_{season_id}"
+        base_r = f"{short}_{season_id}_{competition_id}"
+
+        stems = (
+            [f"{base}_{game_id}", f"{base_r}_{game_id}"]
+            if game_id is not None
+            else [base, base_r]
+        )
+
+        opta_root = os.path.join(DATA_ROOT, "opta")
+        search_dirs = [
+            opta_root,
+            os.path.join(opta_root, str(season_id)),
+            os.path.join(opta_root, str(competition_id), str(season_id)),
+            os.path.join(opta_root, str(season_id), str(competition_id)),
+        ]
+
+        for directory in search_dirs:
+            for stem in stems:
+                candidate = os.path.join(directory, stem)
+                if os.path.isfile(candidate):
+                    logger.debug(f"Loading feed from {candidate}")
+                    return _load_json(candidate)
+
+        logger.warning(
+            f"Feed not found: {feed_name} comp={competition_id} "
+            f"season={season_id} game={game_id}"
+        )
+        return {}
+
+    @staticmethod
+    def _parse_qualifiers(raw_q) -> List[Dict[str, Any]]:
+        if isinstance(raw_q, dict):
+            raw_q = [raw_q]
+        qualifiers = []
+        for q in (raw_q or []):
+            a = q.get("@attributes", q)
+            qualifiers.append({
+                "qualifier_id": _int(a.get("qualifier_id")),
+                "value":        a.get("value"),
+            })
+        return qualifiers
 
 
-def parseStats(item):
-    item = item["Stat"]
-    if isinstance(item, list):
-        stats = []
-        for stat in item:
-            stats.append(API.Stat(stat["@value"], stat["@attributes"]["Type"]))
-        return stats
-    elif isinstance(item, dict):
-        statItem = API.Stat(item["@value"], item["@attributes"]["Type"])
-        return statItem
+# ------------------------------------------------------------------
+# Module-level convenience functions (used by Connector.getFeed callers)
+# ------------------------------------------------------------------
+
+def getFeed(
+    feed_name: str,
+    competition_id: int,
+    season_id: int,
+    game_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    return Parser.parseFeed(feed_name, competition_id, season_id, game_id)
 
 
-def parseTeamData(item):
-    teams = []
-    for tdata in item["TeamData"]:
+# ------------------------------------------------------------------
+# Private helpers
+# ------------------------------------------------------------------
 
-        tattrs = tdata["@attributes"]
-
-        teamData = API.TeamData(tattrs["TeamRef"])
-
-        if "Score" in tattrs:
-            teamData.setFeature("Score", tattrs["Score"])
-        if "Side" in tattrs:
-            teamData.setFeature("Side", tattrs["Side"])
-        if "HalfScore" in tattrs:
-            teamData.setFeature("HalfScore", tattrs["HalfScore"])
-
-        # score
-        if "NinetyScore" in tdata:
-            teamData.setFeature("NinetyScore", tattrs["NinetyScore"])
-        if "ExtraScore" in tdata:
-            teamData.setFeature("ExtraScore", tattrs["ExtraScore"])
-        if "PenaltyScore" in tdata:
-            teamData.setFeature("PenaltyScore", tattrs["PenaltyScore"])
-
-        # booking
-        if "Booking" in tdata:
-            bookings = []
-            for booking in tdata["Booking"]:
-                if isinstance(booking, dict):
-                    sTemp = booking["@attributes"]
-                    bookingobj = API.Booking()
-                    bookingobj.setFeature("EventID", sTemp["EventID"]).setFeature(
-                        "EventNumber", sTemp["EventNumber"]
-                    ).setFeature("Period", sTemp["Period"]).setFeature(
-                        "Reason", sTemp["Reason"]
-                    ).setFeature(
-                        "Card", sTemp["Card"]
-                    ).setFeature(
-                        "CardType", sTemp["CardType"]
-                    ).setFeature(
-                        "uID", sTemp["uID"]
-                    )
-                    if "Sec" in sTemp:
-                        bookingobj.setFeature("Sec", sTemp["Sec"])
-                    if "Min" in sTemp:
-                        bookingobj.setFeature("Min", sTemp["Min"])
-                    if "PlayerRef" in sTemp:
-                        bookingobj.setFeature("PlayerRef", sTemp["PlayerRef"])
-                    if "TimeStamp" in sTemp:
-                        bookingobj.setFeature("TimeStamp", sTemp["TimeStamp"])
-
-                    bookings.append(bookingobj)
-
-            # add to team data
-            teamData.setBooking(bookings)
-
-        # playerlineup
-
-        if "PlayerLineUp" in tdata:
-            mplayer = []
-            for mplayerStat in tdata["PlayerLineUp"]["MatchPlayer"]:
-                mp = API.MatchPlayer(
-                    mplayerStat["@attributes"]["PlayerRef"],
-                    mplayerStat["@attributes"]["Position"],
-                    mplayerStat["@attributes"]["ShirtNumber"],
-                    mplayerStat["@attributes"]["Status"],
-                )
-                if "Captain" in mplayerStat["@attributes"]:
-                    mp.setCaptain(mplayerStat["@attributes"]["Captain"])
-
-                stats = []
-                if isinstance(mplayerStat["Stat"], list):
-                    for stat in mplayerStat["Stat"]:
-                        if stat["@attributes"] != None:
-                            type = stat["@attributes"]["Type"]
-                            value = stat["@value"]
-                            stats.append(API.Stat(value, type))
-                    mp.setStat(stats)
-                elif isinstance(mplayerStat["Stat"], dict):
-                    stat = mplayerStat["Stat"]
-                    mp.setStat(API.Stat(stat["@value"], stat["@attributes"]["Type"]))
-                mplayer.append(mp)
-
-                # add to team data
-                teamData.setFeature("PlayerLineUp", mplayer)
-
-        # stats
-        if "Stat" in tdata:
-            if isinstance(tdata["Stat"], list):
-                tdStats = []
-                for stat in tdata["Stat"]:
-                    sattr = stat["@attributes"]
-                    statforTeam = API.TeamStat(stat["@value"], sattr["Type"])
-
-                    if "SH" in sattr and "FH" in sattr:
-                        statforTeam.setFeature("SH", stat["@attributes"]["SH"])
-                        statforTeam.setFeature("FH", stat["@attributes"]["FH"])
-
-                    tdStats.append(statforTeam)
-                # add to team data
-                teamData.setStats(tdStats)
-            elif isinstance(tdata["Stat"], dict):
-                stat = tdata["Stat"]
-                sattr = stat["@attributes"]
-                # the following must be single
-                statforTeam = API.TeamStat(stat["@value"], sattr["Type"])
-
-                if "SH" in sattr and "FH" in sattr:
-                    statforTeam.setFeature("SH", stat["@attributes"]["SH"])
-                    statforTeam.setFeature("FH", stat["@attributes"]["FH"])
-
-                # add to team data
-                teamData.setStats(statforTeam)
-
-        # substitution
-
-        if "Substitution" in tdata:
-            substitutions = []
-            for subs in tdata["Substitution"]:
-                if isinstance(subs, dict):
-                    sTemp = subs["@attributes"]
-                    s = API.Substitution(
-                        sTemp["EventID"],
-                        sTemp["EventNumber"],
-                        sTemp["Period"],
-                        sTemp["TimeStamp"],
-                        sTemp["uID"],
-                    )
-                    if "Reason" in sTemp:
-                        s.setFeature("Reason", sTemp["Reason"])
-                    if "SubOn" in sTemp:
-                        s.setFeature("SubOn", sTemp["SubOn"])
-                    if "SubOff" in sTemp:
-                        s.setFeature("SubOff", sTemp["SubOff"])
-                    if "SubstitutePosition" in sTemp:
-                        s.setFeature("SubstitutePosition", sTemp["SubstitutePosition"])
-                    if "Retired" in sTemp:
-                        s.setFeature("Retired", sTemp["Retired"])
-                    if "Time" in sTemp:
-                        s.setFeature("Time", sTemp["Time"])
-                    if "Min" in sTemp:
-                        s.setFeature("Min", sTemp["Min"])
-                    if "Sec" in sTemp:
-                        s.setFeature("Sec", sTemp["Sec"])
-                    substitutions.append(s)
-            # add to team data
-            teamData.setSubstitution(substitutions)
-
-        # goals
-        if "Goal" in tdata:
-
-            if isinstance(tdata["Goal"], list):
-                # print("array", tdata["Goal"])
-                goals = []
-                for goal in tdata["Goal"]:
-                    g = None
-                    if "@attributes" in goal:
-                        gTemp = goal["@attributes"]
-                        g = API.Goal()
-                        g.setFeature("Period", gTemp["Period"]).setFeature(
-                            "PlayerRef", gTemp["PlayerRef"]
-                        ).setFeature("Type", gTemp["Type"])
-
-                        if "EventID" in gTemp:
-                            g.setFeature("EventID", gTemp["EventID"])
-                        if "EventNumber" in gTemp:
-                            g.setFeature("EventNumber", gTemp["EventNumber"])
-                        if "Min" in gTemp:
-                            g.setFeature("Min", gTemp["Min"])
-                        if "Sec" in gTemp:
-                            g.setFeature("Sec", gTemp["Sec"])
-                        if "TimeStamp" in gTemp:
-                            g.setFeature("TimeStamp", gTemp["TimeStamp"])
-                        if "Time" in gTemp:
-                            g.setFeature("Time", gTemp["Time"])
-                        if "uID" in gTemp:
-                            g.setFeature("uID", gTemp["uID"])
-
-                    if "Assist" in goal:
-                        assist = API.Assist(goal["Assist"]["@attributes"])
-                        g.setAssist(assist)
-                    goals.append(g)
-
-                teamData.setGoals(goals)
-            elif isinstance(tdata["Goal"], dict):
-                # print("single", tdata["Goal"])
-                g = None
-                goal = tdata["Goal"]
-                if "@attributes" in goal:
-                    gTemp = goal["@attributes"]
-                    g = API.Goal()
-                    g.setFeature("Period", gTemp["Period"]).setFeature(
-                        "PlayerRef", gTemp["PlayerRef"]
-                    ).setFeature("Type", gTemp["Type"])
-
-                    if "EventID" in gTemp:
-                        g.setFeature("EventID", gTemp["EventID"])
-                    if "EventNumber" in gTemp:
-                        g.setFeature("EventNumber", gTemp["EventNumber"])
-                    if "Min" in gTemp:
-                        g.setFeature("Min", gTemp["Min"])
-                    if "Sec" in gTemp:
-                        g.setFeature("Sec", gTemp["Sec"])
-                    if "TimeStamp" in gTemp:
-                        g.setFeature("TimeStamp", gTemp["TimeStamp"])
-                    if "Time" in gTemp:
-                        g.setFeature("Time", gTemp["Time"])
-                    if "uID" in gTemp:
-                        g.setFeature("uID", gTemp["uID"])
-
-                if "Assist" in goal:
-                    assist = API.Assist(goal["Assist"]["@attributes"])
-                    if assist:
-                        g.setAssist(assist)
-                teamData.setGoals(g)
-
-        teams.append(teamData)
-
-    return teams
-
-
-def parseVARData(data):
-    if "VARData" in data:
-        vData = data["VARData"]
-        if isinstance(vData, list):  # Feed1
-            varDataList = []
-            for item in vData:
-                temp = item["VAREvent"]["@attributes"]
-                varData = API.VARData(
-                    temp["Decision"],
-                    temp["EventID"],
-                    temp["EventNumber"],
-                    temp["Min"],
-                    temp["Outcome"],
-                    temp["Period"],
-                    temp["PlayerRef"],
-                    temp["Reason"],
-                    temp["Sec"],
-                    temp["TeamRef"],
-                )
-                varDataList.append(varData)
-            return varDataList
-        elif isinstance(vData, dict):
-            vevent = vData["VAREvent"]
-            if isinstance(vevent, list):  # Feed1
-                varDataList = []
-                for item in vevent:
-                    temp = item["@attributes"]
-                    varData = API.VARData(
-                        temp["Decision"],
-                        temp["EventID"],
-                        temp["EventNumber"],
-                        temp["Min"],
-                        temp["Outcome"],
-                        temp["Period"],
-                        temp["PlayerRef"],
-                        temp["Reason"],
-                        temp["Sec"],
-                        temp["TeamRef"],
-                    )
-                    varDataList.append(varData)
-                return varDataList
-            elif isinstance(vevent, dict):
-                temp = vData["@attributes"]
-                varData = API.VARData(
-                    temp["Decision"],
-                    temp["EventID"],
-                    temp["EventNumber"],
-                    temp["Min"],
-                    temp["Outcome"],
-                    temp["Period"],
-                    temp["PlayerRef"],
-                    temp["Reason"],
-                    temp["Sec"],
-                    temp["TeamRef"],
-                )
-                return varData
-    else:
+def _int(val) -> Optional[int]:
+    try:
+        return int(val) if val is not None else None
+    except (ValueError, TypeError):
         return None
 
 
-def parseMatchData(data):
-    all_res = 0
-    if isinstance(data, list):  # Feed1
-        matchDataList = []
-        for item in data:
-            matchData = API.MatchData()
-            minfo = parseMatchInfo(item)
-            if "MatchOfficials" in item or "MatchOfficial" in item:
-                mofficials = parseMatchOfficials(item)
-                matchData.setFeature("MatchOfficials", mofficials)
-            stats = parseStats(item)
-            teams = parseTeamData(item)
-
-            for team in teams:
-                if team.goals:
-                    try:
-                        all_res += len(team.goals)
-                    except:
-                        # print(team.goals)
-                        all_res+=1
-            # print(all_res)
-
-            attrs = item["@attributes"]
-            matchData.setFeature("MatchInfo", minfo).setFeature(
-                "Stat", stats
-            ).setFeature("TeamData", teams).setFeature(
-                "timing_id", attrs["timing_id"]
-            ).setFeature(
-                "timestamp_accuracy_id", attrs["timestamp_accuracy_id"]
-            ).setFeature(
-                "detail_id", attrs["detail_id"]
-            ).setFeature(
-                "last_modified", attrs["last_modified"]
-            ).setFeature(
-                "uID", attrs["uID"]
-            )
-            matchDataList.append(matchData)
-        return matchDataList
-
-    elif isinstance(data, dict):  # Feed9
-
-        matchData = API.MatchData()
-        minfo = parseMatchInfo(data)  # match info
-
-        if "MatchOfficials" in data or "MatchOfficial" in data:
-            mofficials = parseMatchOfficials(data)
-            #print(mofficials)
-            matchData.setFeature("MatchOfficials", mofficials)
-        else:
-            matchData.setFeature("MatchOfficials", [])
-
-        assistants = parseAssistantOfficials(data)  # assistant officials
-        stats = parseStats(data)  # stats
-        varData = parseVARData(data)  # VAR data
-        teamData = parseTeamData(data)  # team data
-
-        matchData.setFeature("AssistantOfficials", assistants).setFeature(
-            "Stat", stats
-        ).setFeature("TeamData", teamData).setFeature("MatchInfo", minfo).setFeature(
-            "VARData", varData
-        )
-
-        if "@attributes" in data:
-            attrs = data["@attributes"]
-            matchData.setFeature("timing_id", attrs["timing_id"]).setFeature(
-                "timestamp_accuracy_id", attrs["timestamp_accuracy_id"]
-            ).setFeature("last_modified", attrs["last_modified"]).setFeature(
-                "uID", attrs["uID"]
-            )
-
-        return matchData
-
-
-def parseTeam(data):
-    # Team Data
-    teams = []
-    teamData = data["SoccerFeed"]["SoccerDocument"]["Team"]
-    for td in teamData:
-        team = API.Team(td["Name"], td["@attributes"]["uID"])
-        attr = td["@attributes"]
-        if "official_club_name" in attr:
-            team.setFeature("official_club_name", attr["official_club_name"])
-
-        team.setFeature("country", attr["country"]).setFeature(
-            "country_id", attr["country_id"]
-        ).setFeature("country_iso", attr["country_iso"]).setFeature(
-            "region_id", attr["region_id"]
-        ).setFeature(
-            "region_name", attr["region_name"]
-        )
-
-        if "short_club_name" in attr:
-            team.setFeature("short_club_name", attr["short_club_name"])
-        if "Founded" in td:
-            team.setFeature("Founded", td["Founded"])
-
-        team.setFeature("SYMID", td["SYMID"]).setFeature(
-            "Player", parsePlayer(td)
-        ).setFeature("Stadium", parseStadium(td)).setFeature(
-            "Kit", parseKits(td)
-        ).setFeature(
-            "TeamOfficial", parseTeamOfficial(td)
-        )
-
-        teams.append(team)
-    return teams
-
-
-def parsePlayer(td):
-    players = []
-    if "Player" in td:
-        for p in td["Player"]:
-            try:
-                if "uID" in p["@attributes"]:  # check uid is in the p
-                    player = API.Player(p["Position"])
-                    player.setFeature("Name", p["Name"])
-                    player.setFeature("uID", p["@attributes"]["uID"])
-                    stats = []
-                    if isinstance(p["Stat"], list):
-                        for st in p["Stat"]:
-                            stat = API.Stat(st["@value"], st["@attributes"]["Type"])
-                            stats.append(stat)
-                    elif isinstance(player["Stat"], dict):
-                        stat = API.Stat(
-                            p["Stat"]["@value"], p["Stat"]["@attributes"]["Type"]
-                        )
-                        stats.append(stat)
-                    player.setFeature("Stat", stats)
-                    players.append(player)
-                else:
-                    print("uid is not available")
-            except (KeyError, TypeError):
-                continue
-    return players
-
-
-def parsePlayerChanges(data):
-    p_changes = []
-    pc_team = data["SoccerFeed"]["SoccerDocument"]["PlayerChanges"]["Team"]
-    for t in pc_team:
-        team = API.Team(t["Name"], t["@attributes"]["uID"])
-        # Assign the players
-        team.setFeature(feature="Player", value=parsePlayer(t))
-        # Assign the team officials player
-        team.setFeature(feature="TeamOfficial", value=parseTeamOfficial(t))
-        # Assign the UID
-        team.setFeature(feature="uID", value=t["@attributes"]["uID"])
-        p_changes.append(team)
-    return p_changes
-
-
-def parseStadium(td):
-    stadium = API.Stadium(td["Stadium"]["Name"], td["Stadium"]["@attributes"]["uID"])
-    if "Capacity" in td["Stadium"]:
-        stadium.setCapacity(td["Stadium"]["Capacity"])
-    return stadium
-
-
-def parseKits(td):
-    kits = []
-    all_kits = None
-    if "TeamKits" in td:
-        all_kits = td["TeamKits"]["Kit"]
-
-    if isinstance(all_kits, list):
-        for k in all_kits:
-            kit = API.Kit(
-                k["@attributes"]["id"],
-                k["@attributes"]["colour1"],
-                k["@attributes"]["type"],
-            )
-            if "colour2" in k["@attributes"]:
-                kit.setSecondColour(k["@attributes"]["colour2"])
-            kits.append(kit)
-    elif isinstance(all_kits, dict):
-        kit = API.Kit(
-            all_kits["@attributes"]["id"],
-            all_kits["@attributes"]["colour1"],
-            all_kits["@attributes"]["type"],
-        )
-        if "colour2" in all_kits:
-            kit.setSecondColour(all_kits["@attributes"]["colour2"])
-        kits.append(kit)
-    return kits
-
-
-def parseTeamOfficial(t):
-    officials = []
-    if "TeamOfficial" in t:
-        officials_data = t["TeamOfficial"]
-        if isinstance(officials_data, list):
-            for person in officials_data:
-                p = person["PersonName"]
-                attr = person["@attributes"]
-                of_obj = API.TeamOfficial(
-                    p["First"], p["Last"], attr["Type"], attr["uID"]
-                )
-                if "BirthDate" in p:
-                    of_obj.setFeature("BirthDate", p["BirthDate"])
-                if "BirthPlace" in p:
-                    of_obj.setFeature("BirthPlace", p["BirthPlace"])
-                if "country" in attr:
-                    of_obj.setFeature("country", attr["country"])
-                if "join_date" in p:
-                    of_obj.setFeature("join_date", p["join_date"])
-                officials.append(of_obj)
-
-        elif isinstance(officials_data, dict):
-            p = officials_data["PersonName"]
-            attr = officials_data["@attributes"]
-            of_obj = API.TeamOfficial(p["First"], p["Last"], attr["Type"], attr["uID"])
-            if "BirthDate" in p:
-                of_obj.setFeature("BirthDate", p["BirthDate"])
-            if "BirthPlace" in p:
-                of_obj.setFeature("BirthPlace", p["BirthPlace"])
-            if "country" in attr:
-                of_obj.setFeature("country", attr["country"])
-            if "join_date" in p:
-                of_obj.setFeature("join_date", p["join_date"])
-            officials.append(of_obj)
-
-    return officials
-
-
-def parseTimingTypes(timingTypes):
-    detailTypes = timingTypes["DetailTypes"]["DetailType"]
-    tsAccTypes = timingTypes["TimestampAccuracyTypes"]["TimestampAccuracyType"]
-    ttypes = timingTypes["TimingType"]["TimingType"]
-
-    dTypeList = []
-    tsAccTypeList = []
-    tTypeList = []
-
-    for dt in detailTypes:
-        dTypeList.append(
-            API.DetailType(dt["@attributes"]["detail_id"], dt["@attributes"]["name"])
-        )
-
-    for ts in tsAccTypes:
-        tsAccTypeList.append(
-            API.TimestampAccuracyType(
-                ts["@attributes"]["name"], ts["@attributes"]["timestamp_accuracy_id"]
-            )
-        )
-
-    for tt in ttypes:
-        tTypeList.append(
-            API.TimingType(tt["@attributes"]["name"], tt["@attributes"]["timing_id"])
-        )
-
-    allTimingTypes = API.TimingTypes()
-    allTimingTypes.setDetailTypes(dTypeList)
-    allTimingTypes.setTSAccuracyTypes(tsAccTypeList)
-    allTimingTypes.setTimingTypes(tTypeList)
-
-    return allTimingTypes
-
-
-def parseEvents(gEvents):
-    events = []
-    for event in gEvents:
-        event_attr = event["@attributes"]
-        event_object = API.Event(event_attr["id"], event_attr["event_id"])
-
-        # check the feature is available
-        event_object.setFeature("type_id", event_attr["type_id"]).setFeature(
-            "period_id", event_attr["period_id"]
-        ).setFeature("min", event_attr["min"]).setFeature(
-            "sec", event_attr["sec"]
-        ).setFeature(
-            "team_id", event_attr["team_id"]
-        ).setFeature(
-            "outcome", event_attr["outcome"]
-        ).setFeature(
-            "x", event_attr["x"]
-        ).setFeature(
-            "y", event_attr["y"]
-        ).setFeature(
-            "last_modified", event_attr["last_modified"]
-        )
-
-        if "version" in event_attr:
-            event_object.setFeature("version", event_attr["version"])
-
-        if "player_id" in event_attr:
-            event_object.setFeature("player_id", event_attr["player_id"])
-
-        q_events = []
-        if "Q" in event:  # some items don't include this feature
-            event_q = event["Q"]
-            if isinstance(event_q, list):
-                for q in event_q:
-                    attr = q["@attributes"]
-                    q_object = API.QEvent(
-                        q["@attributes"]["id"], q["@attributes"]["qualifier_id"]
-                    )
-                    if "value" in attr:
-                        q_object.setValue(attr["value"])
-                    q_events.append(q_object)
-            elif isinstance(event_q, dict):
-                q_object = API.QEvent(
-                    q["@attributes"]["id"], q["@attributes"]["qualifier_id"]
-                )
-                attr = q["@attributes"]
-                if "value" in q:
-                    q_object.setValue(attr["value"])
-                q_events.append(q_object)
-        event_object.setFeature("QEvent", q_events)
-        events.append(event_object)
-    return events
-
-
-def parseVenue(data):
-    venue = API.Venue()
-    if "uID" in data["@attributes"]:
-        venue.setFeature("uID", data["@attributes"]["uID"])
-    if "Name" in data:
-        venue.setFeature("Name", data["Name"])
-    if "Country" in data:
-        venue.setFeature("Country", data["Country"])
-    return venue
-
-
-def parse_feed_1(competition_id, season_id, online):
-    # get feed
-    data = getFeed(Feeds.feed1, competition_id, season_id)
-
-    # parse data
-
-    matchData = data["SoccerFeed"]["SoccerDocument"]["MatchData"]
-    teamData = data["SoccerFeed"]["SoccerDocument"]["Team"]
-    ttypes = data["SoccerFeed"]["SoccerDocument"]["TimingTypes"]
-    features = data["SoccerFeed"]["SoccerDocument"]["@attributes"]
-
-    parsedTeams = parseTeams(teamData)
-    parsedMatchData = parseMatchData(matchData)
-    parsedTTimes = parseTimingTypes(ttypes)
-    # create feed object
-    feed = API.Feed1(
-        parsedMatchData,
-        features["Type"],
-        features["competition_code"],
-        features["competition_id"],
-        features["competition_name"],
-        features["game_system_id"],
-        features["season_id"],
-        features["season_name"],
-        parsedTeams,
-        parsedTTimes,
-    )
-    # store in DB
-    # jsonSerializer(feed)
-    # if online is True:
-    #     return feed
-    # else:
-    feed.storeInDB()  # store in the database
-
-
-def parse_feed_9(competition_id, season_id, game_id, online):
-    print("Feed 9 is being parsed")
-    # get feed
-    data = getFeed(Feeds.feed9, competition_id, season_id, game_id)
-
-    # parse data
-    timestamp = data["SoccerFeed"]["@attributes"][
-        "TimeStamp"
-    ]  # retrieved timestamp, this is actually not required
-    competitionData = data["SoccerFeed"]["SoccerDocument"]["Competition"]
-    matchData = data["SoccerFeed"]["SoccerDocument"]["MatchData"]
-    teamData = data["SoccerFeed"]["SoccerDocument"]["Team"]
-    venue = data["SoccerFeed"]["SoccerDocument"]["Venue"]
-    features = data["SoccerFeed"]["SoccerDocument"]["@attributes"]
-
-    # create feed object
-    feed = API.Feed9(
-        timestamp,
-        parseMatchData(matchData),
-        parseVenue(venue),
-        features["Type"],
-        parseTeams(teamData),
-        game_id,
-        parseCompetitionData(competitionData),
-        competition_id,
-        season_id,
-    )
-    if "detail_id" in features:
-        feed.setFeature("detail_id", features["detail_id"])
-
-    jsonSerializer(feed)
-
-    if online is True:
-        return feed
-    else:
-        feed.storeInDB()  # store in the database
-        print("Feed 9 is parsed and stored in the database")
-
-
-def parse_feed_24(competition_id, season_id, game_id, online):
-    # get feed
-    start_time = time.time()
-    data = getFeed(Feeds.feed24, competition_id, season_id, game_id)
-
-    # parse data
-    gameData = data["Games"]["Game"]
-    game_attr = gameData["@attributes"]
-    constructor = Constructor.Constructor()
-    game_events = constructor.event_handler(data=parseEvents(gameData["Event"]))
-
-    game = API.Game(game_attr["id"])
-
-    if "away_score" in game_attr:
-        game.setFeature("away_score", game_attr["away_score"])
-    if "home_score" in game_attr:
-        game.setFeature("home_score", game_attr["home_score"])
-
-    game.setFeature(
-        "away_team_id", game_attr["away_team_id"]
-    ).setFeature(
-        "away_team_name", game_attr["away_team_name"]
-    ).setFeature(
-        "competition_id", game_attr["competition_id"]
-    ).setFeature(
-        "competition_name", game_attr["competition_name"]
-    ).setFeature(
-        "game_date", game_attr["game_date"]
-    ).setFeature(
-        "home_team_id", game_attr["home_team_id"]
-    ).setFeature(
-        "home_team_name", game_attr["home_team_name"]
-    ).setFeature(
-        "matchday", game_attr["matchday"]
-    ).setFeature(
-        "period_1_start", game_attr["period_1_start"]
-    ).setFeature(
-        "period_2_start", game_attr["period_2_start"]
-    ).setFeature(
-        "season_id", game_attr["season_id"]
-    ).setFeature(
-        "season_name", game_attr["season_name"]
-    ).setFeature(
-        "Event", game_events
-    )
-    end_time = time.time()
-    print("parsing operation", end_time - start_time)
-    # create feed object
-    feed = API.Feed24(competition_id, season_id, game)
-    # jsonSerializer(feed)
-
-    # if online is True:
-    #     return feed
-    # else:
-    start_time = time.time()
-    feed.storeInDB()  # store in the database
-    end_time = time.time()
-    print("storing operation", end_time-start_time)
-
-
-def parse_feed_40(competition_id, season_id, online=None):
-    # get feed
-    data = getFeed(Feeds.feed40, competition_id, season_id)
-
-    # parse data
-    teams = parseTeam(data)  # teams
-    pchanges = parsePlayerChanges(data)  # player Changes
-    # attributes
-    attrs = data["SoccerFeed"]["SoccerDocument"]["@attributes"]
-    # create feed object
-    feed = API.Feed40(
-        teams,
-        pchanges,
-        attrs["Type"],
-        attrs["competition_id"],
-        attrs["competition_name"],
-        attrs["competition_code"],
-        attrs["season_id"],
-        attrs["season_name"],
-        None,
-    )
-
-    jsonSerializer(feed)
-    if online is True:
-        return feed
-    else:
-        feed.storeInDB()
-
-
-def jsonSerializer(feed, file_name="feedjson.json"):
-    """
-    Converts the given feed into the serialized json object.
-
-    :param feed:
-    :return:
-    """
-    # print("Encode Object into JSON formatted Data using jsonpickle")
-    empJSON = jsonpickle.encode(feed, unpicklable=False)
-
-    print("Writing JSON Encode data into Python String")
-    jsondata = json.dumps(empJSON, indent=4)
-    # print(jsondata)
-    feedjson = jsonpickle.decode(jsondata)
-    # print(feedjson)
-    f = open(file_name, "a")
-    f.write(feedjson)
-    f.close()
-
-
-def parseFeed(feedName, competitionID, seasonID, gameID=None, online=None):
-    print("Parsing operation is started...")
-    if feedName is Feeds.feed1:
-        if online is True:
-            return parse_feed_1(competitionID, seasonID, True)
-        parse_feed_1(competitionID, seasonID, False)
-    elif feedName is Feeds.feed9:
-        if online is True:
-            return parse_feed_9(competitionID, seasonID, gameID, True)
-        parse_feed_9(competitionID, seasonID, gameID, False)
-    elif feedName is Feeds.feed24:
-        if online is True:
-            return parse_feed_24(competitionID, seasonID, gameID, True)
-        parse_feed_24(competitionID, seasonID, gameID, False)
-    elif feedName is Feeds.feed40:
-        if online is True:
-            return parse_feed_40(competitionID, seasonID, True)
-        parse_feed_40(competitionID, seasonID, False)
-
-
-if __name__ == '__main__':
-#  data = parseFeed("feed1","115","2018")
-#  print("data",data["SoccerFeed"]["SoccerDocument"]["MatchData"])
-#  data1 = getFeedFromFile("f9","115","2016")
-#  print("data-1:\n", data1)
-#  data2 = getFeedFromFile("f24", "115", "2016","871376")
-#  print(data2["Games"]["Game"])
-#
-
-# feed = parseFeed("feed40","115","2018")
-#
-#    print(data)
-    pass
+def _float(val) -> Optional[float]:
+    try:
+        return float(val) if val is not None else None
+    except (ValueError, TypeError):
+        return None
+
+
+def _load_json(path: str) -> Dict[str, Any]:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (json.JSONDecodeError, IOError) as exc:
+        logger.error(f"Failed to load {path}: {exc}")
+        return {}

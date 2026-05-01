@@ -3,6 +3,14 @@
  */
 const express = require('express');
 const router = express.Router();
+const { ObjectId } = require('mongodb');
+
+const { requestJson, unwrapPayload } = require('../utils/serviceClient');
+
+const analyticsServiceUrl = (process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8012').replace(/\/$/, '');
+const matchServiceUrl = (process.env.MATCH_SERVICE_URL || 'http://match-service:8000').replace(/\/$/, '');
+const teamServiceUrl = (process.env.TEAM_SERVICE_URL || 'http://team-service:8000').replace(/\/$/, '');
+const analyticsRequestTimeoutMs = Number(process.env.ANALYTICS_SERVICE_TIMEOUT_MS || 2500);
 
 let PDFDocument;
 try {
@@ -10,6 +18,177 @@ try {
 } catch (e) {
   console.warn('⚠️  pdfkit not installed — reports will use text fallback');
   PDFDocument = null;
+}
+
+function toFiniteNumber(value, fallback = 0) {
+  const numericValue = Number(value);
+  return Number.isFinite(numericValue) ? numericValue : fallback;
+}
+
+function buildIdLookup(entityId, numericFields = []) {
+  const lookups = [{ id: String(entityId) }];
+  const numericId = Number(entityId);
+
+  numericFields.forEach((field) => {
+    lookups.push({ [field]: String(entityId) });
+    if (Number.isInteger(numericId)) {
+      lookups.push({ [field]: numericId });
+    }
+  });
+
+  if (ObjectId.isValid(String(entityId))) {
+    lookups.push({ _id: new ObjectId(String(entityId)) });
+  }
+
+  return lookups;
+}
+
+function buildPlayerName(player) {
+  return player.name || [player.first_name || player.firstName, player.last_name || player.lastName].filter(Boolean).join(' ') || 'Unknown Player';
+}
+
+function normalizePlayerReportData(player = {}, analyticsPayload = null) {
+  const summary = analyticsPayload?.summary || {};
+
+  return {
+    id: String(player.id || player.uID || analyticsPayload?.player_id || ''),
+    name: buildPlayerName(player),
+    position: player.position || summary.position || 'N/A',
+    age: player.age ?? summary.age ?? 'N/A',
+    club: player.club || summary.club || player.team || 'N/A',
+    nationality: player.nationality || 'N/A',
+    rating: toFiniteNumber(summary.rating, toFiniteNumber(player.rating, 0)),
+    goals: toFiniteNumber(summary.goals, toFiniteNumber(player.goals, 0)),
+    assists: toFiniteNumber(summary.assists, toFiniteNumber(player.assists, 0)),
+    appearances: toFiniteNumber(summary.appearances, toFiniteNumber(player.appearances, 0)),
+    passAccuracy: toFiniteNumber(summary.passAccuracy, toFiniteNumber(player.passAccuracy, 0)),
+    marketValue: toFiniteNumber(player.marketValue, 0),
+    xG: toFiniteNumber(player.xG, 0),
+    xA: toFiniteNumber(player.xA, 0),
+  };
+}
+
+async function resolvePlayerReportData(db, playerId) {
+  const player = db
+    ? await db.collection('players').findOne({ $or: buildIdLookup(playerId, ['uID']) })
+    : null;
+
+  const analyticsResult = await requestJson(
+    analyticsServiceUrl,
+    `/api/v2/analytics/insights/player/${playerId}`,
+    { timeoutMs: analyticsRequestTimeoutMs }
+  ).catch(() => null);
+
+  const analyticsPayload = analyticsResult?.ok ? analyticsResult.payload : null;
+  return normalizePlayerReportData({ ...(player || {}), ...(analyticsPayload?.player || {}) }, analyticsPayload);
+}
+
+async function resolveTeamName(db, teamId) {
+  if (!db || teamId === undefined || teamId === null || teamId === '') {
+    const result = await requestJson(teamServiceUrl, `/api/v2/teams/${teamId}`, { timeoutMs: analyticsRequestTimeoutMs }).catch(() => null);
+    const payload = result?.ok ? unwrapPayload(result.payload) : null;
+    return payload?.name || null;
+  }
+
+  const team = await db.collection('teams').findOne({ $or: buildIdLookup(teamId, ['uID']) });
+  if (team?.name) {
+    return team.name;
+  }
+
+  const result = await requestJson(teamServiceUrl, `/api/v2/teams/${teamId}`, { timeoutMs: analyticsRequestTimeoutMs }).catch(() => null);
+  const payload = result?.ok ? unwrapPayload(result.payload) : null;
+  return payload?.name || null;
+}
+
+async function resolveTeamReportData(db, teamId) {
+  const team = db
+    ? await db.collection('teams').findOne({ $or: buildIdLookup(teamId, ['uID']) })
+    : null;
+  const normalizedTeam = {
+    id: String(team?.id || team?.uID || teamId),
+    name: team?.name || 'Unknown Team',
+    league: team?.league || team?.competition || team?.competition_name || 'N/A',
+    country: team?.country || 'N/A',
+    manager: team?.manager || 'N/A',
+    formation: team?.formation || 'N/A',
+  };
+
+  const players = db && normalizedTeam.name !== 'Unknown Team'
+    ? await db.collection('players').find({
+        $or: [{ club: normalizedTeam.name }, { team: normalizedTeam.name }],
+      }).limit(30).toArray()
+    : [];
+
+  return {
+    team: normalizedTeam,
+    players: players.map((player) => normalizePlayerReportData(player)),
+  };
+}
+
+async function resolveMatchReportData(db, matchId) {
+  let match = db
+    ? await db.collection('matches').findOne({ $or: buildIdLookup(matchId, ['match_id']) })
+    : null;
+
+  if (!match) {
+    const matchResult = await requestJson(matchServiceUrl, `/api/v2/matches/${matchId}`, {
+      timeoutMs: analyticsRequestTimeoutMs,
+    }).catch(() => null);
+    match = matchResult?.ok ? unwrapPayload(matchResult.payload) : null;
+  }
+
+  if (!match) {
+    return {
+      id: String(matchId),
+      homeTeam: 'Home',
+      awayTeam: 'Away',
+      homeScore: 0,
+      awayScore: 0,
+      competition: 'N/A',
+      date: 'N/A',
+      status: 'N/A',
+      venue: 'N/A',
+      homePossession: 50,
+      awayPossession: 50,
+      homeShots: 0,
+      awayShots: 0,
+      homeShotsOnTarget: 0,
+      awayShotsOnTarget: 0,
+      homeCorners: 0,
+      awayCorners: 0,
+      homeFouls: 0,
+      awayFouls: 0,
+      homeXG: 0,
+      awayXG: 0,
+    };
+  }
+
+  const homeTeam = match.homeTeam || match.home_team || await resolveTeamName(db, match.home_team_id || match.homeTeamId) || String(match.home_team_id || 'Home');
+  const awayTeam = match.awayTeam || match.away_team || await resolveTeamName(db, match.away_team_id || match.awayTeamId) || String(match.away_team_id || 'Away');
+
+  return {
+    id: String(match.id || match.match_id || matchId),
+    homeTeam,
+    awayTeam,
+    homeScore: toFiniteNumber(match.homeScore ?? match.home_score, 0),
+    awayScore: toFiniteNumber(match.awayScore ?? match.away_score, 0),
+    competition: match.competition || match.competition_name || match.competition_id || 'N/A',
+    date: match.date || match.match_date || 'N/A',
+    status: match.status || 'N/A',
+    venue: match.venue || 'N/A',
+    homePossession: toFiniteNumber(match.homePossession ?? match.home_possession, 50),
+    awayPossession: toFiniteNumber(match.awayPossession ?? match.away_possession, 50),
+    homeShots: toFiniteNumber(match.homeShots ?? match.home_shots, 0),
+    awayShots: toFiniteNumber(match.awayShots ?? match.away_shots, 0),
+    homeShotsOnTarget: toFiniteNumber(match.homeShotsOnTarget ?? match.home_shots_on_target, 0),
+    awayShotsOnTarget: toFiniteNumber(match.awayShotsOnTarget ?? match.away_shots_on_target, 0),
+    homeCorners: toFiniteNumber(match.homeCorners ?? match.home_corners, 0),
+    awayCorners: toFiniteNumber(match.awayCorners ?? match.away_corners, 0),
+    homeFouls: toFiniteNumber(match.homeFouls ?? match.home_fouls, 0),
+    awayFouls: toFiniteNumber(match.awayFouls ?? match.away_fouls, 0),
+    homeXG: toFiniteNumber(match.homeXG ?? match.home_xg, 0),
+    awayXG: toFiniteNumber(match.awayXG ?? match.away_xg, 0),
+  };
 }
 
 // ===== PDF Helper =====
@@ -132,11 +311,11 @@ router.get('/:reportId/download', async (req, res) => {
   const report = db ? await db.collection('reports').findOne({ id: req.params.reportId }) : null;
 
   res.setHeader('Content-Disposition', `attachment; filename="report-${req.params.reportId}.pdf"`);
-  createPDF(res, `ScoutPro Report`, [
+  createPDF(res, report?.title || 'ScoutPro Report', [
     { heading: 'Report Details', keyValues: [
       ['Report ID', req.params.reportId],
       ['Type', report?.type || 'general'],
-      ['Entity', report?.entity_id || 'N/A'],
+      ['Entity', report?.entity_label || report?.entity_id || 'N/A'],
       ['Generated', new Date().toLocaleString()]
     ]},
     { heading: 'Summary', text: 'This report was generated by the ScoutPro analytics platform. Full analysis and data visualizations are available in the web dashboard.' }
@@ -146,12 +325,7 @@ router.get('/:reportId/download', async (req, res) => {
 // GET /api/v2/reports/player/:playerId
 router.get('/player/:playerId', async (req, res) => {
   const db = req.app.locals.db;
-  let player = null;
-  if (db) {
-    player = await db.collection('players').findOne({ id: req.params.playerId });
-  }
-
-  const p = player || { name: 'Unknown Player', position: 'N/A', age: 0, club: 'N/A', nationality: 'N/A' };
+  const p = await resolvePlayerReportData(db, req.params.playerId);
   const format = req.query.format || 'pdf';
 
   if (format === 'excel') {
@@ -194,16 +368,7 @@ router.get('/player/:playerId', async (req, res) => {
 // GET /api/v2/reports/team/:teamId
 router.get('/team/:teamId', async (req, res) => {
   const db = req.app.locals.db;
-  let team = null;
-  let players = [];
-  if (db) {
-    team = await db.collection('teams').findOne({ id: req.params.teamId });
-    if (team) {
-      players = await db.collection('players').find({ club: team.name }).limit(30).toArray();
-    }
-  }
-
-  const t = team || { name: 'Unknown Team', league: 'N/A', country: 'N/A' };
+  const { team: t, players } = await resolveTeamReportData(db, req.params.teamId);
   const format = req.query.format || 'pdf';
 
   if (format === 'excel') {
@@ -232,12 +397,7 @@ router.get('/team/:teamId', async (req, res) => {
 // GET /api/v2/reports/match/:matchId
 router.get('/match/:matchId', async (req, res) => {
   const db = req.app.locals.db;
-  let match = null;
-  if (db) {
-    match = await db.collection('matches').findOne({ id: req.params.matchId });
-  }
-
-  const m = match || { homeTeam: 'Home', awayTeam: 'Away', homeScore: 0, awayScore: 0 };
+  const m = await resolveMatchReportData(db, req.params.matchId);
   const format = req.query.format || 'pdf';
 
   if (format === 'excel') {

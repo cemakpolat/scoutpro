@@ -17,7 +17,14 @@ from .player_syncer import PlayerSyncer
 from .team_syncer import TeamSyncer
 from .match_syncer import MatchSyncer
 from .event_syncer import EventSyncer
-from .sync_scheduler import SyncScheduler, SyncFrequency, create_default_scheduler
+from .provider_batch_sync import EventBatchSyncer
+from .sync_scheduler import (
+    SyncScheduler,
+    SyncFrequency,
+    create_default_scheduler,
+    get_provider_sync_profile,
+    list_provider_sync_profiles,
+)
 
 __all__ = [
     'BaseSyncer',
@@ -27,7 +34,10 @@ __all__ = [
     'TeamSyncer',
     'MatchSyncer',
     'EventSyncer',
+    'EventBatchSyncer',
     'SyncScheduler',
     'SyncFrequency',
-    'create_default_scheduler'
+    'create_default_scheduler',
+    'get_provider_sync_profile',
+    'list_provider_sync_profiles',
 ]

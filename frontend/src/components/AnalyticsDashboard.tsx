@@ -1,60 +1,116 @@
-import React, { useState, useEffect } from 'react';
-import { 
-  BarChart3, TrendingUp, Users, Target, Zap, 
-  Map, Activity, Brain, Filter, Calendar, Loader2
+import React, { useMemo, useState } from 'react';
+import {
+  BarChart3,
+  TrendingUp,
+  Users,
+  Activity,
+  Brain,
+  Calendar,
+  Loader2,
+  Trophy,
+  Target,
+  Zap,
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import apiService from '../services/api';
 
+type TrendMetric = 'avgGoals' | 'avgHomeGoals' | 'avgAwayGoals' | 'matchCount';
+
+const METRIC_LABELS: Record<TrendMetric, string> = {
+  avgGoals: 'Average Goals',
+  avgHomeGoals: 'Home Goals',
+  avgAwayGoals: 'Away Goals',
+  matchCount: 'Matches Played',
+};
+
+const toNumber = (value: unknown): number => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const formatMetric = (value: unknown, digits = 0): string => {
+  if (value === undefined || value === null || value === '') {
+    return '—';
+  }
+
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric.toFixed(digits) : String(value);
+};
+
+const formatMatchLabel = (match: any) => {
+  const home = match.home_team_name || match.homeTeam || match.home_team_id || 'Home';
+  const away = match.away_team_name || match.awayTeam || match.away_team_id || 'Away';
+  return `${home} vs ${away}`;
+};
+
 const AnalyticsDashboard: React.FC = () => {
-  const [selectedMetric, setSelectedMetric] = useState('xT');
+  const [selectedMetric, setSelectedMetric] = useState<TrendMetric>('avgGoals');
   const [timeframe, setTimeframe] = useState('season');
 
-  // Fetch data from API
   const { data: dashboardData, loading: dashLoading } = useApi(
     () => apiService.getDashboardOverview(), []
   );
   const { data: leagueTrends, loading: trendsLoading } = useApi(
     () => apiService.getLeagueTrends(), []
   );
-  const { data: playerRankings, loading: rankingsLoading } = useApi(
-    () => apiService.getPlayerRankings('rating', 10), []
-  );
-  const { data: teamRankings } = useApi(
-    () => apiService.getTeamRankings('points', 6), []
+  const loading = dashLoading || trendsLoading;
+  const summary = dashboardData?.summary || dashboardData?.data || {};
+  const topPlayers = dashboardData?.topPlayers || [];
+  const topTeams = dashboardData?.topTeams || [];
+  const recentMatches = dashboardData?.recentMatches || [];
+  const predictionSummary = dashboardData?.predictions || {};
+  const trendLimit = timeframe === 'week' ? 4 : timeframe === 'month' ? 6 : 12;
+
+  const trendRows = useMemo(
+    () => (leagueTrends?.trends || []).slice(-trendLimit),
+    [leagueTrends, trendLimit],
   );
 
-  const loading = dashLoading || trendsLoading || rankingsLoading;
+  const maxTrendValue = Math.max(1, ...trendRows.map((row: any) => toNumber(row[selectedMetric])));
 
-  // Derive team styles from team rankings data
-  const styleColors = ['bg-blue-500', 'bg-red-500', 'bg-purple-500', 'bg-green-500', 'bg-yellow-500', 'bg-cyan-500'];
-  const styleLabels = ['Possession Heavy', 'Counter-Pressing', 'Transition Based', 'High Intensity', 'Direct Play', 'Balanced'];
-  const teamStyles = (teamRankings || []).slice(0, 6).map((t: any, i: number) => ({
-    name: t.name,
-    style: styleLabels[i % styleLabels.length],
-    similarity: Math.max(70, 95 - i * 3),
-    color: styleColors[i % styleColors.length],
+  const playerRows = topPlayers.slice(0, 6).map((player: any) => ({
+    id: player.playerID || player.player_id,
+    name: player.player_name || player.playerName || `Player #${player.playerID || player.player_id}`,
+    rank: player.rank || '—',
+    matches: Array.isArray(player.matchIDs) ? player.matchIDs.length : 0,
+    goals: toNumber(player.goals),
+    shots: toNumber(player.shots),
+    completedPasses: toNumber(player.passes_completed),
+    duelWinRate: player.duels ? Math.round((toNumber(player.duels_won) / Math.max(toNumber(player.duels), 1)) * 100) : 0,
   }));
 
-  // xT zones (static structure, could come from a future endpoint)
-  const xTData = [
-    { zone: 'Final Third', value: 0.85, color: 'bg-red-500' },
-    { zone: 'Penalty Area', value: 0.92, color: 'bg-red-600' },
-    { zone: 'Central Midfield', value: 0.23, color: 'bg-yellow-500' },
-    { zone: 'Wide Areas', value: 0.31, color: 'bg-orange-500' },
-    { zone: 'Defensive Third', value: 0.08, color: 'bg-green-500' },
+  const teamRows = topTeams.slice(0, 5).map((team: any) => ({
+    id: team.teamID || team.team_id,
+    name: team.team_name || team.name || `Team #${team.teamID || team.team_id}`,
+    rank: team.rank || '—',
+    goals: toNumber(team.goals),
+    shots: toNumber(team.shots),
+    completedPasses: toNumber(team.passes_completed),
+    passCompletion: team.passes ? Math.round((toNumber(team.passes_completed) / Math.max(toNumber(team.passes), 1)) * 100) : 0,
+  }));
+
+  const snapshotCards = [
+    {
+      label: 'Predictions Generated',
+      value: formatMetric(predictionSummary.total ?? summary.transferPredictions),
+      tone: 'text-purple-400',
+    },
+    {
+      label: 'Accuracy Score',
+      value: formatMetric(predictionSummary.accuracy ?? summary.modelAccuracy, 2),
+      tone: 'text-green-400',
+    },
+    {
+      label: 'Live Matches',
+      value: formatMetric(summary.liveMatches),
+      tone: 'text-blue-400',
+    },
+    {
+      label: 'Response Time',
+      value: summary.responseTime != null ? `${formatMetric(summary.responseTime)}ms` : '—',
+      tone: 'text-yellow-400',
+    },
   ];
-
-  // Derive player development from rankings
-  const playerDevelopment = (playerRankings || []).slice(0, 5).map((p: any) => ({
-    name: p.name,
-    age: p.age || 22,
-    currentRating: Math.round(p.value * 10) || 80,
-    projectedRating: Math.min(99, Math.round((p.value || 8) * 10) + Math.floor(Math.random() * 5 + 3)),
-    development: `+${Math.floor(Math.random() * 5 + 3)}`,
-  }));
-
-  const summary = dashboardData?.summary || {};
 
   return (
     <div className="space-y-8">
@@ -146,232 +202,185 @@ const AnalyticsDashboard: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        {/* Team Style Clustering */}
         <div className="bg-slate-800 rounded-xl p-6">
           <h3 className="text-xl font-semibold mb-6 flex items-center">
             <Users className="h-6 w-6 mr-2 text-blue-400" />
-            Team Style Clustering
+            Top Team Output
           </h3>
-          <div className="space-y-4">
-            {teamStyles.map((team, index) => (
-              <div key={index} className="p-4 bg-slate-700 rounded-lg">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center space-x-3">
-                    <div className={`w-4 h-4 rounded-full ${team.color}`}></div>
-                    <span className="font-semibold">{team.name}</span>
+          {teamRows.length > 0 ? (
+            <div className="space-y-4">
+              {teamRows.map((team) => (
+                <div key={team.id} className="rounded-lg bg-slate-700 p-4">
+                  <div className="mb-3 flex items-center justify-between">
+                    <div>
+                      <div className="font-semibold">{team.name}</div>
+                      <div className="text-xs text-slate-400">Rank #{team.rank}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-lg font-bold text-green-400">{team.goals}</div>
+                      <div className="text-xs text-slate-400">Goals</div>
+                    </div>
                   </div>
-                  <span className="text-slate-400 text-sm">{team.similarity}% match</span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-slate-400">{team.style}</span>
-                  <div className="w-24 bg-slate-600 rounded-full h-2">
-                    <div
-                      className={`h-2 rounded-full ${team.color}`}
-                      style={{ width: `${team.similarity}%` }}
-                    ></div>
+                  <div className="grid grid-cols-3 gap-4 text-sm">
+                    <div>
+                      <div className="text-slate-400">Shots</div>
+                      <div className="font-semibold text-white">{team.shots}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400">Completed Passes</div>
+                      <div className="font-semibold text-white">{team.completedPasses}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400">Pass Accuracy</div>
+                      <div className="font-semibold text-blue-400">{team.passCompletion}%</div>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
+              No team analytics are available from the backend yet.
+            </div>
+          )}
         </div>
 
-        {/* Expected Threat (xT) Maps */}
         <div className="bg-slate-800 rounded-xl p-6">
           <h3 className="text-xl font-semibold mb-6 flex items-center">
-            <Map className="h-6 w-6 mr-2 text-red-400" />
-            Expected Threat (xT) Analysis
+            <TrendingUp className="h-6 w-6 mr-2 text-red-400" />
+            Competition Trend Analysis
           </h3>
           <div className="space-y-4">
             <div className="flex items-center space-x-4 mb-4">
               <select
                 value={selectedMetric}
-                onChange={(e) => setSelectedMetric(e.target.value)}
+                onChange={(e) => setSelectedMetric(e.target.value as TrendMetric)}
                 className="px-3 py-2 bg-slate-700 border border-slate-600 rounded-lg text-sm"
               >
-                <option value="xT">Expected Threat</option>
-                <option value="xG">Expected Goals</option>
-                <option value="xA">Expected Assists</option>
+                {Object.entries(METRIC_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
               </select>
-              <span className="text-sm text-slate-400">Player: Kylian Mbappé</span>
+              <span className="text-sm text-slate-400">Latest {trendRows.length} periods</span>
             </div>
-            
-            {xTData.map((zone, index) => (
-              <div key={index} className="space-y-2">
+
+            {trendRows.length > 0 ? trendRows.map((trend: any, index: number) => {
+              const metricValue = toNumber(trend[selectedMetric]);
+
+              return (
+                <div key={`${trend.name}-${index}`} className="space-y-2">
                 <div className="flex justify-between">
-                  <span className="text-sm">{zone.zone}</span>
-                  <span className="text-sm font-semibold">{zone.value}</span>
+                  <span className="text-sm">{trend.name}</span>
+                  <span className="text-sm font-semibold">{formatMetric(metricValue, selectedMetric === 'matchCount' ? 0 : 2)}</span>
                 </div>
                 <div className="w-full bg-slate-700 rounded-full h-3">
                   <div
-                    className={`h-3 rounded-full ${zone.color}`}
-                    style={{ width: `${zone.value * 100}%` }}
+                    className="h-3 rounded-full bg-red-500"
+                    style={{ width: `${(metricValue / maxTrendValue) * 100}%` }}
                   ></div>
                 </div>
               </div>
-            ))}
-            
+              );
+            }) : (
+              <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
+                No league trend data is available from the backend yet.
+              </div>
+            )}
+
             <div className="mt-6 p-4 bg-slate-700 rounded-lg">
-              <h4 className="font-semibold mb-2 text-red-400">Key Insight</h4>
+              <h4 className="font-semibold mb-2 text-red-400">Trend Snapshot</h4>
               <p className="text-sm text-slate-300">
-                Mbappé generates highest threat in penalty area (0.92 xT) and shows 
-                exceptional ability to create danger from wide positions.
+                The live competition feed reports {formatMetric(summary.avgGoalsPerMatch, 2)} average goals per match
+                across {summary.totalMatches || 0} analysed fixtures.
               </p>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Player Development Tracking */}
       <div className="bg-slate-800 rounded-xl p-6">
         <h3 className="text-xl font-semibold mb-6 flex items-center">
-          <TrendingUp className="h-6 w-6 mr-2 text-green-400" />
-          Player Development Tracking
+          <Trophy className="h-6 w-6 mr-2 text-green-400" />
+          Top Player Output
         </h3>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead>
-              <tr className="border-b border-slate-700">
-                <th className="text-left py-3 px-2">Player</th>
-                <th className="text-left py-3 px-2">Age</th>
-                <th className="text-left py-3 px-2">Current Rating</th>
-                <th className="text-left py-3 px-2">Projected Rating</th>
-                <th className="text-left py-3 px-2">Development</th>
-                <th className="text-left py-3 px-2">Trajectory</th>
-                <th className="text-left py-3 px-2">Risk Level</th>
-              </tr>
-            </thead>
-            <tbody>
-              {playerDevelopment.map((player, index) => (
-                <tr key={index} className="border-b border-slate-700 hover:bg-slate-700">
-                  <td className="py-3 px-2 font-semibold">{player.name}</td>
-                  <td className="py-3 px-2">{player.age}</td>
-                  <td className="py-3 px-2">
-                    <div className="flex items-center space-x-2">
-                      <span>{player.currentRating}</span>
-                      <div className="w-16 bg-slate-600 rounded-full h-2">
-                        <div
-                          className="bg-blue-400 h-2 rounded-full"
-                          style={{ width: `${player.currentRating}%` }}
-                        ></div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="py-3 px-2">
-                    <div className="flex items-center space-x-2">
-                      <span className="text-green-400 font-semibold">{player.projectedRating}</span>
-                      <div className="w-16 bg-slate-600 rounded-full h-2">
-                        <div
-                          className="bg-green-400 h-2 rounded-full"
-                          style={{ width: `${player.projectedRating}%` }}
-                        ></div>
-                      </div>
-                    </div>
-                  </td>
-                  <td className="py-3 px-2">
-                    <span className="text-green-400 font-semibold">{player.development}</span>
-                  </td>
-                  <td className="py-3 px-2">
-                    <div className="flex items-center">
-                      <TrendingUp className="h-4 w-4 text-green-400 mr-1" />
-                      <span className="text-green-400 text-sm">Positive</span>
-                    </div>
-                  </td>
-                  <td className="py-3 px-2">
-                    <span className="px-2 py-1 bg-green-600 text-green-100 text-xs rounded">
-                      Low
-                    </span>
-                  </td>
+        {playerRows.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-slate-700">
+                  <th className="text-left py-3 px-2">Player</th>
+                  <th className="text-left py-3 px-2">Rank</th>
+                  <th className="text-left py-3 px-2">Matches</th>
+                  <th className="text-left py-3 px-2">Goals</th>
+                  <th className="text-left py-3 px-2">Shots</th>
+                  <th className="text-left py-3 px-2">Completed Passes</th>
+                  <th className="text-left py-3 px-2">Duel Win %</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody>
+                {playerRows.map((player) => (
+                  <tr key={player.id} className="border-b border-slate-700 hover:bg-slate-700">
+                    <td className="py-3 px-2 font-semibold">{player.name}</td>
+                    <td className="py-3 px-2 text-blue-400">#{player.rank}</td>
+                    <td className="py-3 px-2">{player.matches}</td>
+                    <td className="py-3 px-2">{player.goals}</td>
+                    <td className="py-3 px-2">{player.shots}</td>
+                    <td className="py-3 px-2">{player.completedPasses}</td>
+                    <td className="py-3 px-2">
+                      <span className="font-semibold text-green-400">{player.duelWinRate}%</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
+            No player output is available from the analytics backend yet.
+          </div>
+        )}
       </div>
 
-      {/* Set-Piece Analysis */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         <div className="bg-slate-800 rounded-xl p-6">
           <h3 className="text-xl font-semibold mb-6 flex items-center">
-            <Target className="h-6 w-6 mr-2 text-yellow-400" />
-            Set-Piece Analysis
+            <Calendar className="h-6 w-6 mr-2 text-yellow-400" />
+            Recent Match Feed
           </h3>
-          <div className="space-y-4">
-            {[
-              { type: 'Corner Kicks', success: 23, total: 67, probability: 34 },
-              { type: 'Free Kicks', success: 8, total: 45, probability: 18 },
-              { type: 'Penalties', success: 12, total: 14, probability: 86 },
-              { type: 'Throw-ins', success: 156, total: 234, probability: 67 },
-            ].map((setpiece, index) => (
-              <div key={index} className="p-4 bg-slate-700 rounded-lg">
-                <div className="flex justify-between items-center mb-2">
-                  <span className="font-medium">{setpiece.type}</span>
-                  <span className="text-yellow-400 font-bold">{setpiece.probability}%</span>
+          {recentMatches.length > 0 ? (
+            <div className="space-y-4">
+              {recentMatches.slice(0, 5).map((match: any) => (
+                <div key={match.id} className="rounded-lg bg-slate-700 p-4">
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="font-medium">{formatMatchLabel(match)}</span>
+                    <span className="text-sm text-yellow-400">{match.status || 'unknown'}</span>
+                  </div>
+                  <div className="flex justify-between text-sm text-slate-400">
+                    <span>{formatMetric(match.home_score)} - {formatMetric(match.away_score)}</span>
+                    <span>{formatMetric(match.date)}</span>
+                  </div>
                 </div>
-                <div className="flex justify-between text-sm text-slate-400 mb-2">
-                  <span>Success: {setpiece.success}/{setpiece.total}</span>
-                  <span>Conversion Rate</span>
-                </div>
-                <div className="w-full bg-slate-600 rounded-full h-2">
-                  <div
-                    className="bg-yellow-400 h-2 rounded-full"
-                    style={{ width: `${setpiece.probability}%` }}
-                  ></div>
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          ) : (
+            <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
+              No recent matches are available from the analytics backend yet.
+            </div>
+          )}
         </div>
 
         <div className="bg-slate-800 rounded-xl p-6">
           <h3 className="text-xl font-semibold mb-6 flex items-center">
             <Brain className="h-6 w-6 mr-2 text-purple-400" />
-            Scenario Simulations
+            Prediction Snapshot
           </h3>
-          <div className="space-y-4">
-            <div className="p-4 bg-purple-600/10 border border-purple-600/20 rounded-lg">
-              <div className="flex items-center space-x-2 mb-2">
-                <Zap className="h-5 w-5 text-purple-400" />
-                <span className="font-semibold text-purple-400">Active Simulation</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {snapshotCards.map((card) => (
+              <div key={card.label} className="rounded-lg border border-slate-700 bg-slate-700/80 p-4">
+                <div className="text-sm text-slate-400">{card.label}</div>
+                <div className={`mt-2 text-2xl font-bold ${card.tone}`}>{card.value}</div>
               </div>
-              <p className="text-sm text-slate-300 mb-3">
-                "What if Mbappé joins Manchester City?"
-              </p>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <div className="text-slate-400">Expected Goals</div>
-                  <div className="font-semibold text-green-400">+0.8 per game</div>
-                </div>
-                <div>
-                  <div className="text-slate-400">Team Performance</div>
-                  <div className="font-semibold text-blue-400">+12% win rate</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-4 bg-blue-600/10 border border-blue-600/20 rounded-lg">
-              <div className="flex items-center space-x-2 mb-2">
-                <Activity className="h-5 w-5 text-blue-400" />
-                <span className="font-semibold text-blue-400">Formation Impact</span>
-              </div>
-              <p className="text-sm text-slate-300 mb-3">
-                "4-3-3 vs 4-2-3-1 with current squad"
-              </p>
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <div className="text-slate-400">Possession</div>
-                  <div className="font-semibold text-green-400">+7%</div>
-                </div>
-                <div>
-                  <div className="text-slate-400">Defensive Stability</div>
-                  <div className="font-semibold text-yellow-400">-3%</div>
-                </div>
-              </div>
-            </div>
-
-            <button className="w-full bg-purple-600 hover:bg-purple-700 py-3 rounded-lg font-semibold transition-colors">
-              Run New Simulation
-            </button>
+            ))}
           </div>
         </div>
       </div>

@@ -9,8 +9,7 @@ RUN apt-get update && apt-get install -y \
     netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy shared libraries (merge root shared + services shared)
-COPY ./shared /app/shared
+# Copy shared libraries (single merged directory)
 COPY ./services/shared /app/shared
 
 # Install Python dependencies

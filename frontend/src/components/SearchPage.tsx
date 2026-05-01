@@ -15,8 +15,11 @@ import {
 import GlobalSearch from './search/GlobalSearch';
 import AdvancedFilters from './search/AdvancedFilters';
 import SavedSearches from './search/SavedSearches';
+import PlayerDetail from './PlayerDetail';
+import SequenceCoverageBadge from './SequenceCoverageBadge';
 import { searchService } from '../services/searchService';
 import { exportService } from '../services/exportService';
+import apiService from '../services/api';
 import { SearchResult, SearchFilters, SearchPreset } from '../types/search';
 
 const SearchPage: React.FC = () => {
@@ -24,6 +27,7 @@ const SearchPage: React.FC = () => {
   const [filters, setFilters] = useState<SearchFilters>({});
   const [results, setResults] = useState<SearchResult[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedPlayer, setSelectedPlayer] = useState<any>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [showSaved, setShowSaved] = useState(false);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
@@ -31,10 +35,51 @@ const SearchPage: React.FC = () => {
   const [total, setTotal] = useState(0);
   const [showSaveModal, setShowSaveModal] = useState(false);
   const [saveName, setSaveName] = useState('');
+  const [playerCoverageById, setPlayerCoverageById] = useState<Record<string, any>>({});
+  const [coverageLoading, setCoverageLoading] = useState(false);
 
   useEffect(() => {
     setPresets(searchService.getSearchPresets());
   }, []);
+
+  useEffect(() => {
+    const playerIds = results.filter((result) => result.type === 'player').map((result) => String(result.id)).filter(Boolean);
+    let active = true;
+
+    if (playerIds.length === 0) {
+      setPlayerCoverageById({});
+      setCoverageLoading(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    setCoverageLoading(true);
+    setPlayerCoverageById({});
+
+    void apiService.getPlayerSequenceCoverage(playerIds).then((response) => {
+      if (!active) {
+        return;
+      }
+
+      const items = response.success ? response.data?.items || [] : [];
+      const nextCoverageByPlayerId: Record<string, any> = {};
+      items.forEach((item: any) => {
+        if (item?.player_id) {
+          nextCoverageByPlayerId[String(item.player_id)] = item;
+        }
+      });
+      setPlayerCoverageById(nextCoverageByPlayerId);
+    }).finally(() => {
+      if (active) {
+        setCoverageLoading(false);
+      }
+    });
+
+    return () => {
+      active = false;
+    };
+  }, [results]);
 
   const performSearch = async (searchQuery: string, searchFilters?: SearchFilters) => {
     const hasQuery = searchQuery && searchQuery.trim();
@@ -63,8 +108,24 @@ const SearchPage: React.FC = () => {
   };
 
   const handleResultSelect = (result: SearchResult) => {
-    console.log('Selected result:', result);
-    // Set the query to the selected result's title and perform search
+    if (result.type === 'player') {
+      // Map SearchResult to Player format
+      setSelectedPlayer({
+        id: result.id,
+        name: result.title,
+        position: result.metadata?.position || 'Unknown',
+        club: result.metadata?.club,
+        age: result.metadata?.age || 0,
+        nationality: result.metadata?.nationality || 'Unknown',
+        marketValue: '€0M',
+        goals: result.metadata?.goals || 0,
+        assists: result.metadata?.assists || 0,
+        rating: result.metadata?.rating || 0,
+        passAccuracy: result.metadata?.passAccuracy || 0,
+        image: result.image
+      });
+      return;
+    }
     setQuery(result.title);
     performSearch(result.title, filters);
   };
@@ -76,19 +137,24 @@ const SearchPage: React.FC = () => {
     setShowFilters(false);
   };
 
-  const handleSaveSearch = () => {
+  const handleSaveSearch = async () => {
     if (!saveName.trim()) return;
 
-    searchService.saveSearch({
-      name: saveName,
-      query,
-      filters,
-      type: 'all',
-    });
+    try {
+      await searchService.saveSearch({
+        name: saveName,
+        query,
+        filters,
+        type: 'all',
+      });
 
-    setSaveName('');
-    setShowSaveModal(false);
-    alert('Search saved successfully!');
+      setSaveName('');
+      setShowSaveModal(false);
+      alert('Search saved successfully!');
+    } catch (error) {
+      console.error('Failed to save search', error);
+      alert('Failed to save search. Please try again.');
+    }
   };
 
   const handleSearchSelect = (searchQuery: string, searchFilters?: SearchFilters) => {
@@ -146,6 +212,7 @@ const SearchPage: React.FC = () => {
 
   const ResultCard: React.FC<{ result: SearchResult }> = ({ result }) => {
     const Icon = result.type === 'player' ? SearchIcon : SearchIcon;
+    const coverage = result.type === 'player' ? playerCoverageById[String(result.id)] : null;
 
     return (
       <div
@@ -170,9 +237,12 @@ const SearchPage: React.FC = () => {
               <h3 className="text-white font-semibold group-hover:text-green-400 transition-colors">
                 {result.title}
               </h3>
-              <span className="text-xs text-slate-500 capitalize flex-shrink-0 ml-2">
-                {result.type}
-              </span>
+              <div className="flex flex-col items-end gap-2 ml-2">
+                <span className="text-xs text-slate-500 capitalize flex-shrink-0">
+                  {result.type}
+                </span>
+                {coverage && <SequenceCoverageBadge coverage={coverage} compact />}
+              </div>
             </div>
 
             {result.subtitle && (
@@ -202,6 +272,8 @@ const SearchPage: React.FC = () => {
   };
 
   const ResultListItem: React.FC<{ result: SearchResult }> = ({ result }) => {
+    const coverage = result.type === 'player' ? playerCoverageById[String(result.id)] : null;
+
     return (
       <div
         onClick={() => handleResultSelect(result)}
@@ -228,6 +300,11 @@ const SearchPage: React.FC = () => {
             {result.subtitle && (
               <p className="text-sm text-slate-400">{result.subtitle}</p>
             )}
+            {coverage && (
+              <div className="mt-2 inline-block">
+                <SequenceCoverageBadge coverage={coverage} compact />
+              </div>
+            )}
           </div>
 
           {result.relevance && result.relevance > 0 && (
@@ -239,6 +316,12 @@ const SearchPage: React.FC = () => {
       </div>
     );
   };
+
+  if (selectedPlayer) {
+    return <PlayerDetail player={selectedPlayer} onBack={() => setSelectedPlayer(null)} />;
+  }
+
+  const sequenceReadyCount = Object.values(playerCoverageById).filter((coverage: any) => coverage?.hasCoverage === true).length;
 
   return (
     <div className="space-y-6">
@@ -366,6 +449,8 @@ const SearchPage: React.FC = () => {
             <div className="text-sm text-slate-400">
               {total} result{total !== 1 ? 's' : ''} found
               {query && ` for "${query}"`}
+              {coverageLoading && <span className="ml-2">• checking player coverage...</span>}
+              {!coverageLoading && sequenceReadyCount > 0 && <span className="ml-2">• {sequenceReadyCount} sequence-ready players</span>}
             </div>
 
             <div className="flex items-center space-x-2">

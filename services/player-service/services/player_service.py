@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 class PlayerService:
     """Player service with caching and event publishing"""
 
+    LIST_CACHE_VERSION = "v2"
+    SEARCH_CACHE_VERSION = "v2"
+
     def __init__(
         self,
         repository: IPlayerRepository,
@@ -67,7 +70,10 @@ class PlayerService:
             filters = filters or {}
 
             # Create cache key from filters
-            cache_key = f"players:list:{json.dumps(filters, sort_keys=True)}:{limit}"
+            cache_key = (
+                f"players:list:{self.LIST_CACHE_VERSION}:"
+                f"{json.dumps(filters, sort_keys=True)}:{limit}"
+            )
             cached = await self.redis.get(cache_key)
 
             if cached:
@@ -94,7 +100,7 @@ class PlayerService:
         """Search players by name"""
         try:
             # Cache search results
-            cache_key = f"players:search:{query}:{limit}"
+            cache_key = f"players:search:{self.SEARCH_CACHE_VERSION}:{query}:{limit}"
             cached = await self.redis.get(cache_key)
 
             if cached:

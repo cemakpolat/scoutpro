@@ -1,61 +1,200 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
-  Brain, Play, Pause, Settings, Download, Upload,
-  BarChart3, Target, Zap, Activity, TrendingUp,
-  Database, Code, Cpu, Eye, RefreshCw, CheckCircle,
-  AlertTriangle, XCircle, Clock, Users, Star
+  Activity,
+  BarChart3,
+  Brain,
+  CheckCircle,
+  Clock,
+  Cpu,
+  Database,
+  Download,
+  Eye,
+  Play,
+  RefreshCw,
+  Settings,
+  Star,
+  TrendingUp,
+  XCircle,
 } from 'lucide-react';
-import { useApi } from '../hooks/useApi'; // Import useApi
-import apiService from '../services/api'; // Import apiService
-import { MLAlgorithm, MLDataset, MLExperiment } from '../types'; // Import new types
-import PotentialChart from './PotentialChart';
-import PerformancePrediction from './PerformancePrediction';
+import { useApi } from '../hooks/useApi';
+import apiService from '../services/api';
+import { MLAlgorithm, MLDataset, MLExperiment } from '../types';
 import { exportService } from '../services/exportService';
 
+type TrainingConfig = {
+  trainTestSplit: string;
+  crossValidation: string;
+  optimizationMetric: string;
+};
+
 const MLLaboratory: React.FC = () => {
-  const [selectedModel, setSelectedModel] = useState('potential');
   const [selectedAlgorithm, setSelectedAlgorithm] = useState<string>('');
   const [selectedDataset, setSelectedDataset] = useState<string>('');
   const [isTraining, setIsTraining] = useState(false);
   const [trainingProgress, setTrainingProgress] = useState(0);
-  // const [activeExperiment, setActiveExperiment] = useState(null); // Not used currently
+  const [trainingError, setTrainingError] = useState<string | null>(null);
+  const [trainingResult, setTrainingResult] = useState<MLExperiment | null>(null);
+  const [expandedExperimentId, setExpandedExperimentId] = useState<string | null>(null);
+  const [trainingConfig, setTrainingConfig] = useState<TrainingConfig>({
+    trainTestSplit: '80/20',
+    crossValidation: '5-Fold',
+    optimizationMetric: 'Accuracy',
+  });
 
-  // Fetch data using useApi
-  const { data: algorithms, loading: algorithmsLoading, error: algorithmsError } = useApi<MLAlgorithm[]>(
+  const {
+    data: algorithms,
+    loading: algorithmsLoading,
+    error: algorithmsError,
+    refetch: refetchAlgorithms,
+  } = useApi<MLAlgorithm[]>(
     () => apiService.getMLAlgorithms(), []
   );
-  const { data: datasets, loading: datasetsLoading, error: datasetsError } = useApi<MLDataset[]>(
+  const {
+    data: datasets,
+    loading: datasetsLoading,
+    error: datasetsError,
+    refetch: refetchDatasets,
+  } = useApi<MLDataset[]>(
     () => apiService.getMLDatasets(), []
   );
-  const { data: experiments, loading: experimentsLoading, error: experimentsError } = useApi<MLExperiment[]>(
+  const {
+    data: experiments,
+    loading: experimentsLoading,
+    error: experimentsError,
+    refetch: refetchExperiments,
+  } = useApi<MLExperiment[]>(
     () => apiService.getMLExperiments(), []
   );
 
-  const models = [
-    { id: 'potential', name: 'Player Potential', icon: Star },
-    { id: 'performance', name: 'Performance Prediction', icon: Activity },
-    { id: 'injury', name: 'Injury Risk Analysis', icon: Target },
-    { id: 'market', name: 'Market Value Prediction', icon: TrendingUp },
-  ];
+  useEffect(() => {
+    if (!selectedAlgorithm && algorithms?.length) {
+      setSelectedAlgorithm(algorithms[0].id);
+    }
+  }, [algorithms, selectedAlgorithm]);
 
-  const startTraining = () => {
+  useEffect(() => {
+    if (!selectedDataset && datasets?.length) {
+      setSelectedDataset(datasets[0].id);
+    }
+  }, [datasets, selectedDataset]);
+
+  const startTraining = async () => {
+    if (!selectedAlgorithm || !selectedDataset) {
+      setTrainingError('Select an algorithm and dataset before starting training.');
+      return;
+    }
+
     setIsTraining(true);
-    setTrainingProgress(0);
-    
-    const interval = setInterval(() => {
-      setTrainingProgress(prev => {
-        if (prev >= 100) {
-          clearInterval(interval);
-          setIsTraining(false);
-          return 100;
-        }
-        return prev + Math.random() * 10;
-      });
-    }, 500);
+    setTrainingProgress(15);
+    setTrainingError(null);
+    setTrainingResult(null);
+
+    try {
+      setTrainingProgress(45);
+      const response = await apiService.trainModel(selectedAlgorithm, selectedDataset, trainingConfig);
+
+      if (!response.success) {
+        throw new Error(response.error.message);
+      }
+
+      setTrainingProgress(80);
+
+      const experiment = (response.data?.experiment || response.data) as MLExperiment | undefined;
+      if (experiment) {
+        setTrainingResult(experiment);
+        setExpandedExperimentId(experiment.id);
+      }
+
+      await refetchExperiments();
+      setTrainingProgress(100);
+    } catch (error) {
+      setTrainingError(error instanceof Error ? error.message : 'Training failed');
+      setTrainingProgress(0);
+    } finally {
+      setIsTraining(false);
+    }
   };
 
-  const selectedAlgorithmData = algorithms?.find(alg => alg.id === selectedAlgorithm);
-  const selectedDatasetData = datasets?.find(ds => ds.id === selectedDataset);
+  const selectedAlgorithmData = algorithms?.find((algorithm) => algorithm.id === selectedAlgorithm) || null;
+  const selectedDatasetData = datasets?.find((dataset) => dataset.id === selectedDataset) || null;
+  const latestExperiment = trainingResult || experiments?.[0] || null;
+
+  const completedExperiments = useMemo(
+    () => (experiments || []).filter((experiment) => experiment.status === 'completed'),
+    [experiments],
+  );
+
+  const averageAccuracy = useMemo(() => {
+    if (completedExperiments.length === 0) {
+      return null;
+    }
+
+    const total = completedExperiments.reduce((sum, experiment) => sum + (experiment.accuracy || 0), 0);
+    return total / completedExperiments.length;
+  }, [completedExperiments]);
+
+  const backendInsights = useMemo(() => {
+    if (latestExperiment?.insights?.length) {
+      return latestExperiment.insights;
+    }
+
+    const insights = [];
+
+    if (selectedAlgorithmData?.bestFor?.length) {
+      insights.push(`${selectedAlgorithmData.name} is strongest for ${selectedAlgorithmData.bestFor.join(', ')}.`);
+    }
+
+    if (selectedDatasetData) {
+      insights.push(
+        `${selectedDatasetData.name} exposes ${selectedDatasetData.features} features across ${selectedDatasetData.records} records.`
+      );
+      insights.push(`Dataset freshness: ${selectedDatasetData.lastUpdated}.`);
+    }
+
+    return insights;
+  }, [latestExperiment, selectedAlgorithmData, selectedDatasetData]);
+
+  const monitoringCards = [
+    {
+      label: 'Available Models',
+      value: algorithms?.length ?? 0,
+      detail: selectedAlgorithmData ? `${selectedAlgorithmData.name} selected` : 'Awaiting catalog',
+      icon: Brain,
+      accent: 'text-green-400',
+    },
+    {
+      label: 'Datasets Online',
+      value: datasets?.length ?? 0,
+      detail: selectedDatasetData ? `${selectedDatasetData.quality}% quality on current dataset` : 'Awaiting dataset scan',
+      icon: Database,
+      accent: 'text-blue-400',
+    },
+    {
+      label: 'Experiments Logged',
+      value: experiments?.length ?? 0,
+      detail: `${completedExperiments.length} completed`,
+      icon: Activity,
+      accent: 'text-yellow-400',
+    },
+    {
+      label: 'Average Accuracy',
+      value: averageAccuracy !== null ? `${averageAccuracy.toFixed(1)}%` : '-',
+      detail: latestExperiment ? `Latest runtime ${latestExperiment.runtime}` : 'No completed runs yet',
+      icon: Eye,
+      accent: 'text-purple-400',
+    },
+  ];
+
+  const handleRefresh = async () => {
+    await Promise.all([refetchAlgorithms(), refetchDatasets(), refetchExperiments()]);
+  };
+
+  const handleTrainingConfigChange = (key: keyof TrainingConfig, value: string) => {
+    setTrainingConfig((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  };
 
   const handleExport = async () => {
     if (!experiments || experiments.length === 0) {
@@ -99,9 +238,12 @@ const MLLaboratory: React.FC = () => {
           ML Laboratory
         </h1>
         <div className="flex items-center space-x-4">
-          <button className="flex items-center space-x-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors">
-            <Upload className="h-4 w-4" />
-            <span>Import Dataset</span>
+          <button
+            onClick={handleRefresh}
+            className="flex items-center space-x-2 px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
+          >
+            <RefreshCw className="h-4 w-4" />
+            <span>Refresh Catalog</span>
           </button>
           <button onClick={handleExport} className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors">
             <Download className="h-4 w-4" />
@@ -227,7 +369,11 @@ const MLLaboratory: React.FC = () => {
                 <div className="space-y-3">
                   <div>
                     <label className="block text-sm text-slate-400 mb-1">Train/Test Split</label>
-                    <select className="w-full px-3 py-2 bg-slate-600 rounded text-sm">
+                    <select
+                      value={trainingConfig.trainTestSplit}
+                      onChange={(event) => handleTrainingConfigChange('trainTestSplit', event.target.value)}
+                      className="w-full px-3 py-2 bg-slate-600 rounded text-sm"
+                    >
                       <option>80/20</option>
                       <option>70/30</option>
                       <option>90/10</option>
@@ -235,7 +381,11 @@ const MLLaboratory: React.FC = () => {
                   </div>
                   <div>
                     <label className="block text-sm text-slate-400 mb-1">Cross Validation</label>
-                    <select className="w-full px-3 py-2 bg-slate-600 rounded text-sm">
+                    <select
+                      value={trainingConfig.crossValidation}
+                      onChange={(event) => handleTrainingConfigChange('crossValidation', event.target.value)}
+                      className="w-full px-3 py-2 bg-slate-600 rounded text-sm"
+                    >
                       <option>5-Fold</option>
                       <option>10-Fold</option>
                       <option>Leave-One-Out</option>
@@ -243,7 +393,11 @@ const MLLaboratory: React.FC = () => {
                   </div>
                   <div>
                     <label className="block text-sm text-slate-400 mb-1">Optimization Metric</label>
-                    <select className="w-full px-3 py-2 bg-slate-600 rounded text-sm">
+                    <select
+                      value={trainingConfig.optimizationMetric}
+                      onChange={(event) => handleTrainingConfigChange('optimizationMetric', event.target.value)}
+                      className="w-full px-3 py-2 bg-slate-600 rounded text-sm"
+                    >
                       <option>Accuracy</option>
                       <option>F1-Score</option>
                       <option>ROC-AUC</option>
@@ -255,13 +409,13 @@ const MLLaboratory: React.FC = () => {
 
               <button
                 onClick={startTraining}
-                disabled={isTraining}
+                disabled={isTraining || !selectedAlgorithmData || !selectedDatasetData}
                 className="w-full flex items-center justify-center space-x-2 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 rounded-lg font-semibold transition-colors"
               >
                 {isTraining ? (
                   <>
                     <RefreshCw className="h-4 w-4 animate-spin" />
-                    <span>Training... {trainingProgress.toFixed(1)}%</span>
+                    <span>Training... {trainingProgress.toFixed(0)}%</span>
                   </>
                 ) : (
                   <>
@@ -271,12 +425,22 @@ const MLLaboratory: React.FC = () => {
                 )}
               </button>
 
-              {isTraining && (
+              {(isTraining || trainingProgress === 100) && (
                 <div className="w-full bg-slate-700 rounded-full h-2">
                   <div
                     className="bg-purple-400 h-2 rounded-full transition-all duration-500"
                     style={{ width: `${trainingProgress}%` }}
                   ></div>
+                </div>
+              )}
+
+              {trainingError && <div className="text-sm text-red-400">{trainingError}</div>}
+              {trainingResult && (
+                <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-lg text-sm">
+                  <div className="font-semibold text-green-300">Latest Run Completed</div>
+                  <div className="text-slate-300 mt-1">
+                    {trainingResult.name} finished at {trainingResult.accuracy}% accuracy.
+                  </div>
                 </div>
               )}
             </div>
@@ -292,7 +456,10 @@ const MLLaboratory: React.FC = () => {
         </h3>
         {experimentsLoading && <p className="text-slate-400">Loading experiments...</p>}
         {experimentsError && <p className="text-red-400">Error: {experimentsError}</p>}
-        {!experimentsLoading && !experimentsError && experiments && (
+        {!experimentsLoading && !experimentsError && experiments && experiments.length === 0 && (
+          <p className="text-slate-400">No experiments have been created yet.</p>
+        )}
+        {!experimentsLoading && !experimentsError && experiments && experiments.length > 0 && (
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>
@@ -303,55 +470,78 @@ const MLLaboratory: React.FC = () => {
                   <th className="text-left py-3 px-2">Status</th>
                   <th className="text-left py-3 px-2">Accuracy</th>
                   <th className="text-left py-3 px-2">Runtime</th>
-                  <th className="text-left py-3 px-2">Actions</th>
+                  <th className="text-left py-3 px-2">Details</th>
                 </tr>
               </thead>
               <tbody>
-                {experiments.map((experiment) => (
-                  <tr key={experiment.id} className="border-b border-slate-700 hover:bg-slate-700">
-                    <td className="py-3 px-2">
-                      <div>
-                        <div className="font-semibold">{experiment.name}</div>
-                        <div className="text-xs text-slate-400">{experiment.created}</div>
-                      </div>
-                    </td>
-                    <td className="py-3 px-2">{experiment.algorithm}</td>
-                    <td className="py-3 px-2 text-sm">{experiment.dataset}</td>
-                    <td className="py-3 px-2">
-                      <div className="flex items-center space-x-2">
-                        {experiment.status === 'completed' && <CheckCircle className="h-4 w-4 text-green-400" />}
-                        {experiment.status === 'running' && <RefreshCw className="h-4 w-4 text-blue-400 animate-spin" />}
-                        {experiment.status === 'failed' && <XCircle className="h-4 w-4 text-red-400" />}
-                        <span className={`text-sm capitalize ${
-                          experiment.status === 'completed' ? 'text-green-400' :
-                          experiment.status === 'running' ? 'text-blue-400' : 'text-red-400'
-                        }`}>
-                          {experiment.status}
-                        </span>
-                      </div>
-                    </td>
-                    <td className="py-3 px-2">
-                      {experiment.accuracy > 0 ? (
-                        <span className="font-bold text-green-400">{experiment.accuracy}%</span>
-                      ) : (
-                        <span className="text-slate-500">-</span>
-                      )}
-                    </td>
-                    <td className="py-3 px-2 text-sm text-slate-400">{experiment.runtime}</td>
-                    <td className="py-3 px-2">
-                      <div className="flex space-x-2">
-                        <button className="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs transition-colors">
-                          View
-                        </button>
-                        {experiment.status === 'completed' && (
-                          <button className="px-2 py-1 bg-green-600 hover:bg-green-700 rounded text-xs transition-colors">
-                            Deploy
+                {experiments.map((experiment) => {
+                  const isExpanded = expandedExperimentId === experiment.id;
+
+                  return (
+                    <React.Fragment key={experiment.id}>
+                      <tr className="border-b border-slate-700 hover:bg-slate-700/40">
+                        <td className="py-3 px-2">
+                          <div>
+                            <div className="font-semibold">{experiment.name}</div>
+                            <div className="text-xs text-slate-400">{experiment.created}</div>
+                          </div>
+                        </td>
+                        <td className="py-3 px-2">{experiment.algorithm}</td>
+                        <td className="py-3 px-2 text-sm">{experiment.dataset}</td>
+                        <td className="py-3 px-2">
+                          <div className="flex items-center space-x-2">
+                            {experiment.status === 'completed' && <CheckCircle className="h-4 w-4 text-green-400" />}
+                            {experiment.status === 'running' && <RefreshCw className="h-4 w-4 text-blue-400 animate-spin" />}
+                            {experiment.status === 'failed' && <XCircle className="h-4 w-4 text-red-400" />}
+                            <span className={`text-sm capitalize ${
+                              experiment.status === 'completed' ? 'text-green-400' :
+                              experiment.status === 'running' ? 'text-blue-400' : 'text-red-400'
+                            }`}>
+                              {experiment.status}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="py-3 px-2">
+                          {experiment.accuracy > 0 ? (
+                            <span className="font-bold text-green-400">{experiment.accuracy}%</span>
+                          ) : (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-2 text-sm text-slate-400">{experiment.runtime}</td>
+                        <td className="py-3 px-2">
+                          <button
+                            onClick={() => setExpandedExperimentId(isExpanded ? null : experiment.id)}
+                            className="px-2 py-1 bg-blue-600 hover:bg-blue-700 rounded text-xs transition-colors"
+                          >
+                            {isExpanded ? 'Hide' : 'View'}
                           </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="border-b border-slate-700 bg-slate-900/40">
+                          <td className="px-4 py-4" colSpan={7}>
+                            <div className="space-y-2">
+                              <div className="text-sm font-semibold text-white">Backend Insights</div>
+                              {experiment.insights.length > 0 ? (
+                                <ul className="space-y-2 text-sm text-slate-300">
+                                  {experiment.insights.map((insight, index) => (
+                                    <li key={`${experiment.id}-${index}`} className="flex items-start space-x-2">
+                                      <CheckCircle className="h-4 w-4 text-green-400 mt-0.5" />
+                                      <span>{insight}</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <div className="text-sm text-slate-400">No experiment insights were returned for this run.</div>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -393,90 +583,69 @@ const MLLaboratory: React.FC = () => {
 
         <div className="bg-slate-800 rounded-xl p-6">
           <h3 className="text-xl font-semibold mb-6 flex items-center">
-            <Target className="h-6 w-6 mr-2 text-purple-400" />
-            Feature Importance Analysis
+            <TrendingUp className="h-6 w-6 mr-2 text-purple-400" />
+            Backend Training Insights
           </h3>
-          {/* This section still uses static data as there's no specific API for feature importance */}
           <div className="space-y-4">
-            {[
-              { feature: 'Goals per Game', importance: 0.23, impact: 'High' },
-              { feature: 'Pass Accuracy', importance: 0.19, impact: 'High' },
-              { feature: 'Age', importance: 0.15, impact: 'Medium' },
-              { feature: 'League Coefficient', importance: 0.12, impact: 'Medium' },
-              { feature: 'Position', importance: 0.10, impact: 'Medium' },
-              { feature: 'Contract Length', importance: 0.08, impact: 'Low' },
-              { feature: 'Height', importance: 0.05, impact: 'Low' },
-              { feature: 'Nationality', importance: 0.04, impact: 'Low' },
-            ].map((item, index) => (
-              <div key={index} className="space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-sm">{item.feature}</span>
-                  <div className="flex items-center space-x-2">
-                    <span className="text-sm font-bold">{(item.importance * 100).toFixed(1)}%</span>
-                    <span className={`px-2 py-1 rounded text-xs ${
-                      item.impact === 'High' ? 'bg-red-600 text-red-100' :
-                      item.impact === 'Medium' ? 'bg-yellow-600 text-yellow-100' :
-                      'bg-green-600 text-green-100'
-                    }`}>
-                      {item.impact}
-                    </span>
-                  </div>
-                </div>
-                <div className="w-full bg-slate-700 rounded-full h-2">
-                  <div
-                    className="bg-purple-400 h-2 rounded-full"
-                    style={{ width: `${item.importance * 100}%` }}
-                  ></div>
+            {selectedAlgorithmData && (
+              <div className="p-4 bg-slate-700 rounded-lg">
+                <div className="text-sm text-slate-400 mb-1">Selected Algorithm</div>
+                <div className="font-semibold text-white">{selectedAlgorithmData.name}</div>
+                <div className="text-sm text-slate-400 mt-1">
+                  Best for: {selectedAlgorithmData.bestFor.join(', ') || 'General modelling'}
                 </div>
               </div>
-            ))}
+            )}
+
+            {selectedDatasetData && (
+              <div className="p-4 bg-slate-700 rounded-lg">
+                <div className="text-sm text-slate-400 mb-1">Selected Dataset</div>
+                <div className="font-semibold text-white">{selectedDatasetData.name}</div>
+                <div className="text-sm text-slate-400 mt-1">
+                  {selectedDatasetData.records} records, {selectedDatasetData.features} features, updated {selectedDatasetData.lastUpdated}
+                </div>
+              </div>
+            )}
+
+            <div className="p-4 bg-slate-700 rounded-lg">
+              <div className="text-sm text-slate-400 mb-3">Latest Backend Feedback</div>
+              {backendInsights.length > 0 ? (
+                <div className="space-y-2">
+                  {backendInsights.map((insight, index) => (
+                    <div key={`${insight}-${index}`} className="flex items-start space-x-2 text-sm text-slate-200">
+                      <Star className="h-4 w-4 text-yellow-400 mt-0.5" />
+                      <span>{insight}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-slate-400">Run a training job to populate backend experiment insights.</div>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Real-time Model Monitoring */}
       <div className="bg-slate-800 rounded-xl p-6">
         <h3 className="text-xl font-semibold mb-6 flex items-center">
           <Eye className="h-6 w-6 mr-2 text-green-400" />
-          Real-time Model Monitoring
+          Backend Model Monitoring
         </h3>
-        {/* This section still uses static data as there's no specific API for model monitoring */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <div className="p-4 bg-slate-700 rounded-lg">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-slate-400">Active Models</span>
-              <Activity className="h-4 w-4 text-green-400" />
-            </div>
-            <div className="text-2xl font-bold text-white">7</div>
-            <div className="text-xs text-green-400">All healthy</div>
-          </div>
-          
-          <div className="p-4 bg-slate-700 rounded-lg">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-slate-400">Predictions/Hour</span>
-              <TrendingUp className="h-4 w-4 text-blue-400" />
-            </div>
-            <div className="text-2xl font-bold text-white">2.4K</div>
-            <div className="text-xs text-blue-400">+12% from yesterday</div>
-          </div>
-          
-          <div className="p-4 bg-slate-700 rounded-lg">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-slate-400">Avg Response Time</span>
-              <Clock className="h-4 w-4 text-yellow-400" />
-            </div>
-            <div className="text-2xl font-bold text-white">45ms</div>
-            <div className="text-xs text-yellow-400">Within SLA</div>
-          </div>
-          
-          <div className="p-4 bg-slate-700 rounded-lg">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm text-slate-400">Model Accuracy</span>
-              <Star className="h-4 w-4 text-purple-400" />
-            </div>
-            <div className="text-2xl font-bold text-white">94.7%</div>
-            <div className="text-xs text-purple-400">Above baseline</div>
-          </div>
+          {monitoringCards.map((card) => {
+            const Icon = card.icon;
+
+            return (
+              <div key={card.label} className="p-4 bg-slate-700 rounded-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm text-slate-400">{card.label}</span>
+                  <Icon className={`h-4 w-4 ${card.accent}`} />
+                </div>
+                <div className="text-2xl font-bold text-white">{card.value}</div>
+                <div className={`text-xs ${card.accent}`}>{card.detail}</div>
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>

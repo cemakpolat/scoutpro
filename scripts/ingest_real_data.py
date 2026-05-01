@@ -35,7 +35,7 @@ def parse_opta_json(filepath):
         print(f"Error parse_opta_json: {e}")
         return []
 
-def send_to_endpoints(data, endpoint_url, match_id="3946949"):
+def send_to_endpoints(data, endpoint_url, match_id="3946949", source="opta"):
     # Fix the endpoint URL if it uses placeholder format
     if "{match_id}" in endpoint_url:
         endpoint_url = endpoint_url.replace("{match_id}", str(match_id))
@@ -48,7 +48,7 @@ def send_to_endpoints(data, endpoint_url, match_id="3946949"):
     for i in range(0, len(data), chunk_size):
         chunk = data[i:i + chunk_size]
         try:
-            response = requests.post(endpoint_url, json={"events": chunk})
+            response = requests.post(endpoint_url, json={"events": chunk, "source": source})
             print(f"Chunk {i}-{i+len(chunk)}: Status {response.status_code}")
         except Exception as e:
             print(f"Failed to send to {endpoint_url}: {e}")
@@ -69,10 +69,10 @@ def main():
         
     if args.source == "statsbomb":
         data = parse_statsbomb_csv(args.filepath)
-        send_to_endpoints(data, args.endpoint, args.match_id)
+        send_to_endpoints(data, args.endpoint, args.match_id, args.source)
     elif args.source == "opta":
         data = parse_opta_json(args.filepath)
-        send_to_endpoints(data, args.endpoint, args.match_id)
+        send_to_endpoints(data, args.endpoint, args.match_id, args.source)
 
 if __name__ == "__main__":
     main()

@@ -1,141 +1,288 @@
-import React, { useState } from 'react';
-import { FileText, Download, Share2, BookTemplate as Template, Wand2, BarChart3, Users, Target, TrendingUp, Eye, Loader2, CheckCircle } from 'lucide-react';
-import { exportService } from '../services/exportService';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  FileText,
+  Download,
+  BookTemplate as Template,
+  Wand2,
+  BarChart3,
+  Users,
+  Target,
+  TrendingUp,
+  Eye,
+  Loader2,
+  CheckCircle,
+  RefreshCw,
+  Clock,
+} from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import { useData } from '../context/DataContext';
 import apiService from '../services/api';
+import { buildMatchCatalog, filterMatchCatalog, formatMatchLabel, getAvailableLeagues, getAvailableYears } from '../utils/matchFilters';
+
+type TemplateConfig = {
+  id: 'player-analysis' | 'team-tactical' | 'market-intelligence' | 'match-analysis';
+  name: string;
+  description: string;
+  sections: string[];
+  icon: React.ComponentType<{ className?: string }>;
+  backendMode: 'direct' | 'queued';
+};
+
+const templates: TemplateConfig[] = [
+  {
+    id: 'player-analysis',
+    name: 'Player Analysis',
+    description: 'Comprehensive individual player evaluation',
+    sections: ['Performance Metrics', 'Strengths & Weaknesses', 'Market Value', 'Recommendations'],
+    icon: Users,
+    backendMode: 'direct',
+  },
+  {
+    id: 'team-tactical',
+    name: 'Team Tactical Report',
+    description: 'In-depth tactical analysis of team performance',
+    sections: ['Formation Analysis', 'Playing Style', 'Key Players', 'Tactical Recommendations'],
+    icon: Target,
+    backendMode: 'direct',
+  },
+  {
+    id: 'market-intelligence',
+    name: 'Market Intelligence',
+    description: 'Transfer market insights and valuations',
+    sections: ['Market Trends', 'Player Valuations', 'Transfer Predictions', 'Investment Opportunities'],
+    icon: TrendingUp,
+    backendMode: 'queued',
+  },
+  {
+    id: 'match-analysis',
+    name: 'Match Analysis',
+    description: 'Detailed post-match performance breakdown',
+    sections: ['Key Events', 'Player Ratings', 'Tactical Analysis', 'Performance Insights'],
+    icon: BarChart3,
+    backendMode: 'direct',
+  },
+];
+
+const buildDefaultTitle = (templateId: TemplateConfig['id']) => {
+  const template = templates.find((item) => item.id === templateId);
+  return template ? `${template.name} Report` : 'ScoutPro Report';
+};
+
+const downloadBlob = (blob: Blob, fileName: string) => {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = fileName;
+  anchor.click();
+  URL.revokeObjectURL(url);
+};
+
+const formatDateTime = (value?: string) => {
+  if (!value) return 'Pending';
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+};
 
 const ReportBuilder: React.FC = () => {
-  const [selectedTemplate, setSelectedTemplate] = useState('player-analysis');
-  const [reportTitle, setReportTitle] = useState('Player Analysis Report');
+  const [selectedTemplate, setSelectedTemplate] = useState<TemplateConfig['id']>('player-analysis');
+  const [reportTitle, setReportTitle] = useState(buildDefaultTitle('player-analysis'));
   const [targetPlayerId, setTargetPlayerId] = useState('');
+  const [targetTeamId, setTargetTeamId] = useState('');
+  const [targetMatchId, setTargetMatchId] = useState('');
+  const [selectedMatchYear, setSelectedMatchYear] = useState('all');
+  const [selectedMatchLeague, setSelectedMatchLeague] = useState('all');
   const [timePeriod, setTimePeriod] = useState('Current Season');
   const [comparisonPlayers, setComparisonPlayers] = useState<string[]>([]);
   const [generating, setGenerating] = useState(false);
   const [generatedMessage, setGeneratedMessage] = useState('');
 
-  const { players, teams } = useData();
+  const { players, teams, matches } = useData();
   const { data: reportList, refetch: refetchReports } = useApi(
     () => apiService.listReports(), []
   );
 
-  const templates = [
-    {
-      id: 'player-analysis',
-      name: 'Player Analysis',
-      description: 'Comprehensive individual player evaluation',
-      sections: ['Performance Metrics', 'Strengths & Weaknesses', 'Market Value', 'Recommendations'],
-      icon: Users,
-      premium: false,
-    },
-    {
-      id: 'team-tactical',
-      name: 'Team Tactical Report',
-      description: 'In-depth tactical analysis of team performance',
-      sections: ['Formation Analysis', 'Playing Style', 'Key Players', 'Tactical Recommendations'],
-      icon: Target,
-      premium: false,
-    },
-    {
-      id: 'market-intelligence',
-      name: 'Market Intelligence',
-      description: 'Transfer market insights and valuations',
-      sections: ['Market Trends', 'Player Valuations', 'Transfer Predictions', 'Investment Opportunities'],
-      icon: TrendingUp,
-      premium: true,
-    },
-    {
-      id: 'match-analysis',
-      name: 'Match Analysis',
-      description: 'Detailed post-match performance breakdown',
-      sections: ['Key Events', 'Player Ratings', 'Tactical Analysis', 'Performance Insights'],
-      icon: BarChart3,
-      premium: false,
-    },
-  ];
+  const selectedTemplateConfig = templates.find((template) => template.id === selectedTemplate) || templates[0];
+  const comparisonOptions = players.slice(0, 6);
+  const recentReports = (reportList || []).slice(0, 5);
+  const processingReports = recentReports.filter((report: any) => report.status && report.status !== 'completed');
+  const reportMatchCatalog = useMemo(() => buildMatchCatalog(matches), [matches]);
+  const availableMatchYears = useMemo(() => getAvailableYears(reportMatchCatalog), [reportMatchCatalog]);
+  const availableMatchLeagues = useMemo(
+    () => getAvailableLeagues(reportMatchCatalog, selectedMatchYear),
+    [reportMatchCatalog, selectedMatchYear],
+  );
+  const filteredReportMatches = useMemo(
+    () => filterMatchCatalog(reportMatchCatalog, { year: selectedMatchYear, league: selectedMatchLeague }).map((entry) => entry.source),
+    [reportMatchCatalog, selectedMatchYear, selectedMatchLeague],
+  );
 
-  const reportSections = [
-    {
-      id: 'executive-summary',
-      title: 'Executive Summary',
-      content: 'AI-generated overview of key findings and recommendations',
-      status: 'completed',
-    },
-    {
-      id: 'performance-metrics',
-      title: 'Performance Metrics',
-      content: 'Statistical analysis and performance indicators',
-      status: 'completed',
-    },
-    {
-      id: 'tactical-analysis',
-      title: 'Tactical Analysis',
-      content: 'Playing style, positioning, and tactical contributions',
-      status: 'in-progress',
-    },
-    {
-      id: 'market-valuation',
-      title: 'Market Valuation',
-      content: 'Current market value and transfer predictions',
-      status: 'pending',
-    },
-    {
-      id: 'recommendations',
-      title: 'Recommendations',
-      content: 'Strategic recommendations and next steps',
-      status: 'pending',
-    },
-  ];
+  const selectedPlayer = players.find((player: any) => String(player.id) === String(targetPlayerId));
+  const selectedTeam = teams.find((team: any) => String(team.id) === String(targetTeamId));
+  const selectedMatch = filteredReportMatches.find((match: any) => String(match.id) === String(targetMatchId));
 
-  const handleExport = async () => {
+  useEffect(() => {
+    if (selectedMatchYear !== 'all' && !availableMatchYears.includes(selectedMatchYear)) {
+      setSelectedMatchYear('all');
+    }
+  }, [availableMatchYears, selectedMatchYear]);
+
+  useEffect(() => {
+    if (selectedMatchLeague !== 'all' && !availableMatchLeagues.includes(selectedMatchLeague)) {
+      setSelectedMatchLeague('all');
+    }
+  }, [availableMatchLeagues, selectedMatchLeague]);
+
+  useEffect(() => {
+    if (selectedTemplate !== 'match-analysis') {
+      return;
+    }
+
+    if (!targetMatchId && filteredReportMatches.length > 0) {
+      setTargetMatchId(String(filteredReportMatches[0].id));
+      return;
+    }
+
+    if (targetMatchId && !filteredReportMatches.some((match: any) => String(match.id) === String(targetMatchId))) {
+      setTargetMatchId(filteredReportMatches.length > 0 ? String(filteredReportMatches[0].id) : '');
+    }
+  }, [filteredReportMatches, selectedTemplate, targetMatchId]);
+
+  const reportRequest = useMemo(() => {
+    switch (selectedTemplate) {
+      case 'player-analysis':
+        return {
+          type: 'player',
+          entityId: String(targetPlayerId || players[0]?.id || ''),
+          entityLabel: selectedPlayer ? selectedPlayer.name : (players[0]?.name || 'No player selected'),
+        };
+      case 'team-tactical':
+        return {
+          type: 'team',
+          entityId: String(targetTeamId || teams[0]?.id || ''),
+          entityLabel: selectedTeam ? selectedTeam.name : (teams[0]?.name || 'No team selected'),
+        };
+      case 'match-analysis':
+        return {
+          type: 'match',
+          entityId: String(targetMatchId || filteredReportMatches[0]?.id || ''),
+          entityLabel: selectedMatch
+            ? `${selectedMatch.homeTeam} vs ${selectedMatch.awayTeam}`
+            : (filteredReportMatches[0] ? `${filteredReportMatches[0].homeTeam} vs ${filteredReportMatches[0].awayTeam}` : 'No match selected'),
+        };
+      default:
+        return {
+          type: 'market',
+          entityId: 'overview',
+          entityLabel: 'Global market overview',
+        };
+    }
+  }, [selectedTemplate, targetPlayerId, targetTeamId, targetMatchId, players, teams, filteredReportMatches, selectedPlayer, selectedTeam, selectedMatch]);
+
+  useEffect(() => {
+    if (processingReports.length === 0) {
+      return undefined;
+    }
+
+    const intervalId = window.setInterval(() => {
+      refetchReports();
+    }, 2500);
+
+    return () => window.clearInterval(intervalId);
+  }, [processingReports.length, refetchReports]);
+
+  const handleTemplateChange = (templateId: TemplateConfig['id']) => {
+    setSelectedTemplate(templateId);
+    setReportTitle(buildDefaultTitle(templateId));
+    setGeneratedMessage('');
+  };
+
+  const handleDownloadRecent = async (reportId: string) => {
+    try {
+      const blob = await apiService.downloadReport(reportId);
+      downloadBlob(blob, `report-${reportId}.pdf`);
+    } catch (error) {
+      console.error('Download report error:', error);
+      setGeneratedMessage('Could not download the selected backend report.');
+    }
+  };
+
+  const handleQueueReport = async () => {
+    if (!reportRequest.entityId) {
+      setGeneratedMessage('Select a valid entity before queuing a report.');
+      return;
+    }
+
     setGenerating(true);
     setGeneratedMessage('');
+
     try {
-      let blob: Blob;
-      const playerId = targetPlayerId || players[0]?.id;
-      if (selectedTemplate === 'player-analysis' && playerId) {
-        blob = await apiService.generatePlayerReport(String(playerId));
-      } else if (selectedTemplate === 'team-tactical' && teams.length > 0) {
-        blob = await apiService.generateTeamReport(String(teams[0].id));
-      } else if (selectedTemplate === 'match-analysis') {
-        // Use async report generation
-        const res = await apiService.generateAsyncReport('match', 'latest', 'pdf');
-        if (res.success && res.data?.job_id) {
-          setGeneratedMessage(`Report job ${res.data.job_id} started. It will be ready shortly.`);
-          refetchReports();
-          setGenerating(false);
-          return;
-        }
-        blob = new Blob(['Report generation initiated'], { type: 'text/plain' });
-      } else {
-        // Fallback to client-side export
-        const exportData = reportSections.map(section => ({
-          Section: section.title,
-          Status: section.status,
-          Content: section.content,
-        }));
-        await exportService.export({
-          format: 'pdf',
-          fileName: `${reportTitle.replace(/\s+/g, '_')}_${Date.now()}.pdf`,
-          data: exportData,
-          header: reportTitle,
-          branding: { companyName: 'ScoutPro', colors: { primary: '#10b981' } },
-        });
-        setGeneratedMessage('Report exported successfully!');
-        setGenerating(false);
+      const response = await apiService.generateAsyncReport(reportRequest.type, reportRequest.entityId, 'pdf', {
+        title: reportTitle,
+        template: selectedTemplate,
+        entity_label: reportRequest.entityLabel,
+        time_period: timePeriod,
+        comparison_players: comparisonPlayers,
+      });
+      if (response.success && response.data?.job_id) {
+        setGeneratedMessage(`Backend report job ${response.data.job_id} started for ${reportRequest.entityLabel}.`);
+        refetchReports();
         return;
       }
-      // Download the blob
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${reportTitle.replace(/\s+/g, '_')}_${Date.now()}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
-      setGeneratedMessage('PDF downloaded successfully!');
+
+      setGeneratedMessage('Backend report job could not be created.');
     } catch (error) {
-      console.error('Export error:', error);
-      setGeneratedMessage('Export failed. Please try again.');
+      console.error('Queue report error:', error);
+      setGeneratedMessage('Backend report job failed to start.');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const handleDeleteRecent = async (reportId: string) => {
+    try {
+      const response = await apiService.deleteReport(reportId);
+      if (!response.success) {
+        throw new Error(response.error.message);
+      }
+
+      setGeneratedMessage(`Deleted backend report ${reportId}.`);
+      await refetchReports();
+    } catch (error) {
+      console.error('Delete report error:', error);
+      setGeneratedMessage('Could not delete the selected backend report.');
+    }
+  };
+
+  const handleExport = async () => {
+    if (!reportRequest.entityId) {
+      setGeneratedMessage('Select a valid entity before exporting.');
+      return;
+    }
+
+    setGenerating(true);
+    setGeneratedMessage('');
+
+    try {
+      if (selectedTemplate === 'market-intelligence') {
+        await handleQueueReport();
+        return;
+      }
+
+      let blob: Blob;
+      if (selectedTemplate === 'player-analysis') {
+        blob = await apiService.generatePlayerReport(reportRequest.entityId);
+      } else if (selectedTemplate === 'team-tactical') {
+        blob = await apiService.generateTeamReport(reportRequest.entityId);
+      } else {
+        blob = await apiService.generateMatchReport(reportRequest.entityId);
+      }
+
+      downloadBlob(blob, `${reportTitle.replace(/\s+/g, '_')}_${Date.now()}.pdf`);
+      setGeneratedMessage(`PDF downloaded for ${reportRequest.entityLabel}.`);
+    } catch (error) {
+      console.error('Export report error:', error);
+      setGeneratedMessage('Export failed.');
     } finally {
       setGenerating(false);
     }
@@ -150,23 +297,20 @@ const ReportBuilder: React.FC = () => {
         </h1>
         <div className="flex items-center space-x-4">
           <button
-            onClick={() => {
-              setGenerating(true);
-              setGeneratedMessage('AI-generating comprehensive report...');
-              setTimeout(() => {
-                setGeneratedMessage('AI report generation complete!');
-                setGenerating(false);
-              }, 2000);
-            }}
+            onClick={handleQueueReport}
             disabled={generating}
             className="flex items-center space-x-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 rounded-lg transition-colors"
           >
             {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Wand2 className="h-4 w-4" />}
-            <span>AI Generate</span>
+            <span>Queue Backend Job</span>
           </button>
-          <button onClick={handleExport} disabled={generating} className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 rounded-lg transition-colors">
+          <button
+            onClick={handleExport}
+            disabled={generating}
+            className="flex items-center space-x-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 rounded-lg transition-colors"
+          >
             {generating ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-            <span>Export PDF</span>
+            <span>{selectedTemplateConfig.backendMode === 'direct' ? 'Download PDF' : 'Queue PDF'}</span>
           </button>
         </div>
       </div>
@@ -178,7 +322,6 @@ const ReportBuilder: React.FC = () => {
         </div>
       )}
 
-      {/* Template Selection */}
       <div className="bg-slate-800 rounded-xl p-6">
         <h3 className="text-xl font-semibold mb-6 flex items-center">
           <Template className="h-6 w-6 mr-2 text-blue-400" />
@@ -190,7 +333,7 @@ const ReportBuilder: React.FC = () => {
             return (
               <div
                 key={template.id}
-                onClick={() => setSelectedTemplate(template.id)}
+                onClick={() => handleTemplateChange(template.id)}
                 className={`p-6 rounded-xl border-2 cursor-pointer transition-all ${
                   selectedTemplate === template.id
                     ? 'border-blue-500 bg-blue-500/10'
@@ -198,14 +341,10 @@ const ReportBuilder: React.FC = () => {
                 }`}
               >
                 <div className="flex items-center justify-between mb-4">
-                  <Icon className={`h-8 w-8 ${
-                    selectedTemplate === template.id ? 'text-blue-400' : 'text-slate-400'
-                  }`} />
-                  {template.premium && (
-                    <span className="px-2 py-1 bg-yellow-600 text-yellow-100 text-xs rounded">
-                      Premium
-                    </span>
-                  )}
+                  <Icon className={`h-8 w-8 ${selectedTemplate === template.id ? 'text-blue-400' : 'text-slate-400'}`} />
+                  <span className={`px-2 py-1 text-xs rounded ${template.backendMode === 'direct' ? 'bg-green-600 text-green-100' : 'bg-yellow-600 text-yellow-100'}`}>
+                    {template.backendMode === 'direct' ? 'Direct PDF' : 'Queued Job'}
+                  </span>
                 </div>
                 <h4 className="font-semibold mb-2">{template.name}</h4>
                 <p className="text-sm text-slate-400 mb-4">{template.description}</p>
@@ -223,7 +362,6 @@ const ReportBuilder: React.FC = () => {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        {/* Report Configuration */}
         <div className="lg:col-span-1 space-y-6">
           <div className="bg-slate-800 rounded-xl p-6">
             <h3 className="text-xl font-semibold mb-6">Report Configuration</h3>
@@ -237,20 +375,77 @@ const ReportBuilder: React.FC = () => {
                   className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              
-              <div>
-                <label className="block text-sm font-medium mb-2">Target Player</label>
-                <select
-                  value={targetPlayerId}
-                  onChange={(e) => setTargetPlayerId(e.target.value)}
-                  className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"
-                >
-                  <option value="">Select a player...</option>
-                  {players.map((p: any) => (
-                    <option key={p.id} value={p.id}>{p.name} - {p.club}</option>
-                  ))}
-                </select>
-              </div>
+
+              {selectedTemplate === 'player-analysis' && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">Target Player</label>
+                  <select
+                    value={targetPlayerId}
+                    onChange={(e) => setTargetPlayerId(e.target.value)}
+                    className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"
+                  >
+                    <option value="">Select a player...</option>
+                    {players.map((player: any) => (
+                      <option key={player.id} value={player.id}>{player.name} - {player.club}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {selectedTemplate === 'team-tactical' && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">Target Team</label>
+                  <select
+                    value={targetTeamId}
+                    onChange={(e) => setTargetTeamId(e.target.value)}
+                    className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"
+                  >
+                    <option value="">Select a team...</option>
+                    {teams.map((team: any) => (
+                      <option key={team.id} value={team.id}>{team.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {selectedTemplate === 'match-analysis' && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">Match Filters</label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-3">
+                    <select
+                      value={selectedMatchYear}
+                      onChange={(e) => setSelectedMatchYear(e.target.value)}
+                      className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"
+                    >
+                      <option value="all">All Years</option>
+                      {availableMatchYears.map((year) => (
+                        <option key={year} value={year}>{year}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={selectedMatchLeague}
+                      onChange={(e) => setSelectedMatchLeague(e.target.value)}
+                      className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"
+                    >
+                      <option value="all">All Leagues</option>
+                      {availableMatchLeagues.map((league) => (
+                        <option key={league} value={league}>{league}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <label className="block text-sm font-medium mb-2">Target Match</label>
+                  <select
+                    value={targetMatchId}
+                    onChange={(e) => setTargetMatchId(e.target.value)}
+                    className="w-full px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg"
+                  >
+                    <option value="">Select a match...</option>
+                    {filteredReportMatches.map((match: any) => (
+                      <option key={match.id} value={match.id}>{formatMatchLabel(match)}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div>
                 <label className="block text-sm font-medium mb-2">Time Period</label>
@@ -266,244 +461,149 @@ const ReportBuilder: React.FC = () => {
                 </select>
               </div>
 
-              <div>
-                <label className="block text-sm font-medium mb-2">Comparison Players</label>
-                <div className="space-y-2">
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      checked={comparisonPlayers.includes('Neymar Jr')}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setComparisonPlayers([...comparisonPlayers, 'Neymar Jr']);
-                        } else {
-                          setComparisonPlayers(comparisonPlayers.filter(p => p !== 'Neymar Jr'));
-                        }
-                      }}
-                      className="rounded"
-                    />
-                    <span className="text-sm">Neymar Jr</span>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      checked={comparisonPlayers.includes('Vinícius Jr')}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setComparisonPlayers([...comparisonPlayers, 'Vinícius Jr']);
-                        } else {
-                          setComparisonPlayers(comparisonPlayers.filter(p => p !== 'Vinícius Jr'));
-                        }
-                      }}
-                      className="rounded"
-                    />
-                    <span className="text-sm">Vinícius Jr</span>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      checked={comparisonPlayers.includes('Mohamed Salah')}
-                      onChange={(e) => {
-                        if (e.target.checked) {
-                          setComparisonPlayers([...comparisonPlayers, 'Mohamed Salah']);
-                        } else {
-                          setComparisonPlayers(comparisonPlayers.filter(p => p !== 'Mohamed Salah'));
-                        }
-                      }}
-                      className="rounded"
-                    />
-                    <span className="text-sm">Mohamed Salah</span>
+              {selectedTemplate === 'player-analysis' && (
+                <div>
+                  <label className="block text-sm font-medium mb-2">Comparison Players</label>
+                  <div className="space-y-2 max-h-48 overflow-y-auto">
+                    {comparisonOptions.map((player: any) => (
+                      <label key={player.id} className="flex items-center space-x-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={comparisonPlayers.includes(String(player.id))}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setComparisonPlayers([...comparisonPlayers, String(player.id)]);
+                            } else {
+                              setComparisonPlayers(comparisonPlayers.filter((value) => value !== String(player.id)));
+                            }
+                          }}
+                          className="rounded"
+                        />
+                        <span>{player.name}</span>
+                      </label>
+                    ))}
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
 
           <div className="bg-slate-800 rounded-xl p-6">
-            <h3 className="text-xl font-semibold mb-6">AI Narrative Generator</h3>
-            <div className="space-y-4">
-              <div className="p-4 bg-purple-600/10 border border-purple-600/20 rounded-lg">
-                <div className="flex items-center space-x-2 mb-2">
-                  <Wand2 className="h-5 w-5 text-purple-400" />
-                  <span className="font-semibold text-purple-400">AI Summary</span>
-                </div>
-                <p className="text-sm text-slate-300">
-                  "Mbappé demonstrates exceptional pace and finishing ability, consistently 
-                  outperforming xG metrics. His versatility across front positions makes him 
-                  a valuable tactical asset."
-                </p>
+            <h3 className="text-xl font-semibold mb-6">Backend Narrative Scope</h3>
+            <div className="space-y-3 text-sm text-slate-300">
+              <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
+                <div className="text-slate-400 mb-1">Template</div>
+                <div className="font-medium">{selectedTemplateConfig.name}</div>
               </div>
-              
-              <button
-                onClick={() => {
-                  alert('🤖 Generating new AI summary for ' + targetPlayer + '...\n\n(AI summary generation will be available once backend is connected)');
-                }}
-                className="w-full bg-purple-600 hover:bg-purple-700 py-2 rounded-lg text-sm font-medium transition-colors"
-              >
-                Generate New Summary
-              </button>
+              <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
+                <div className="text-slate-400 mb-1">Target</div>
+                <div className="font-medium">{reportRequest.entityLabel}</div>
+              </div>
+              <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
+                <div className="text-slate-400 mb-1">Time Period</div>
+                <div className="font-medium">{timePeriod}</div>
+              </div>
+              {comparisonPlayers.length > 0 && (
+                <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-4">
+                  <div className="text-slate-400 mb-1">Comparison Inputs</div>
+                  <div className="font-medium">
+                    {comparisonPlayers
+                      .map((playerId) => players.find((player: any) => String(player.id) === playerId)?.name)
+                      .filter(Boolean)
+                      .join(', ')}
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Report Preview */}
         <div className="lg:col-span-2">
-          <div className="bg-slate-800 rounded-xl p-6">
-            <div className="flex items-center justify-between mb-6">
+          <div className="bg-slate-800 rounded-xl p-6 space-y-6">
+            <div className="flex items-center justify-between">
               <h3 className="text-xl font-semibold">Report Preview</h3>
-              <div className="flex items-center space-x-2">
-                <Eye className="h-5 w-5 text-slate-400" />
-                <span className="text-sm text-slate-400">Live Preview</span>
-              </div>
-            </div>
-            
-            {/* Report Header */}
-            <div className="border-b border-slate-700 pb-6 mb-6">
-              <h1 className="text-2xl font-bold mb-2">{reportTitle}</h1>
-              <div className="flex items-center space-x-4 text-sm text-slate-400">
-                <span>Generated: {new Date().toLocaleDateString()}</span>
-                <span>•</span>
-                <span>Player: Kylian Mbappé</span>
-                <span>•</span>
-                <span>Period: Current Season</span>
+              <div className="flex items-center space-x-2 text-sm text-slate-400">
+                <Eye className="h-5 w-5" />
+                <span>Backend-aligned outline</span>
               </div>
             </div>
 
-            {/* Report Sections */}
-            <div className="space-y-6">
-              {reportSections.map((section) => (
-                <div key={section.id} className="border border-slate-700 rounded-lg p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <h4 className="font-semibold">{section.title}</h4>
-                    <span className={`px-2 py-1 rounded text-xs ${
-                      section.status === 'completed' ? 'bg-green-600 text-green-100' :
-                      section.status === 'in-progress' ? 'bg-yellow-600 text-yellow-100' :
-                      'bg-slate-600 text-slate-100'
-                    }`}>
-                      {section.status.replace('-', ' ')}
+            <div className="border-b border-slate-700 pb-6">
+              <h1 className="text-2xl font-bold mb-2">{reportTitle}</h1>
+              <div className="flex flex-wrap items-center gap-3 text-sm text-slate-400">
+                <span>Generated: {new Date().toLocaleDateString()}</span>
+                <span>Target: {reportRequest.entityLabel}</span>
+                <span>Period: {timePeriod}</span>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {selectedTemplateConfig.sections.map((section) => (
+                <div key={section} className="border border-slate-700 rounded-lg p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <h4 className="font-semibold">{section}</h4>
+                    <span className="px-2 py-1 rounded text-xs bg-green-600/20 text-green-300 border border-green-600/30">
+                      Included
                     </span>
                   </div>
-                  <p className="text-sm text-slate-400">{section.content}</p>
-                  
-                  {section.status === 'completed' && (
-                    <div className="mt-4 p-3 bg-slate-700 rounded">
-                      <div className="text-sm">
-                        {section.id === 'executive-summary' && (
-                          <div>
-                            <p className="mb-2">
-                              <strong>Key Finding:</strong> Mbappé's performance metrics indicate 
-                              elite-level consistency with 94% shot accuracy and 2.1 goals per game.
-                            </p>
-                            <p>
-                              <strong>Recommendation:</strong> Immediate acquisition recommended 
-                              based on current form and market value trajectory.
-                            </p>
-                          </div>
-                        )}
-                        {section.id === 'performance-metrics' && (
-                          <div className="grid grid-cols-3 gap-4">
-                            <div className="text-center">
-                              <div className="text-lg font-bold text-green-400">2.1</div>
-                              <div className="text-xs text-slate-400">Goals/Game</div>
-                            </div>
-                            <div className="text-center">
-                              <div className="text-lg font-bold text-blue-400">1.3</div>
-                              <div className="text-xs text-slate-400">Assists/Game</div>
-                            </div>
-                            <div className="text-center">
-                              <div className="text-lg font-bold text-yellow-400">94%</div>
-                              <div className="text-xs text-slate-400">Shot Accuracy</div>
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
+                  <p className="text-sm text-slate-400">
+                    This section will be assembled from the active backend data sources for {reportRequest.entityLabel.toLowerCase()}.
+                  </p>
                 </div>
               ))}
             </div>
 
-            {/* Action Buttons */}
-            <div className="flex items-center justify-between mt-8 pt-6 border-t border-slate-700">
-              <div className="flex items-center space-x-4">
+            <div className="border-t border-slate-700 pt-6">
+              <div className="flex items-center justify-between mb-4">
+                <h4 className="font-semibold flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-blue-400" />
+                  Recent Backend Reports
+                </h4>
                 <button
-                  onClick={() => {
-                    alert('📤 Share Report\n\nShare "' + reportTitle + '" with team members.\n\n(Sharing will be available once backend is connected)');
-                  }}
-                  className="flex items-center space-x-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors"
+                  onClick={() => refetchReports()}
+                  className="flex items-center gap-2 rounded-lg bg-slate-700 px-3 py-2 text-sm hover:bg-slate-600 transition-colors"
                 >
-                  <Share2 className="h-4 w-4" />
-                  <span>Share</span>
-                </button>
-                <button
-                  onClick={() => {
-                    alert('💾 Save as Template\n\nSaving "' + reportTitle + '" as a reusable template...\n\n(Template saving will be available once backend is connected)');
-                  }}
-                  className="flex items-center space-x-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors"
-                >
-                  <Template className="h-4 w-4" />
-                  <span>Save as Template</span>
+                  <RefreshCw className="h-4 w-4" />
+                  Refresh
                 </button>
               </div>
-              <div className="flex items-center space-x-2">
-                <button
-                  onClick={handleExport}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
-                >
-                  Generate PDF
-                </button>
-                <button
-                  onClick={() => {
-                    alert('📢 Publish Report\n\nPublishing "' + reportTitle + '" to your team dashboard...\n\n(Publishing will be available once backend is connected)');
-                  }}
-                  className="px-4 py-2 bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
-                >
-                  Publish Report
-                </button>
+
+              <div className="space-y-3">
+                {recentReports.length > 0 ? recentReports.map((report: any) => (
+                  <div key={report.id} className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900/40 px-4 py-3">
+                    <div>
+                      <div className="font-medium">{report.title || `${report.type || 'general'} report`}</div>
+                      <div className="text-sm text-slate-400">
+                        {(report.entity_label || report.entity_id || 'Unknown target')} • {formatDateTime(report.completedAt || report.createdAt)}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className={`rounded px-2 py-1 text-xs ${report.status === 'completed' ? 'bg-green-600/20 text-green-300 border border-green-600/30' : 'bg-yellow-600/20 text-yellow-200 border border-yellow-600/30'}`}>
+                        {report.status || 'processing'}
+                      </span>
+                      <button
+                        onClick={() => handleDownloadRecent(report.id)}
+                        disabled={report.status !== 'completed'}
+                        className="rounded-lg bg-blue-600 px-3 py-2 text-sm hover:bg-blue-700 disabled:bg-slate-700 disabled:text-slate-400 transition-colors"
+                      >
+                        Download
+                      </button>
+                      <button
+                        onClick={() => handleDeleteRecent(report.id)}
+                        className="rounded-lg bg-slate-700 px-3 py-2 text-sm hover:bg-slate-600 transition-colors"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                )) : (
+                  <div className="rounded-lg border border-slate-700 bg-slate-900/40 px-4 py-8 text-center text-slate-400">
+                    No backend reports have been generated yet.
+                  </div>
+                )}
               </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      {/* Template Marketplace */}
-      <div className="bg-slate-800 rounded-xl p-6">
-        <h3 className="text-xl font-semibold mb-6 flex items-center">
-          <Template className="h-6 w-6 mr-2 text-green-400" />
-          Template Marketplace
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {[
-            { name: 'Premier League Scout Report', author: 'Manchester City FC', price: '€29', rating: 4.8 },
-            { name: 'Youth Development Analysis', author: 'Ajax Academy', price: '€19', rating: 4.9 },
-            { name: 'Set Piece Specialist Report', author: 'Liverpool FC', price: '€15', rating: 4.7 },
-          ].map((template, index) => (
-            <div key={index} className="p-4 bg-slate-700 rounded-lg">
-              <div className="flex justify-between items-start mb-3">
-                <h4 className="font-semibold">{template.name}</h4>
-                <span className="text-green-400 font-bold">{template.price}</span>
-              </div>
-              <p className="text-sm text-slate-400 mb-3">by {template.author}</p>
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-1">
-                  {[1,2,3,4,5].map(star => (
-                    <div key={star} className={`w-3 h-3 ${
-                      star <= Math.floor(template.rating) ? 'text-yellow-400' : 'text-slate-500'
-                    }`}>★</div>
-                  ))}
-                  <span className="text-sm text-slate-400 ml-1">{template.rating}</span>
-                </div>
-                <button
-                  onClick={() => {
-                    alert(`🛒 Purchase Template\n\n"${template.name}"\nBy: ${template.author}\nPrice: ${template.price}\n\n(Template marketplace will be available once backend is connected)`);
-                  }}
-                  className="px-3 py-1 bg-blue-600 hover:bg-blue-700 rounded text-sm transition-colors"
-                >
-                  Purchase
-                </button>
-              </div>
-            </div>
-          ))}
         </div>
       </div>
     </div>

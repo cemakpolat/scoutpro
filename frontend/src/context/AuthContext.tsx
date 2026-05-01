@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { User, LoginCredentials, RegisterData, AuthResponse } from '../types';
+import { API_BASE_URL } from '../config/api';
 
 interface AuthContextType {
   user: User | null;
@@ -23,102 +24,113 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [token, setToken] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
+  const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 10000) => {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      window.clearTimeout(timeoutId);
+    }
+  };
+
+  const clearStoredSession = () => {
+    localStorage.removeItem('scoutpro_token');
+    localStorage.removeItem('scoutpro_user');
+    setToken(null);
+    setUser(null);
+  };
+
+  const persistSession = (authData: AuthResponse) => {
+    localStorage.setItem('scoutpro_token', authData.token);
+    localStorage.setItem('scoutpro_user', JSON.stringify(authData.user));
+    setToken(authData.token);
+    setUser(authData.user);
+  };
+
+  const getErrorMessage = async (response: Response, fallbackMessage: string) => {
+    const errorData = await response.json().catch(() => null);
+    const apiMessage = errorData?.message || errorData?.error;
+    return apiMessage || `${fallbackMessage} (HTTP ${response.status})`;
+  };
+
   // Load user from localStorage on mount
   useEffect(() => {
     const storedToken = localStorage.getItem('scoutpro_token');
     const storedUser = localStorage.getItem('scoutpro_user');
 
-    if (storedToken && storedUser) {
+    const loadSession = async () => {
+      if (!storedToken || !storedUser || storedToken.startsWith('mock-jwt-token-')) {
+        clearStoredSession();
+        setIsLoading(false);
+        return;
+      }
+
       try {
-        const parsedUser = JSON.parse(storedUser);
-        setToken(storedToken);
-        setUser(parsedUser);
+        JSON.parse(storedUser);
       } catch (error) {
         console.error('Error parsing stored user:', error);
-        localStorage.removeItem('scoutpro_token');
-        localStorage.removeItem('scoutpro_user');
+        clearStoredSession();
+        setIsLoading(false);
+        return;
       }
-    }
 
-    setIsLoading(false);
+      try {
+        const response = await fetchWithTimeout(`${API_BASE_URL}/auth/me`, {
+          headers: {
+            Authorization: `Bearer ${storedToken}`,
+          },
+        });
+
+        if (!response.ok) {
+          throw new Error('Stored session is no longer valid');
+        }
+
+        const liveUser: User = await response.json();
+        localStorage.setItem('scoutpro_user', JSON.stringify(liveUser));
+        setToken(storedToken);
+        setUser(liveUser);
+      } catch (error) {
+        console.error('Session restore error:', error);
+        clearStoredSession();
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
+    loadSession();
   }, []);
 
   const login = async (credentials: LoginCredentials) => {
     setIsLoading(true);
 
     try {
-      // In mock mode, simulate successful login
-      const useMockData = import.meta.env.VITE_USE_MOCK_DATA === 'true';
+      const response = await fetchWithTimeout(`${API_BASE_URL}/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(credentials),
+      });
 
-      if (useMockData) {
-        // Determine role based on email for demo purposes
-        let role: 'admin' | 'scout' | 'analyst' | 'viewer' = 'scout';
-        let permissions: string[] = [];
-
-        if (credentials.email.includes('admin')) {
-          role = 'admin';
-          permissions = [
-            'view_players', 'view_matches', 'create_reports', 'export_data',
-            'manage_users', 'manage_system', 'manage_data', 'delete_data',
-            'view_analytics', 'manage_roles'
-          ];
-        } else if (credentials.email.includes('analyst')) {
-          role = 'analyst';
-          permissions = ['view_players', 'view_matches', 'view_analytics', 'create_reports', 'ml_access'];
-        } else if (credentials.email.includes('viewer')) {
-          role = 'viewer';
-          permissions = ['view_players', 'view_matches', 'view_reports'];
-        } else {
-          role = 'scout';
-          permissions = ['view_players', 'view_matches', 'create_reports', 'export_data', 'video_analysis'];
-        }
-
-        // Mock successful login
-        const mockUser: User = {
-          id: 'user-001',
-          email: credentials.email,
-          name: credentials.email.split('@')[0],
-          role,
-          team: 'Real Madrid',
-          avatar: 'https://images.pexels.com/photos/220453/pexels-photo-220453.jpeg?auto=compress&cs=tinysrgb&w=100&h=100&fit=crop',
-          permissions,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-
-        const mockToken = 'mock-jwt-token-' + Date.now();
-
-        // Store in localStorage
-        localStorage.setItem('scoutpro_token', mockToken);
-        localStorage.setItem('scoutpro_user', JSON.stringify(mockUser));
-
-        setToken(mockToken);
-        setUser(mockUser);
-      } else {
-        // Real API call
-        const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/auth/login`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(credentials),
-        });
-
-        if (!response.ok) {
-          throw new Error('Login failed');
-        }
-
-        const data: AuthResponse = await response.json();
-
-        // Store in localStorage
-        localStorage.setItem('scoutpro_token', data.token);
-        localStorage.setItem('scoutpro_user', JSON.stringify(data.user));
-
-        setToken(data.token);
-        setUser(data.user);
+      if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Login failed'));
       }
+
+      const authData: AuthResponse = await response.json();
+      persistSession(authData);
     } catch (error) {
       console.error('Login error:', error);
+
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        throw new Error('Login request timed out. Ensure the API gateway is reachable at localhost:3001.');
+      }
+
+      if (error instanceof TypeError) {
+        throw new Error('Could not reach the API gateway. Check frontend API base URL and gateway health.');
+      }
+
       throw error;
     } finally {
       setIsLoading(false);
@@ -129,51 +141,20 @@ export function AuthProvider({ children }: AuthProviderProps) {
     setIsLoading(true);
 
     try {
-      const useMockData = import.meta.env.VITE_USE_MOCK_DATA === 'true';
+      const response = await fetchWithTimeout(`${API_BASE_URL}/auth/register`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      });
 
-      if (useMockData) {
-        // Mock successful registration
-        const mockUser: User = {
-          id: 'user-' + Date.now(),
-          email: data.email,
-          name: data.name,
-          role: data.role || 'viewer',
-          team: data.team,
-          avatar: 'https://images.pexels.com/photos/220453/pexels-photo-220453.jpeg?auto=compress&cs=tinysrgb&w=100&h=100&fit=crop',
-          permissions: ['view_players', 'view_matches'],
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-
-        const mockToken = 'mock-jwt-token-' + Date.now();
-
-        localStorage.setItem('scoutpro_token', mockToken);
-        localStorage.setItem('scoutpro_user', JSON.stringify(mockUser));
-
-        setToken(mockToken);
-        setUser(mockUser);
-      } else {
-        // Real API call
-        const response = await fetch(`${import.meta.env.VITE_API_BASE_URL}/auth/register`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(data),
-        });
-
-        if (!response.ok) {
-          throw new Error('Registration failed');
-        }
-
-        const authData: AuthResponse = await response.json();
-
-        localStorage.setItem('scoutpro_token', authData.token);
-        localStorage.setItem('scoutpro_user', JSON.stringify(authData.user));
-
-        setToken(authData.token);
-        setUser(authData.user);
+      if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Registration failed'));
       }
+
+      const authData: AuthResponse = await response.json();
+      persistSession(authData);
     } catch (error) {
       console.error('Registration error:', error);
       throw error;
@@ -183,10 +164,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   };
 
   const logout = () => {
-    localStorage.removeItem('scoutpro_token');
-    localStorage.removeItem('scoutpro_user');
-    setToken(null);
-    setUser(null);
+    clearStoredSession();
   };
 
   const updateUser = (updates: Partial<User>) => {

@@ -1,0 +1,168 @@
+# Provider Priority Configuration
+#
+# This file defines which data provider to trust when multiple providers
+# have conflicting data for the same entity or event.
+#
+# Priority can be:
+# - Global (default for all data)
+# - Competition-specific (override for specific leagues)
+# - Event-type-specific (override for specific event types)
+
+# ============================================
+# GLOBAL PROVIDER PRIORITY
+# ============================================
+# Default priority order used when no specific override applies
+# Providers are listed in order of trust (highest to lowest)
+
+provider_priority:
+  global:
+    - opta           # Priority 1: Official data, comprehensive coverage
+    - statsbomb      # Priority 2: Excellent analytics, detailed event data
+    - wyscout        # Priority 3: Good coverage, backup source
+
+  # ============================================
+  # COMPETITION-SPECIFIC OVERRIDES
+  # ============================================
+  # Override global priority for specific competitions
+  # Use competition ID as key
+
+  by_competition:
+    # Premier League (ID: 8)
+    "8":
+      - opta
+      - statsbomb
+
+    # La Liga (ID: 24)
+    "24":
+      - opta
+      - statsbomb
+
+    # Champions League (ID: 55)
+    # StatsBomb has particularly good coverage for CL
+    "55":
+      - statsbomb
+      - opta
+
+    # Bundesliga (ID: 20)
+    "20":
+      - opta
+      - wyscout
+
+  # ============================================
+  # EVENT-TYPE-SPECIFIC OVERRIDES
+  # ============================================
+  # Override global priority for specific types of events
+  # Useful when one provider has better data for certain events
+
+  by_event_type:
+    # For shots: StatsBomb has superior xG model
+    shot:
+      - statsbomb
+      - opta
+
+    # For passes: Opta has more comprehensive pass data
+    pass:
+      - opta
+      - statsbomb
+
+    # For defensive actions: Opta has more detailed qualifiers
+    tackle:
+      - opta
+      - statsbomb
+
+    interception:
+      - opta
+      - statsbomb
+
+    # For pressure events: StatsBomb tracks these better
+    pressure:
+      - statsbomb
+      - opta
+
+  # ============================================
+  # LIVE vs HISTORICAL DATA
+  # ============================================
+  # For live matches, prefer whichever provider is actually live
+
+  by_match_status:
+    live:
+      prefer_live_provider: true  # Always prefer whichever is reporting live
+      fallback:
+        - opta
+        - statsbomb
+
+    finished:
+      - opta
+      - statsbomb
+
+# ============================================
+# PROVIDER CAPABILITIES
+# ============================================
+# Document what each provider offers (for reference and validation)
+
+provider_capabilities:
+  opta:
+    events: true
+    matches: true
+    players: true
+    teams: true
+    lineups: true
+    statistics: true
+    live_data: true
+    historical_data: true
+    xg_model: true
+    event_qualifiers: extensive  # F24 has 200+ qualifiers
+    update_frequency: real_time
+    coverage: global
+
+  statsbomb:
+    events: true
+    matches: true
+    players: true
+    teams: true
+    lineups: true
+    statistics: true
+    live_data: limited
+    historical_data: true
+    xg_model: true  # Industry-leading xG
+    event_qualifiers: rich
+    freeze_frames: true  # 360 data for premium competitions
+    update_frequency: near_real_time
+    coverage: selective  # Specific competitions
+
+  wyscout:
+    events: true
+    matches: true
+    players: true
+    teams: true
+    lineups: true
+    statistics: true
+    live_data: false
+    historical_data: true
+    xg_model: true
+    event_qualifiers: moderate
+    update_frequency: daily
+    coverage: global
+
+# ============================================
+# PROVIDER WEIGHTS
+# ============================================
+# When averaging numeric values (e.g., xG), apply weights based on trust
+
+provider_weights:
+  default:
+    opta: 1.0
+    statsbomb: 1.0
+    wyscout: 0.8
+
+  # For xG specifically, trust StatsBomb more
+  xg:
+    statsbomb: 1.2
+    opta: 1.0
+    wyscout: 0.7
+
+  # For pass completion, trust Opta more (more data points)
+  pass_accuracy:
+    opta: 1.2
+    statsbomb: 1.0
+    wyscout: 0.8

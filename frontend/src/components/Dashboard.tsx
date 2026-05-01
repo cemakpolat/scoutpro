@@ -7,8 +7,16 @@ import StatCard from './StatCard';
 import RecentActivity from './RecentActivity';
 import TopPerformers from './TopPerformers';
 
+const formatMetric = (value: unknown, suffix = ''): string => {
+  if (value === undefined || value === null || value === '') {
+    return '—';
+  }
+
+  return `${value}${suffix}`;
+};
+
 const Dashboard: React.FC = () => {
-  const { players, matches, loading: loadingState, errors } = useData();
+  const { players, matches } = useData();
   
   // Fetch dashboard analytics
   const { data: analytics, loading: analyticsLoading } = useApi(
@@ -33,10 +41,15 @@ const Dashboard: React.FC = () => {
     totalPlayers: players.length,
     totalMatches: matches.length,
     totalMarketValue: players.reduce((sum, player) => {
-      const value = parseFloat(player.marketValue.replace(/[€M]/g, '')) || 0;
+      const rawValue = typeof player.marketValue === 'string'
+        ? player.marketValue
+        : typeof player.marketValue === 'number'
+          ? String(player.marketValue)
+          : '';
+      const value = parseFloat(rawValue.replace(/[^\d.]/g, '')) || 0;
       return sum + value;
     }, 0),
-    aiPredictions: analytics?.predictions?.total || 0,
+    aiPredictions: analytics?.predictions?.total || analytics?.transferPredictions || 0,
   };
 
   return (
@@ -53,29 +66,21 @@ const Dashboard: React.FC = () => {
         <StatCard
           title="Global Player Database"
           value={metrics.totalPlayers.toLocaleString()}
-          change="+2.3%"
-          changeType="increase"
           icon={Users}
         />
         <StatCard
           title="Matches Analyzed"
           value={metrics.totalMatches.toLocaleString()}
-          change="+8.7%"
-          changeType="increase"
           icon={Eye}
         />
         <StatCard
           title="Total Market Value Tracked"
           value={`€${(metrics.totalMarketValue / 1000).toFixed(1)}B`}
-          change="+15.8%"
-          changeType="increase"
           icon={TrendingUp}
         />
         <StatCard
           title="AI Predictions Generated"
           value={metrics.aiPredictions.toLocaleString()}
-          change="+23.4%"
-          changeType="increase"
           icon={Brain}
         />
       </div>
@@ -106,15 +111,8 @@ const Dashboard: React.FC = () => {
               </div>
               <div className="text-2xl font-bold text-white mb-2">{trend.averageValue}</div>
               <div className="text-sm text-slate-400 mb-3">Average Market Value</div>
-              <div className="space-y-2">
-                <div className="text-xs text-slate-400">Hot Markets:</div>
-                <div className="flex flex-wrap gap-1">
-                  {['Premier League', 'La Liga', 'Serie A'].map((market, i) => (
-                    <span key={i} className="px-2 py-1 bg-blue-600/20 text-blue-300 text-xs rounded">
-                      {market}
-                    </span>
-                  ))}
-                </div>
+              <div className="text-xs text-slate-400">
+                Live market trend feed
               </div>
             </div>
           ))}
@@ -148,7 +146,7 @@ const Dashboard: React.FC = () => {
               <p className="text-slate-300 text-sm mb-3">{pattern.description}</p>
               <div className="flex items-center justify-between">
                 <div className="text-xs text-slate-400">
-                  Active Zones: {pattern.zones.join(', ')}
+                  Active Zones: {Array.isArray(pattern.zones) ? pattern.zones.join(', ') : 'N/A'}
                 </div>
                 <div className="text-xs text-purple-400 font-medium">
                   Impact: {pattern.impact}
@@ -168,22 +166,22 @@ const Dashboard: React.FC = () => {
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
           <div className="text-center">
-            <div className="text-3xl font-bold text-green-400 mb-2">{analytics?.modelAccuracy || '97.3'}%</div>
+            <div className="text-3xl font-bold text-green-400 mb-2">{formatMetric(analytics?.modelAccuracy, analytics?.modelAccuracy != null ? '%' : '')}</div>
             <div className="text-slate-400">AI Model Accuracy</div>
-            <div className="text-xs text-green-400 mt-1">+2.1% this month</div>
+            <div className="text-xs text-green-400 mt-1">Live analytics service metric</div>
           </div>
           <div className="text-center">
-            <div className="text-3xl font-bold text-blue-400 mb-2">{analytics?.activeScouts || '2,847'}</div>
+            <div className="text-3xl font-bold text-blue-400 mb-2">{formatMetric(analytics?.activeScouts)}</div>
             <div className="text-slate-400">Daily Active Scouts</div>
-            <div className="text-xs text-blue-400 mt-1">+18% vs last week</div>
+            <div className="text-xs text-blue-400 mt-1">Live dashboard feed</div>
           </div>
           <div className="text-center">
-            <div className="text-3xl font-bold text-yellow-400 mb-2">{analytics?.transferPredictions || '847'}</div>
+            <div className="text-3xl font-bold text-yellow-400 mb-2">{formatMetric(analytics?.transferPredictions || analytics?.predictions?.total)}</div>
             <div className="text-slate-400">Transfer Predictions</div>
-            <div className="text-xs text-yellow-400 mt-1">89% success rate</div>
+            <div className="text-xs text-yellow-400 mt-1">Current backend prediction volume</div>
           </div>
           <div className="text-center">
-            <div className="text-3xl font-bold text-purple-400 mb-2">{analytics?.responseTime || '156'}ms</div>
+            <div className="text-3xl font-bold text-purple-400 mb-2">{formatMetric(analytics?.responseTime, analytics?.responseTime != null ? 'ms' : '')}</div>
             <div className="text-slate-400">Avg Response Time</div>
             <div className="text-xs text-purple-400 mt-1">Real-time analytics</div>
           </div>

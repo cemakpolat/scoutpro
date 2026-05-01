@@ -1,8 +1,7 @@
 """Analytics Service API Endpoints"""
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, Body
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
-from datetime import datetime
 import logging
 import sys
 sys.path.append('/app')
@@ -16,6 +15,16 @@ class DashboardData(BaseModel):
     title: str
     data: Dict[str, Any]
     last_updated: str
+
+
+class ComparisonRequest(BaseModel):
+    player_ids: List[str] = []
+    team_ids: List[str] = []
+    metrics: Optional[List[str]] = None
+
+
+class PlayerSequenceCoverageRequest(BaseModel):
+    player_ids: List[str] = []
 
 
 async def get_analytics_handler():
@@ -71,15 +80,11 @@ async def get_league_trends(
     period: str = Query("season", description="Time period (season, month, week)"),
     handler: AnalyticsHandler = Depends(get_analytics_handler)
 ):
-    """Get league-wide trends - passing through to Analytics Handler"""
-    # Requires matching API in statistics-service, here returning empty structure pending completion
-    return {
-        "competition": competition,
-        "metric": metric,
-        "period": period,
-        "data": {"labels": [], "values": []},
-        "info": "Real fetching logic requires statistics-service /trends endpoint."
-    }
+    """Get league-wide trends derived from live match data"""
+    try:
+        return await handler.get_league_trends(competition, metric, period)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/rankings/players", summary="Get player rankings")
@@ -99,27 +104,61 @@ async def get_player_rankings(
 
 @router.get("/rankings/teams", summary="Get team rankings")
 async def get_team_rankings(
-    competition: str = Query(...),
+    competition: Optional[str] = Query(None),
     metric: str = Query("points", description="Ranking metric"),
     limit: int = Query(20, ge=1, le=50),
     handler: AnalyticsHandler = Depends(get_analytics_handler)
 ):
     """Get team rankings by metric passed to statistics service"""
     try:
-        response = await handler.get_team_rankings(competition, metric, limit)
+        response = await handler.get_team_rankings(competition or 'all', metric, limit)
         return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/advanced-metrics/{match_id}", summary="Get advanced match metrics")
+async def get_advanced_metrics(
+    match_id: str,
+    time_bucket: str = Query("5m"),
+    handler: AnalyticsHandler = Depends(get_analytics_handler)
+):
+    try:
+        return await handler.get_advanced_metrics(match_id, time_bucket)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/insights/team/{team_id}", summary="Get team insights")
 async def get_team_insights(team_id: str, handler: AnalyticsHandler = Depends(get_analytics_handler)):
-    """Placeholder for ML insights that will be fetched from ML service"""
-    return {"team_id": team_id, "insights": [], "info": "Connects to ML service."}
+    try:
+        return await handler.get_team_insights(team_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/insights/player/{player_id}", summary="Get player insights")
 async def get_player_insights(player_id: str, handler: AnalyticsHandler = Depends(get_analytics_handler)):
-    """Placeholder for ML insights that will be fetched from ML service"""
-    return {"player_id": player_id, "insights": [], "info": "Connects to ML service."}
+    try:
+        return await handler.get_player_insights(player_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/insights/player/{player_id}/sequences", summary="Get player sequence insights")
+async def get_player_sequence_insights(player_id: str, handler: AnalyticsHandler = Depends(get_analytics_handler)):
+    try:
+        return await handler.get_player_sequence_insights(player_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/insights/players/sequences", summary="Get player sequence coverage for multiple players")
+async def get_player_sequence_coverage(
+    request: PlayerSequenceCoverageRequest = Body(...),
+    handler: AnalyticsHandler = Depends(get_analytics_handler)
+):
+    try:
+        return await handler.get_player_sequence_coverage(request.player_ids)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/comparison/players", summary="Compare multiple players")
 async def compare_players(
@@ -127,7 +166,21 @@ async def compare_players(
     metrics: Optional[List[str]] = Query(None),
     handler: AnalyticsHandler = Depends(get_analytics_handler)
 ):
-    return {"player_ids": player_ids, "comparison": {}}
+    try:
+        return await handler.compare_players(player_ids, metrics)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/comparison/players", summary="Compare multiple players")
+async def compare_players_post(
+    request: ComparisonRequest = Body(...),
+    handler: AnalyticsHandler = Depends(get_analytics_handler)
+):
+    try:
+        return await handler.compare_players(request.player_ids, request.metrics)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/comparison/teams", summary="Compare multiple teams")
 async def compare_teams(
@@ -135,4 +188,60 @@ async def compare_teams(
     metrics: Optional[List[str]] = Query(None),
     handler: AnalyticsHandler = Depends(get_analytics_handler)
 ):
-    return {"team_ids": team_ids, "comparison": {}}
+    try:
+        return await handler.compare_teams(team_ids, metrics)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/comparison/teams", summary="Compare multiple teams")
+async def compare_teams_post(
+    request: ComparisonRequest = Body(...),
+    handler: AnalyticsHandler = Depends(get_analytics_handler)
+):
+    try:
+        return await handler.compare_teams(request.team_ids, request.metrics)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/pass-network/{match_id}", summary="Get directed pass network for a match")
+async def get_pass_network(
+    match_id: str,
+    handler: AnalyticsHandler = Depends(get_analytics_handler)
+):
+    """
+    Build a directed pass-network graph from match events.
+    Returns nodes (players + pass share), weighted edges (passer → receiver),
+    and per-team possession percentage.
+    """
+    try:
+        return await handler.get_pass_network(match_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tactical/{match_id}", summary="Get tactical metrics for a match")
+async def get_tactical_metrics(
+    match_id: str,
+    handler: AnalyticsHandler = Depends(get_analytics_handler)
+):
+    """
+    Compute PPDA (Passes Per Defensive Action), possession-zone breakdown
+    (defensive / middle / attacking third), and pressing intensity per team.
+    """
+    try:
+        return await handler.get_tactical_metrics(match_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sequences/{match_id}", summary="Get possession-sequence summary for a match")
+async def get_sequence_insights(
+    match_id: str,
+    handler: AnalyticsHandler = Depends(get_analytics_handler)
+):
+    try:
+        return await handler.get_sequence_insights(match_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

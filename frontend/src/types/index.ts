@@ -289,7 +289,16 @@ export interface ApiError {
 
 // WebSocket Message Types
 export interface WebSocketMessage {
-  type: 'match_update' | 'player_update' | 'notification' | 'market_update' | 'tactical_update';
+  type:
+    | 'match_update'
+    | 'player_update'
+    | 'notification'
+    | 'market_update'
+    | 'tactical_update'
+    | 'connected'
+    | 'subscribed'
+    | 'unsubscribed'
+    | 'pong';
   data: any;
   timestamp: string;
 }
@@ -363,6 +372,8 @@ export interface MatchFilters {
   dateTo?: string;
   teams?: string[];
   status?: string[];
+  limit?: number;
+  skip?: number;
 }
 
 export interface QueryParams {

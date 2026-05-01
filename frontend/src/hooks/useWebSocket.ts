@@ -1,99 +1,86 @@
 import { useEffect, useCallback, useRef } from 'react';
 import wsService from '../services/websocket';
-import mockWebSocketService from '../services/mockWebSocket';
-
-// Determine which service to use based on environment
-const useMockWebSocket = import.meta.env.VITE_USE_MOCK_DATA === 'true';
-const activeWsService = useMockWebSocket ? mockWebSocketService : wsService;
 
 // Global flag to ensure WebSocket is only started once
 let globalWebSocketInitialized = false;
+let realWebSocketConsumers = 0;
+let pendingDisconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function useWebSocket() {
   const isInitialized = useRef(false);
 
   useEffect(() => {
-    if (useMockWebSocket) {
-      // Mock WebSocket auto-starts (only once globally)
-      if (!globalWebSocketInitialized && !isInitialized.current) {
-        console.log('[useWebSocket] Starting mock WebSocket service');
-        mockWebSocketService.start();
-        isInitialized.current = true;
-        globalWebSocketInitialized = true;
-      }
-      // Don't stop on unmount since this is a global service
-      return () => {
-        // Keep the service running for other components
-      };
-    } else {
-      // Real WebSocket connection
-      if (!isInitialized.current) {
-        wsService.connect().catch(error => {
-          console.error('Failed to connect to WebSocket:', error);
-        });
-        isInitialized.current = true;
-      }
-
-      return () => {
-        if (isInitialized.current) {
-          wsService.disconnect();
-          isInitialized.current = false;
-        }
-      };
+    if (pendingDisconnectTimer) {
+      clearTimeout(pendingDisconnectTimer);
+      pendingDisconnectTimer = null;
     }
+
+    if (!isInitialized.current) {
+      realWebSocketConsumers += 1;
+      isInitialized.current = true;
+    }
+
+    if (!globalWebSocketInitialized) {
+      globalWebSocketInitialized = true;
+
+      wsService.connect().catch(error => {
+        globalWebSocketInitialized = false;
+        console.error('Failed to connect to WebSocket:', error);
+      });
+    }
+
+    return () => {
+      if (isInitialized.current) {
+        isInitialized.current = false;
+        realWebSocketConsumers = Math.max(0, realWebSocketConsumers - 1);
+
+        if (realWebSocketConsumers === 0) {
+          pendingDisconnectTimer = setTimeout(() => {
+            if (realWebSocketConsumers === 0) {
+              wsService.disconnect();
+              globalWebSocketInitialized = false;
+            }
+
+            pendingDisconnectTimer = null;
+          }, 250);
+        }
+      }
+    };
   }, []);
 
   const subscribe = useCallback((event: string, handler: (data: any) => void) => {
-    if (useMockWebSocket) {
-      return mockWebSocketService.subscribe(event as any, handler);
-    } else {
-      wsService.on(event, handler);
-      return () => {
-        wsService.off(event, handler);
-      };
-    }
+    wsService.on(event, handler);
+    return () => {
+      wsService.off(event, handler);
+    };
   }, []);
 
   const send = useCallback((message: any) => {
-    if (!useMockWebSocket) {
-      wsService.send(message);
-    }
+    wsService.send(message);
   }, []);
 
   const subscribeToMatch = useCallback((matchId: string) => {
-    if (!useMockWebSocket) {
-      wsService.subscribeToMatch(matchId);
-    }
+    wsService.subscribeToMatch(matchId);
   }, []);
 
   const unsubscribeFromMatch = useCallback((matchId: string) => {
-    if (!useMockWebSocket) {
-      wsService.unsubscribeFromMatch(matchId);
-    }
+    wsService.unsubscribeFromMatch(matchId);
   }, []);
 
   const subscribeToPlayer = useCallback((playerId: string) => {
-    if (!useMockWebSocket) {
-      wsService.subscribeToPlayer(playerId);
-    }
+    wsService.subscribeToPlayer(playerId);
   }, []);
 
   const unsubscribeFromPlayer = useCallback((playerId: string) => {
-    if (!useMockWebSocket) {
-      wsService.unsubscribeFromPlayer(playerId);
-    }
+    wsService.unsubscribeFromPlayer(playerId);
   }, []);
 
   const subscribeToNotifications = useCallback((userId: string) => {
-    if (!useMockWebSocket) {
-      wsService.subscribeToNotifications(userId);
-    }
+    wsService.subscribeToNotifications(userId);
   }, []);
 
   const subscribeToMarketUpdates = useCallback(() => {
-    if (!useMockWebSocket) {
-      wsService.subscribeToMarketUpdates();
-    }
+    wsService.subscribeToMarketUpdates();
   }, []);
 
   return {
@@ -105,8 +92,8 @@ export function useWebSocket() {
     unsubscribeFromPlayer,
     subscribeToNotifications,
     subscribeToMarketUpdates,
-    isConnected: useMockWebSocket ? true : wsService.isConnected(),
-    connectionState: useMockWebSocket ? 'connected' : wsService.getConnectionState()
+    isConnected: wsService.isConnected(),
+    connectionState: wsService.getConnectionState()
   };
 }
 

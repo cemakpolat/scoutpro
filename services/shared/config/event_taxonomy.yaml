@@ -1,0 +1,437 @@
+# Event Taxonomy Mapping
+#
+# This file maps provider-specific event types to ScoutPro canonical event types.
+# Each provider has a different event classification system, and this file
+# standardizes them all to a single taxonomy.
+
+# ============================================
+# CANONICAL EVENT TYPES (ScoutPro)
+# ============================================
+# These are the standard event types used throughout ScoutPro
+
+canonical_event_types:
+  # === PASSING ===
+  PASS_COMPLETED:
+    category: passing
+    description: "Successful pass to teammate"
+
+  PASS_INCOMPLETE:
+    category: passing
+    description: "Unsuccessful pass attempt"
+
+  PASS_ASSIST:
+    category: passing
+    description: "Pass that directly leads to a goal"
+
+  PASS_KEY:
+    category: passing
+    description: "Pass that leads to a shot on goal"
+
+  # === SHOOTING ===
+  SHOT_ON_TARGET:
+    category: shooting
+    description: "Shot that would have gone in without save/block"
+
+  SHOT_OFF_TARGET:
+    category: shooting
+    description: "Shot that missed the goal"
+
+  SHOT_BLOCKED:
+    category: shooting
+    description: "Shot blocked by defender"
+
+  GOAL:
+    category: shooting
+    description: "Shot that resulted in a goal"
+
+  PENALTY:
+    category: shooting
+    description: "Penalty kick"
+
+  # === DEFENSIVE ===
+  TACKLE_WON:
+    category: defensive
+    description: "Successful tackle winning possession"
+
+  TACKLE_LOST:
+    category: defensive
+    description: "Unsuccessful tackle attempt"
+
+  INTERCEPTION:
+    category: defensive
+    description: "Intercepted pass or clearance"
+
+  CLEARANCE:
+    category: defensive
+    description: "Defensive clearance"
+
+  BLOCK:
+    category: defensive
+    description: "Blocked shot or pass"
+
+  # === POSSESSION ===
+  DRIBBLE_COMPLETED:
+    category: possession
+    description: "Successful dribble past opponent"
+
+  DRIBBLE_INCOMPLETE:
+    category: possession
+    description: "Unsuccessful dribble attempt"
+
+  CARRY:
+    category: possession
+    description: "Carrying the ball while running"
+
+  TOUCH:
+    category: possession
+    description: "Simple touch/control of ball"
+
+  # === FOULS & CARDS ===
+  FOUL_COMMITTED:
+    category: discipline
+    description: "Player committed a foul"
+
+  FOUL_SUFFERED:
+    category: discipline
+    description: "Player was fouled"
+
+  YELLOW_CARD:
+    category: discipline
+    description: "Yellow card shown"
+
+  RED_CARD:
+    category: discipline
+    description: "Red card shown"
+
+  # === SET PIECES ===
+  CORNER:
+    category: set_piece
+    description: "Corner kick"
+
+  FREE_KICK:
+    category: set_piece
+    description: "Free kick"
+
+  THROW_IN:
+    category: set_piece
+    description: "Throw-in"
+
+  GOAL_KICK:
+    category: set_piece
+    description: "Goal kick"
+
+  # === DUELS ===
+  AERIAL_DUEL_WON:
+    category: duel
+    description: "Won aerial duel"
+
+  AERIAL_DUEL_LOST:
+    category: duel
+    description: "Lost aerial duel"
+
+  GROUND_DUEL_WON:
+    category: duel
+    description: "Won ground duel"
+
+  GROUND_DUEL_LOST:
+    category: duel
+    description: "Lost ground duel"
+
+  # === GOALKEEPER ===
+  SAVE:
+    category: goalkeeper
+    description: "Goalkeeper save"
+
+  PUNCH:
+    category: goalkeeper
+    description: "Goalkeeper punch"
+
+  CLAIM:
+    category: goalkeeper
+    description: "Goalkeeper claim/catch"
+
+  SMOTHER:
+    category: goalkeeper
+    description: "Goalkeeper smother"
+
+  # === OTHER ===
+  OFFSIDE:
+    category: other
+    description: "Offside"
+
+  SUBSTITUTION:
+    category: other
+    description: "Player substitution"
+
+  ERROR:
+    category: other
+    description: "Error leading to shot/goal"
+
+  PRESSURE:
+    category: other
+    description: "Applying pressure to opponent"
+
+# ============================================
+# OPTA EVENT TYPE MAPPINGS
+# ============================================
+# Maps Opta F24 event type IDs to canonical types
+
+provider_mappings:
+  opta:
+    # === PASSES (type_id: 1, 2) ===
+    1:  # Pass
+      canonical_type: PASS_COMPLETED
+      requires_outcome: 1  # outcome=1 means successful
+
+    1:  # Pass (outcome=0)
+      canonical_type: PASS_INCOMPLETE
+      requires_outcome: 0
+
+    2:  # Offside pass
+      canonical_type: PASS_INCOMPLETE
+      notes: "Offside passes are always incomplete"
+
+    # === SHOTS & GOALS (type_id: 13-16) ===
+    13:  # Miss
+      canonical_type: SHOT_OFF_TARGET
+
+    14:  # Post
+      canonical_type: SHOT_OFF_TARGET
+      notes: "Hit post/crossbar"
+
+    15:  # Attempt saved
+      canonical_type: SHOT_ON_TARGET
+
+    16:  # Goal
+      canonical_type: GOAL
+
+    # === TACKLES (type_id: 7) ===
+    7:  # Tackle
+      canonical_type: TACKLE_WON
+      requires_outcome: 1
+
+    7:  # Tackle (unsuccessful)
+      canonical_type: TACKLE_LOST
+      requires_outcome: 0
+
+    # === INTERCEPTION (type_id: 8) ===
+    8:
+      canonical_type: INTERCEPTION
+
+    # === CLEARANCE (type_id: 12) ===
+    12:
+      canonical_type: CLEARANCE
+
+    # === BLOCKED SHOT (type_id: 10) ===
+    10:
+      canonical_type: SHOT_BLOCKED
+
+    # === SAVES (type_id: 9, 11) ===
+    9:
+      canonical_type: SAVE
+
+    11:  # Smother
+      canonical_type: SMOTHER
+
+    # === AERIALS (type_id: 44) ===
+    44:  # Aerial
+      canonical_type: AERIAL_DUEL_WON
+      requires_outcome: 1
+
+    44:  # Aerial (lost)
+      canonical_type: AERIAL_DUEL_LOST
+      requires_outcome: 0
+
+    # === FOULS (type_id: 4) ===
+    4:
+      canonical_type: FOUL_COMMITTED
+
+    # === CARDS (type_id: 17) ===
+    17:  # Yellow card
+      canonical_type: YELLOW_CARD
+      requires_qualifier: 32  # Q32 = yellow
+
+    17:  # Red card
+      canonical_type: RED_CARD
+      requires_qualifier: 33  # Q33 = red
+
+    # === CORNERS (type_id: 6) ===
+    6:
+      canonical_type: CORNER
+
+    # === OFFSIDES (type_id: 51) ===
+    51:
+      canonical_type: OFFSIDE
+
+    # === SUBSTITUTION (type_id: 18, 19) ===
+    18:  # Substitution off
+      canonical_type: SUBSTITUTION
+
+    19:  # Substitution on
+      canonical_type: SUBSTITUTION
+
+    # === TAKE ON / DRIBBLE (type_id: 3) ===
+    3:  # Take on
+      canonical_type: DRIBBLE_COMPLETED
+      requires_outcome: 1
+
+    3:  # Take on (unsuccessful)
+      canonical_type: DRIBBLE_INCOMPLETE
+      requires_outcome: 0
+
+# ============================================
+# STATSBOMB EVENT TYPE MAPPINGS
+# ============================================
+# Maps StatsBomb event type IDs to canonical types
+
+  statsbomb:
+    # === PASSES (type_id: 30) ===
+    30:  # Pass
+      canonical_type: PASS_COMPLETED
+      requires_outcome_name: "Complete"
+
+    30:  # Pass (incomplete)
+      canonical_type: PASS_INCOMPLETE
+      requires_outcome_name: "Incomplete"
+
+    30:  # Pass (assist)
+      canonical_type: PASS_ASSIST
+      requires_attribute: "goal_assist"
+
+    # === SHOTS (type_id: 16) ===
+    16:  # Shot
+      canonical_type: SHOT_ON_TARGET
+      requires_outcome_name: "Saved"
+
+    16:  # Shot off target
+      canonical_type: SHOT_OFF_TARGET
+      requires_outcome_name: "Off T"
+
+    16:  # Shot blocked
+      canonical_type: SHOT_BLOCKED
+      requires_outcome_name: "Blocked"
+
+    16:  # Goal
+      canonical_type: GOAL
+      requires_outcome_name: "Goal"
+
+    # === DRIBBLES (type_id: 14) ===
+    14:  # Dribble
+      canonical_type: DRIBBLE_COMPLETED
+      requires_outcome_name: "Complete"
+
+    14:  # Dribble (incomplete)
+      canonical_type: DRIBBLE_INCOMPLETE
+      requires_outcome_name: "Incomplete"
+
+    # === CARRIES (type_id: 43) ===
+    43:
+      canonical_type: CARRY
+
+    # === DUELS (type_id: 4) ===
+    4:  # Duel
+      canonical_type: GROUND_DUEL_WON
+      requires_duel_type: "Tackle"
+      requires_outcome_name: "Won"
+
+    4:  # Duel lost
+      canonical_type: GROUND_DUEL_LOST
+      requires_duel_type: "Tackle"
+      requires_outcome_name: "Lost"
+
+    # === AERIAL DUELS (type_id: 4, subtype aerial) ===
+    4:  # Aerial duel
+      canonical_type: AERIAL_DUEL_WON
+      requires_duel_type: "Aerial"
+      requires_outcome_name: "Won"
+
+    4:  # Aerial duel lost
+      canonical_type: AERIAL_DUEL_LOST
+      requires_duel_type: "Aerial"
+      requires_outcome_name: "Lost"
+
+    # === INTERCEPTIONS (type_id: 10) ===
+    10:
+      canonical_type: INTERCEPTION
+
+    # === CLEARANCES (type_id: 9) ===
+    9:
+      canonical_type: CLEARANCE
+
+    # === BLOCKS (type_id: 6) ===
+    6:
+      canonical_type: BLOCK
+
+    # === PRESSURE (type_id: 17) ===
+    17:
+      canonical_type: PRESSURE
+
+    # === FOULS (type_id: 21, 22) ===
+    21:  # Foul committed
+      canonical_type: FOUL_COMMITTED
+
+    22:  # Foul won
+      canonical_type: FOUL_SUFFERED
+
+    # === CARDS (type_id: 24, 25) ===
+    24:
+      canonical_type: YELLOW_CARD
+
+    25:
+      canonical_type: RED_CARD
+
+    # === SAVES (type_id: 23) ===
+    23:
+      canonical_type: SAVE
+
+    # === CORNERS (from pass type) ===
+    30:  # Pass (corner)
+      canonical_type: CORNER
+      requires_pass_type_name: "Corner"
+
+    # === FREE KICKS (from pass type) ===
+    30:  # Pass (free kick)
+      canonical_type: FREE_KICK
+      requires_pass_type_name: "Free Kick"
+
+    # === THROW INS (from pass type) ===
+    30:  # Pass (throw-in)
+      canonical_type: THROW_IN
+      requires_pass_type_name: "Throw-in"
+
+    # === GOAL KICKS (from pass type) ===
+    30:  # Pass (goal kick)
+      canonical_type: GOAL_KICK
+      requires_pass_type_name: "Goal Kick"
+
+    # === OFFSIDE (type_id: 6) ===
+    8:
+      canonical_type: OFFSIDE
+
+    # === SUBSTITUTION (type_id: 19, 26) ===
+    19:
+      canonical_type: SUBSTITUTION
+
+    26:  # Player off
+      canonical_type: SUBSTITUTION
+
+# ============================================
+# WYSCOUT EVENT TYPE MAPPINGS
+# ============================================
+# Maps Wyscout event IDs to canonical types
+# (To be filled in when Wyscout adapter is implemented)
+
+  wyscout:
+    # Placeholder - to be implemented
+    pass:
+      canonical_type: PASS_COMPLETED
+
+# ============================================
+# UNMAPPED EVENTS
+# ============================================
+# How to handle events that don't map to canonical types
+
+unmapped_handling:
+  action: log_warning
+  fallback_category: other
+  log_to_collection: unmapped_events

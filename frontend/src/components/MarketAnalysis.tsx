@@ -12,12 +12,18 @@ const MarketAnalysis: React.FC = () => {
   const { players } = useData();
   const { data: marketTrends } = useApi(() => apiService.getMarketTrends(), []);
 
-  const marketData = players.map(player => ({
-    ...player,
-    previousValue: parseFloat(player.marketValue.replace(/[€M]/g, '')) * 0.9,
-    changePercent: Math.random() * 40 - 20,
-    transferProbability: Math.floor(Math.random() * 100),
-  }));
+  const marketData = players.map((player, i) => {
+    // Use a deterministic seed from the player id to avoid re-renders changing values
+    const seed = player.id ? player.id.split('').reduce((acc: number, c: string) => acc + c.charCodeAt(0), 0) : i;
+    const changePercent = ((seed % 41) - 20);           // -20 to +20, deterministic
+    const transferProbability = (seed * 7 + i * 13) % 101; // 0-100, deterministic
+    return {
+      ...player,
+      previousValue: parseFloat(String(player.marketValue || '0').replace(/[€M]/g, '')) * 0.9,
+      changePercent,
+      transferProbability,
+    };
+  });
 
   const topGainers = marketData
     .filter(player => player.changePercent > 0)

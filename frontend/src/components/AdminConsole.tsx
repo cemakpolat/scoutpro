@@ -1,59 +1,48 @@
-import React, { useState, useEffect } from 'react';
+import React, { useMemo, useState } from 'react';
 import { 
   Shield, Users, Key, Bell, Settings, Activity, 
-  Eye, Lock, CreditCard, Database, AlertTriangle, Loader2
+  Eye, Lock, CreditCard, Database, AlertTriangle, Loader2, RefreshCw, FileText
 } from 'lucide-react';
 import apiService from '../services/api';
-import { useData } from '../context/DataContext';
+import { useApi } from '../hooks/useApi';
+
+const formatDateTime = (value?: string) => {
+  if (!value) {
+    return 'Pending';
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
+};
 
 const AdminConsole: React.FC = () => {
   const [activeSection, setActiveSection] = useState('users');
-  const [systemHealth, setSystemHealth] = useState<any>(null);
-  const [dashboardStats, setDashboardStats] = useState<any>(null);
+  const { data: adminSnapshot, loading, error, refetch } = useApi<any>(
+    () => apiService.getAdminSnapshot(), []
+  );
 
-  const { players, teams } = useData();
+  const summary = adminSnapshot?.summary || {
+    totalUsers: 0,
+    activeUsers: 0,
+    totalPlayers: 0,
+    totalTeams: 0,
+    totalReports: 0,
+    activeApiKeys: 0,
+  };
+  const userRoles = adminSnapshot?.users || [];
+  const roles = adminSnapshot?.roles || [];
+  const permissionRows = adminSnapshot?.permissionMatrix || [];
+  const apiKeys = adminSnapshot?.apiKeys || [];
+  const auditLogs = adminSnapshot?.auditLogs || [];
+  const subscriptions = adminSnapshot?.subscriptions || [];
+  const systemHealth = adminSnapshot?.systemHealth || { status: 'unknown', services: [], alerts: [] };
 
-  // Fetch system health from API on mount
-  useEffect(() => {
-    Promise.all([
-      apiService.getDashboardOverview().catch(() => null),
-    ]).then(([overview]) => {
-      if (overview) setDashboardStats(overview);
-    });
-
-    // Check API health
-    fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001/api'}/health`)
-      .then(r => r.json())
-      .then(data => setSystemHealth(data))
-      .catch(() => {});
-  }, []);
-
-  const userRoles = [
-    { name: 'John Smith', role: 'Head Scout', access: 'Full Access', lastActive: '2 hours ago', status: 'active' },
-    { name: 'Sarah Wilson', role: 'Analyst', access: 'Analytics Only', lastActive: '1 day ago', status: 'active' },
-    { name: 'Mike Johnson', role: 'Coach', access: 'Reports Only', lastActive: '3 hours ago', status: 'active' },
-    { name: 'Emma Davis', role: 'Executive', access: 'Executive Dashboard', lastActive: '1 week ago', status: 'inactive' },
-  ];
-
-  const apiKeys = [
-    { name: 'Mobile App', key: 'sk_live_...7x9z', created: '2024-01-15', lastUsed: '2 hours ago', status: 'active' },
-    { name: 'Data Export', key: 'sk_live_...3m8n', created: '2024-01-10', lastUsed: '1 day ago', status: 'active' },
-    { name: 'Third Party Integration', key: 'sk_live_...9k2l', created: '2023-12-20', lastUsed: '1 month ago', status: 'inactive' },
-  ];
-
-  const auditLogs = [
-    { user: 'John Smith', action: 'Viewed player report', resource: 'Kylian Mbappé', time: '10 min ago' },
-    { user: 'Sarah Wilson', action: 'Generated analytics report', resource: 'Team Performance', time: '1 hour ago' },
-    { user: 'Mike Johnson', action: 'Downloaded PDF report', resource: 'Match Analysis', time: '2 hours ago' },
-    { user: 'Emma Davis', action: 'Accessed executive dashboard', resource: 'Market Overview', time: '1 day ago' },
-  ];
-
-  const subscriptions = [
-    { club: 'Manchester United', plan: 'Enterprise', users: 25, expires: '2024-12-31', status: 'active' },
-    { club: 'Barcelona FC', plan: 'Professional', users: 15, expires: '2024-11-15', status: 'active' },
-    { club: 'Bayern Munich', plan: 'Professional', users: 12, expires: '2024-10-20', status: 'expiring' },
-    { club: 'Juventus', plan: 'Basic', users: 5, expires: '2024-09-30', status: 'expired' },
-  ];
+  const summaryCards = useMemo(() => ([
+    { label: 'Users', value: summary.totalUsers, detail: `${summary.activeUsers} active`, icon: Users, tone: 'text-blue-400' },
+    { label: 'Active API Keys', value: summary.activeApiKeys, detail: 'Backend-managed integrations', icon: Key, tone: 'text-emerald-400' },
+    { label: 'Reports Generated', value: summary.totalReports, detail: 'Persisted backend jobs', icon: FileText, tone: 'text-purple-400' },
+    { label: 'Indexed Players', value: summary.totalPlayers, detail: `${summary.totalTeams} teams available`, icon: Database, tone: 'text-amber-400' },
+  ]), [summary.activeApiKeys, summary.activeUsers, summary.totalPlayers, summary.totalReports, summary.totalTeams, summary.totalUsers]);
 
   const sections = [
     { id: 'users', label: 'User Management', icon: Users },
@@ -72,12 +61,50 @@ const AdminConsole: React.FC = () => {
           Admin Console
         </h1>
         <div className="flex items-center space-x-4">
-          <div className="flex items-center space-x-2 px-4 py-2 bg-green-600 rounded-lg">
+          <button
+            onClick={() => refetch()}
+            className="flex items-center space-x-2 px-4 py-2 bg-slate-700 hover:bg-slate-600 rounded-lg transition-colors"
+          >
+            <RefreshCw className="h-4 w-4" />
+            <span className="text-sm">Refresh</span>
+          </button>
+          <div className={`flex items-center space-x-2 px-4 py-2 rounded-lg ${systemHealth.status === 'healthy' ? 'bg-green-600' : systemHealth.status === 'degraded' ? 'bg-yellow-600' : 'bg-slate-700'}`}>
             <Activity className="h-4 w-4" />
-            <span className="text-sm">System Healthy</span>
+            <span className="text-sm">{systemHealth.status === 'healthy' ? 'System Healthy' : systemHealth.status === 'degraded' ? 'Degraded Mode' : 'Loading Health'}</span>
           </div>
         </div>
       </div>
+
+      {error && (
+        <div className="rounded-xl border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-200">
+          {error}
+        </div>
+      )}
+
+      {loading && !adminSnapshot ? (
+        <div className="flex items-center justify-center rounded-xl bg-slate-800 px-6 py-20 text-slate-300">
+          <Loader2 className="mr-3 h-5 w-5 animate-spin text-red-400" />
+          Loading admin snapshot...
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
+            {summaryCards.map((card) => {
+              const Icon = card.icon;
+              return (
+                <div key={card.label} className="bg-slate-800 rounded-xl p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <div className="text-2xl font-bold text-white">{card.value}</div>
+                      <div className="text-slate-400 text-sm">{card.label}</div>
+                    </div>
+                    <Icon className={`h-8 w-8 ${card.tone}`} />
+                  </div>
+                  <div className="text-sm text-slate-400">{card.detail}</div>
+                </div>
+              );
+            })}
+          </div>
 
       {/* Section Navigation */}
       <div className="bg-slate-800 rounded-xl p-6">
@@ -126,10 +153,13 @@ const AdminConsole: React.FC = () => {
               <tbody>
                 {userRoles.map((user, index) => (
                   <tr key={index} className="border-b border-slate-700 hover:bg-slate-700">
-                    <td className="py-3 px-2 font-semibold">{user.name}</td>
+                    <td className="py-3 px-2">
+                      <div className="font-semibold">{user.name}</div>
+                      <div className="text-xs text-slate-400">{user.email || user.team || 'No team assigned'}</div>
+                    </td>
                     <td className="py-3 px-2">{user.role}</td>
                     <td className="py-3 px-2">{user.access}</td>
-                    <td className="py-3 px-2 text-slate-400">{user.lastActive}</td>
+                    <td className="py-3 px-2 text-slate-400">{formatDateTime(user.lastActive)}</td>
                     <td className="py-3 px-2">
                       <span className={`px-2 py-1 rounded text-xs ${
                         user.status === 'active' ? 'bg-green-600 text-green-100' : 'bg-red-600 text-red-100'
@@ -160,14 +190,12 @@ const AdminConsole: React.FC = () => {
           <div className="bg-slate-800 rounded-xl p-6">
             <h3 className="text-xl font-semibold mb-6">Role-Based Access Control</h3>
             <div className="space-y-4">
-              {[
-                { role: 'Head Scout', permissions: ['Full Database Access', 'Report Generation', 'User Management', 'API Access'] },
-                { role: 'Analyst', permissions: ['Analytics Dashboard', 'Report Generation', 'Data Export'] },
-                { role: 'Coach', permissions: ['Player Reports', 'Match Analysis', 'Basic Dashboard'] },
-                { role: 'Executive', permissions: ['Executive Dashboard', 'Market Intelligence', 'High-Level Reports'] },
-              ].map((role, index) => (
+              {roles.map((role, index) => (
                 <div key={index} className="p-4 bg-slate-700 rounded-lg">
-                  <h4 className="font-semibold mb-3">{role.role}</h4>
+                  <div className="flex items-center justify-between mb-3">
+                    <h4 className="font-semibold">{role.label}</h4>
+                    <span className="text-xs text-slate-400">{role.access}</span>
+                  </div>
                   <div className="space-y-2">
                     {role.permissions.map((permission, i) => (
                       <div key={i} className="flex items-center space-x-2">
@@ -195,15 +223,12 @@ const AdminConsole: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {[
-                    { feature: 'Player Database', scout: true, analyst: true, coach: true, executive: false },
-                    { feature: 'Match Centre', scout: true, analyst: true, coach: true, executive: false },
-                    { feature: 'Analytics Lab', scout: true, analyst: true, coach: false, executive: true },
-                    { feature: 'Report Builder', scout: true, analyst: true, coach: true, executive: true },
-                    { feature: 'Admin Console', scout: true, analyst: false, coach: false, executive: false },
-                  ].map((row, index) => (
+                  {permissionRows.map((row, index) => (
                     <tr key={index} className="border-b border-slate-700">
                       <td className="py-2 font-medium">{row.feature}</td>
+                      <td className="text-center py-2">
+                        {row.admin ? <span className="text-green-400">✓</span> : <span className="text-red-400">✗</span>}
+                      </td>
                       <td className="text-center py-2">
                         {row.scout ? <span className="text-green-400">✓</span> : <span className="text-red-400">✗</span>}
                       </td>
@@ -253,8 +278,8 @@ const AdminConsole: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex justify-between text-sm text-slate-400">
-                  <span>Created: {api.created}</span>
-                  <span>Last used: {api.lastUsed}</span>
+                  <span>Created: {formatDateTime(api.createdAt || api.created)}</span>
+                  <span>Last used: {formatDateTime(api.lastUsed)}</span>
                 </div>
               </div>
             ))}
@@ -277,7 +302,7 @@ const AdminConsole: React.FC = () => {
                     <span className="text-slate-400">•</span>
                     <span className="text-blue-400">{log.resource}</span>
                   </div>
-                  <div className="text-sm text-slate-400">{log.time}</div>
+                  <div className="text-sm text-slate-400">{formatDateTime(log.time)}</div>
                 </div>
               </div>
             ))}
@@ -340,10 +365,7 @@ const AdminConsole: React.FC = () => {
             <h3 className="text-xl font-semibold mb-6">System Health</h3>
             <div className="space-y-4">
               {[
-                { service: 'API Gateway', status: systemHealth ? 'healthy' : 'unknown', uptime: '99.9%', response: systemHealth ? '45ms' : 'N/A' },
-                { service: 'Database', status: systemHealth?.mongodb === 'connected' ? 'healthy' : 'warning', uptime: '99.8%', response: '12ms' },
-                { service: 'ML Models', status: 'healthy', uptime: '99.7%', response: '234ms' },
-                { service: 'Data Pipeline', status: dashboardStats ? 'healthy' : 'unknown', uptime: dashboardStats ? '99.5%' : 'N/A', response: '89ms' },
+                ...(systemHealth.services || []),
               ].map((service, index) => (
                 <div key={index} className="p-4 bg-slate-700 rounded-lg">
                   <div className="flex items-center justify-between mb-2">
@@ -374,41 +396,32 @@ const AdminConsole: React.FC = () => {
           <div className="bg-slate-800 rounded-xl p-6">
             <h3 className="text-xl font-semibold mb-6">System Alerts</h3>
             <div className="space-y-3">
-              <div className="p-3 bg-yellow-600/10 border border-yellow-600/20 rounded-lg">
-                <div className="flex items-center space-x-2 mb-1">
-                  <AlertTriangle className="h-4 w-4 text-yellow-400" />
-                  <span className="font-semibold text-yellow-400">Warning</span>
-                </div>
-                <p className="text-sm text-slate-300">
-                  File storage usage at 85%. Consider upgrading storage plan.
-                </p>
-                <div className="text-xs text-slate-400 mt-1">2 hours ago</div>
-              </div>
+              {(systemHealth.alerts || []).map((alert: any) => {
+                const tone = alert.type === 'warning'
+                  ? 'bg-yellow-600/10 border-yellow-600/20 text-yellow-400'
+                  : alert.type === 'success'
+                    ? 'bg-green-600/10 border-green-600/20 text-green-400'
+                    : 'bg-blue-600/10 border-blue-600/20 text-blue-400';
+                const Icon = alert.type === 'warning' ? AlertTriangle : alert.type === 'success' ? Activity : Database;
 
-              <div className="p-3 bg-blue-600/10 border border-blue-600/20 rounded-lg">
-                <div className="flex items-center space-x-2 mb-1">
-                  <Database className="h-4 w-4 text-blue-400" />
-                  <span className="font-semibold text-blue-400">Info</span>
-                </div>
-                <p className="text-sm text-slate-300">
-                  Database maintenance scheduled for tonight at 2 AM UTC.
-                </p>
-                <div className="text-xs text-slate-400 mt-1">1 day ago</div>
-              </div>
-
-              <div className="p-3 bg-green-600/10 border border-green-600/20 rounded-lg">
-                <div className="flex items-center space-x-2 mb-1">
-                  <Activity className="h-4 w-4 text-green-400" />
-                  <span className="font-semibold text-green-400">Success</span>
-                </div>
-                <p className="text-sm text-slate-300">
-                  ML models updated successfully. Accuracy improved by 2.3%.
-                </p>
-                <div className="text-xs text-slate-400 mt-1">3 days ago</div>
-              </div>
+                return (
+                  <div key={alert.id} className={`p-3 border rounded-lg ${tone}`}>
+                    <div className="flex items-center space-x-2 mb-1">
+                      <Icon className="h-4 w-4" />
+                      <span className="font-semibold">{alert.title}</span>
+                    </div>
+                    <p className="text-sm text-slate-300">
+                      {alert.message}
+                    </p>
+                    <div className="text-xs text-slate-400 mt-1">{formatDateTime(alert.time)}</div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

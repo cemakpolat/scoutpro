@@ -12,6 +12,11 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://redis:6379/0"
     timescaledb_url: str = "postgresql://scoutpro:scoutpro123@timescaledb:5432/scoutpro"
+    player_service_url: str = "http://player-service:8000"
+    team_service_url: str = "http://team-service:8000"
+    match_service_url: str = "http://match-service:8000"
+    statistics_service_url: str = "http://statistics-service:8000"
+    ml_service_url: str = "http://ml-service:8000"
 
     cache_ttl_analytics: int = 600  # 10 minutes
 
