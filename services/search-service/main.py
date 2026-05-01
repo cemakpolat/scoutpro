@@ -1,6 +1,8 @@
 """
 Search Service - Main Application
 """
+import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -15,33 +17,21 @@ from consumers.event_consumer import start_consumer, stop_consumer
 
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
-consumer_started = False
 
-app = FastAPI(
-    title="Search Service",
-    description="ScoutPro Search Service with Elasticsearch",
-    version="2.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-Instrumentator().instrument(app).expose(app, endpoint="/metrics")
-
-app.include_router(search_router)
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://api-gateway:3001,http://localhost:3001,http://localhost:5173,http://localhost:5174",
+    ).split(",")
+    if o.strip()
+]
 
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    consumer_started = False
     logger.info(f"Starting {settings.service_name}")
-    global consumer_started
 
     try:
         search_client = SearchClient(
@@ -71,19 +61,38 @@ async def startup_event():
         logger.error(f"Startup failed: {e}")
         raise
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown_event():
     logger.info(f"Shutting down {settings.service_name}")
-    global consumer_started
-
     try:
         if consumer_started:
             await stop_consumer()
-            consumer_started = False
-        await app.state.search_client.close()
+        if hasattr(app.state, "search_client"):
+            await app.state.search_client.close()
     except Exception as e:
         logger.error(f"Shutdown error: {e}")
+
+
+app = FastAPI(
+    title="Search Service",
+    description="ScoutPro Search Service with Elasticsearch",
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+
+app.include_router(search_router)
 
 
 @app.get("/health")

@@ -1,36 +1,31 @@
 """
 WebSocket Server - Main Application
 """
+import asyncio
+import json
+import os
+import sys
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 import logging
-import json
-import sys
 sys.path.append('/app')
 from shared.utils.logger import setup_logger
 from config.settings import get_settings
 from websocket.manager import ConnectionManager
-import asyncio
 
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
 
-app = FastAPI(
-    title="WebSocket Server",
-    description="ScoutPro Real-time WebSocket Server",
-    version="2.0.0",
-    docs_url="/docs"
-)
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://api-gateway:3001,http://localhost:3001,http://localhost:5173,http://localhost:5174",
+    ).split(",")
+    if o.strip()
+]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Connection manager
 manager = ConnectionManager()
 
 
@@ -112,37 +107,45 @@ async def websocket_user_endpoint(websocket: WebSocket, user_id: str):
         manager.disconnect(websocket)
 
 
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     logger.info(f"Starting {settings.service_name}")
 
     try:
-        # Import and start Kafka-WebSocket bridge
         from kafka_bridge.event_bridge import start_bridge
-
-        # Start the bridge in the background
         logger.info("Starting Kafka-WebSocket bridge...")
         asyncio.create_task(start_bridge(manager))
-
-        logger.info("WebSocket server ready to accept connections")
         logger.info(f"{settings.service_name} started successfully")
-
     except Exception as e:
         logger.error(f"Startup failed: {e}")
         raise
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown_event():
     logger.info(f"Shutting down {settings.service_name}")
-
     try:
-        # Stop Kafka-WebSocket bridge
         from kafka_bridge.event_bridge import stop_bridge
         await stop_bridge()
         logger.info("Kafka-WebSocket bridge stopped")
     except Exception as e:
         logger.error(f"Error during shutdown: {e}")
+
+
+app = FastAPI(
+    title="WebSocket Server",
+    description="ScoutPro Real-time WebSocket Server",
+    version="2.0.0",
+    docs_url="/docs",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")

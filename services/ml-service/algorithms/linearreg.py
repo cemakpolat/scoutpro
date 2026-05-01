@@ -1,143 +1,93 @@
 """
-@author: Cem Akpolat, Hüseyin Eren
-@created by cemakpolat at 2020-09-06
+Linear Regression Algorithm
+Predicts a continuous football metric from player/event statistics.
 """
-import json
-import pandas as pd
+from typing import Any, List, Dict, Optional
+import logging
 import numpy as np
-from sklearn.model_selection import train_test_split
-from sklearn import metrics
 from sklearn.linear_model import LinearRegression
-from src.danalyticAPI.algorithms.algorithm import Algorithm
-from src.danalyticAPI.algorithms import alg
-from src.utils.Utils import Logger, df_to_dict
+from sklearn.model_selection import cross_val_score, train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_absolute_error, r2_score
+from .base import MLAlgorithm
+
+logger = logging.getLogger(__name__)
 
 
-config_params = {
-    alg.test_size: "test_size",
-    alg.random_state: "random_state",
-    alg.criterion: "criterion"
-}
+class LinearRegressionAlgorithm(MLAlgorithm):
+    """
+    Linear Regression for predicting a continuous target (e.g., goals, xG, pass accuracy).
 
-
-# Define logger.
-logger = Logger(__name__).get_linear_regression_logger()
-
-
-class LinearRegressionAlgorithm(Algorithm):
+    Data format (list of dicts from MongoDB player_statistics / player_features):
+        [{"player_id": "...", "goals": 5, "shots": 15, "passes": 200, ...}, ...]
     """
 
-    Parameters:
-        :param KMeans self.kmeans:
-        :param pd.Dataframe self.X_train:
-        :param pd.Dataframe self.X_test:
-        :param pd.Dataframe self.y_train:
-        :param pd.Dataframe self.y_test:
-        :param pd.Dataframe self.y_predict:
-        :param int self.random_state:
-        :param float self.test_size:
-        :param LinearRegression self.regression:
+    def __init__(self, target_field: str = "goals", test_size: float = 0.2, random_state: int = 42):
+        self.target_field = target_field
+        self.test_size = test_size
+        self.random_state = random_state
+        self.model: Optional[LinearRegression] = None
+        self.scaler = StandardScaler()
+        self.feature_names: List[str] = []
+        self.is_fitted = False
+        self.metrics: Dict[str, Any] = {}
 
-    """
-    def __init__(self):
-        super().__init__()
-        self.X_train = None
-        self.X_test = None
-        self.y_train = None
-        self.y_test = None
-        self.random_state = None
-        self.test_size = 0.2
-        self.criterion = None
-        self.y_predict = None
-        self.regression = None
+    def train(self, data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not data:
+            return {"error": "No data provided"}
 
-    def _config(self, config_data: dict):
-        if alg.config in config_data:
-            config = config_data[alg.config]
-            for key, value in config_params.items():
-                if key in config:
-                    setattr(self, value, config[key])
-        return self
+        exclude = {self.target_field, "player_id", "_id", "updated_at", "playerID", "teamID"}
+        self.feature_names = [
+            k for k in data[0].keys()
+            if k not in exclude and isinstance(data[0].get(k), (int, float))
+        ]
 
-    def setup(self, setup_data: dict):
-        # General data loading.
-        try:
-            self._load_data(setup_data=setup_data)
-        except Exception as err:
-            logger.error(
-                "While pre-loading data, "
-                f"following error occurred: {err}"
-            )
-        # Construct self.X and self.y
-        self._construct_X()
-        self._construct_y()
-        # Define config.
-        if alg.algorithm in setup_data:
-            self._config(config_data=setup_data[alg.algorithm])
-        else:
-            logger.warning(
-                f"Setup data has a missing crucial key: {alg.algorithm}"
-            )
-        # Split dataset into training set and test set
-        try:
-            self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
-                self.X, self.y, test_size=self.test_size, random_state=self.random_state
-            )
-        except Exception as err:
-            logger.error(
-                "While using train test split function, "
-                f"following error occurred: {err}"
-            )
-        return self
+        X, y = [], []
+        for row in data:
+            if row.get(self.target_field) is not None:
+                feats = [float(row.get(f, 0) or 0) for f in self.feature_names]
+                X.append(feats)
+                y.append(float(row[self.target_field] or 0))
 
-    def train(self):
-        # Building Regression Model
-        # Create Linear Regression classifier object
-        self.regression = LinearRegression()
-        try:
-            self.regression.fit(self.X_train, self.y_train)
-        except Exception as err:
-            logger.error(
-                f"Linear Regression can not be trained: {err}"
+        if len(X) < 5:
+            return {"error": f"Insufficient data ({len(X)} samples with '{self.target_field}')", "n_samples": len(X)}
+
+        X_arr = np.array(X)
+        y_arr = np.array(y)
+
+        if len(X) >= 10:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_arr, y_arr, test_size=self.test_size, random_state=self.random_state
             )
         else:
-            logger.info("Linear Regression has been trained")
-        return self
+            X_train, X_test, y_train, y_test = X_arr, X_arr, y_arr, y_arr
 
-    def predict(self):
-        if self.regression is None:
-            self.train()
-        # Predict the response for test dataset
-        try:
-            self.y_predict = self.regression.predict(self.X_test)
-        except Exception as err:
-            logger.error(
-                f"Linear Regression can not being executed: {err}"
-            )
-        else:
-            logger.info("Linear Regression is being executed")
-        y_predict = pd.DataFrame(
-            data=self.y_predict,
-            index=self.X_test.index,
-            columns=self.target_columns
-        )
-        # Evaluating the applied model using the test data
-        result = {
-            "y_predict": df_to_dict(y_predict),
-            "score": self.regression.score(self.X_test, self.y_test)
+        X_train_s = self.scaler.fit_transform(X_train)
+        X_test_s = self.scaler.transform(X_test)
+
+        self.model = LinearRegression()
+        self.model.fit(X_train_s, y_train)
+        self.is_fitted = True
+
+        y_pred = self.model.predict(X_test_s)
+        self.metrics = {
+            "n_samples": len(X),
+            "n_features": len(self.feature_names),
+            "target": self.target_field,
+            "features": self.feature_names,
+            "r2_score": round(float(r2_score(y_test, y_pred)), 4),
+            "mae": round(float(mean_absolute_error(y_test, y_pred)), 4),
         }
-        return result
+        logger.info(f"LinearRegression trained: {self.metrics}")
+        return self.metrics
 
-    def result(self):
-        self.predict()
-        prediction = pd.DataFrame(
-            data=self.y_predict,
-            index=self.X_test.index,
-            columns=self.target_columns
-        )
-        result_data = self.y_test.join(
-            other=prediction,
-            lsuffix=" (true)",
-            rsuffix=" (predict)"
-        )
-        return df_to_dict(result_data)
+    def predict(self, input_data: Dict[str, Any]) -> Any:
+        if not self.is_fitted or self.model is None:
+            return {"error": "Model not fitted — call train() first"}
+        feats = [float(input_data.get(f, 0) or 0) for f in self.feature_names]
+        X = self.scaler.transform(np.array([feats]))
+        prediction = float(self.model.predict(X)[0])
+        return {
+            "predicted_" + self.target_field: round(prediction, 4),
+            "model": "linear_regression",
+        }

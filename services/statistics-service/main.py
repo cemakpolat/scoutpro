@@ -2,7 +2,8 @@
 Statistics Service - Main Application
 """
 import asyncio
-from contextlib import suppress
+import os
+from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -26,6 +27,15 @@ logger = setup_logger(settings.service_name, settings.log_level)
 stream_processor = None
 stream_processor_task = None
 
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://api-gateway:3001,http://localhost:3001,http://localhost:5173,http://localhost:5174",
+    ).split(",")
+    if o.strip()
+]
+
 
 def _handle_stream_processor_exit(task: asyncio.Task) -> None:
     try:
@@ -35,49 +45,23 @@ def _handle_stream_processor_exit(task: asyncio.Task) -> None:
     except Exception as exc:
         logger.error(f"Statistics Stream Processor stopped unexpectedly: {exc}", exc_info=True)
 
-app = FastAPI(
-    title="Statistics Service",
-    description="ScoutPro Statistics & Analytics Service",
-    version="2.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-Instrumentator().instrument(app).expose(app, endpoint="/metrics")
-
-app.include_router(statistics_router)
-app.include_router(events_router)
-app.include_router(events_enhanced_router)
-
-
-@app.on_event("startup")
-async def startup_event():
-    logger.info(f"Starting {settings.service_name}")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global stream_processor, stream_processor_task
+    logger.info(f"Starting {settings.service_name}")
 
     try:
         manager = await get_database_manager()
 
         logger.info("Connecting to MongoDB...")
-        await manager.connect_mongodb(
-            settings.mongodb_url,
-            settings.mongodb_database
-        )
+        await manager.connect_mongodb(settings.mongodb_url, settings.mongodb_database)
         logger.info("MongoDB connected")
 
         logger.info("Connecting to Redis...")
         await manager.connect_redis(settings.redis_url)
         logger.info("Redis connected")
 
-        # Start Kafka Stream Processor
         try:
             logger.info("Starting Statistics Stream Processor...")
             stream_processor = StatisticsStreamProcessor()
@@ -91,35 +75,50 @@ async def startup_event():
 
     except Exception as e:
         logger.error(f"Startup failed: {e}")
-        # Dont crash if local
-        # raise
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown_event():
     logger.info(f"Shutting down {settings.service_name}")
-    global stream_processor, stream_processor_task
-
     try:
         if stream_processor:
             await stream_processor.stop()
-
         if stream_processor_task:
             if not stream_processor_task.done():
                 stream_processor_task.cancel()
             with suppress(asyncio.CancelledError):
                 await stream_processor_task
-
         if db_manager:
             await db_manager.close_all()
-
         logger.info(f"{settings.service_name} shutdown complete")
-
     except Exception as e:
         logger.error(f"Shutdown error: {e}")
     finally:
         stream_processor = None
         stream_processor_task = None
+
+
+app = FastAPI(
+    title="Statistics Service",
+    description="ScoutPro Statistics & Analytics Service",
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+
+app.include_router(statistics_router)
+app.include_router(events_router)
+app.include_router(events_enhanced_router)
 
 
 @app.get("/health")

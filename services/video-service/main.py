@@ -2,6 +2,8 @@
 Video Service - Main Application
 Handles video uploads, processing, and analysis
 """
+import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -15,17 +17,35 @@ from api.endpoints.videos import router as videos_router
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
 
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://api-gateway:3001,http://localhost:3001,http://localhost:5173,http://localhost:5174",
+    ).split(",")
+    if o.strip()
+]
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info(f"Starting {settings.service_name}")
+    yield
+    logger.info(f"Shutting down {settings.service_name}")
+
+
 app = FastAPI(
     title="Video Service",
     description="ScoutPro Video Processing Service",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -33,14 +53,6 @@ app.add_middleware(
 
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 app.include_router(videos_router)
-
-@app.on_event("startup")
-async def startup_event():
-    logger.info(f"Starting {settings.service_name}")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info(f"Shutting down {settings.service_name}")
 
 @app.get("/health")
 async def health_check():
