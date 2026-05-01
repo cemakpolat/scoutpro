@@ -16,12 +16,43 @@ const {
 
 const matchServiceUrl = (process.env.MATCH_SERVICE_URL || 'http://match-service:8000').replace(/\/$/, '');
 
+/** Cache of teamId → teamName from the local MongoDB teams collection. */
+const _teamNameCache = new Map();
+let _teamCacheBuiltAt = 0;
+const TEAM_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+async function getTeamNameMap(db) {
+  if (!db) return _teamNameCache;
+  const now = Date.now();
+  if (_teamNameCache.size > 0 && now - _teamCacheBuiltAt < TEAM_CACHE_TTL_MS) {
+    return _teamNameCache;
+  }
+  const teams = await db.collection('teams')
+    .find({}, { projection: { _id: 0, uID: 1, id: 1, name: 1, shortName: 1 } })
+    .toArray();
+  _teamNameCache.clear();
+  for (const t of teams) {
+    const id = String(t.uID || t.id || '');
+    if (id) _teamNameCache.set(id, t.name || t.shortName || '');
+  }
+  _teamCacheBuiltAt = now;
+  return _teamNameCache;
+}
+
+function resolveTeamLabel(rawName, rawId, teamMap) {
+  const name = rawName || '';
+  if (name && !/^team\s+\d+$/i.test(name)) return name;
+  const id = String(rawId || '');
+  if (id && teamMap.has(id)) return teamMap.get(id);
+  return id ? `Team ${id}` : 'Unknown Team';
+}
+
 /**
  * Map a match-service response object to the frontend Match interface.
  * The service returns snake_case (home_team_id, home_score, home_team_name …)
  * after going through _normalize_match_doc; the frontend expects camelCase.
  */
-function toFrontendMatch(m) {
+function toFrontendMatch(m, teamMap = new Map()) {
   if (!m) return null;
 
   const status = (() => {
@@ -31,12 +62,15 @@ function toFrontendMatch(m) {
     return s;
   })();
 
+  const homeTeamId = String(m.home_team_id || m.homeTeamID || '');
+  const awayTeamId = String(m.away_team_id || m.awayTeamID || '');
+
   return {
     id: String(m.id || m.uID || ''),
-    homeTeam: m.home_team_name || m.homeTeamName || `Team ${m.home_team_id || m.homeTeamID || ''}`,
-    awayTeam: m.away_team_name || m.awayTeamName || `Team ${m.away_team_id || m.awayTeamID || ''}`,
-    homeTeamId: String(m.home_team_id || m.homeTeamID || ''),
-    awayTeamId: String(m.away_team_id || m.awayTeamID || ''),
+    homeTeam: resolveTeamLabel(m.home_team_name || m.homeTeamName, homeTeamId, teamMap),
+    awayTeam: resolveTeamLabel(m.away_team_name || m.awayTeamName, awayTeamId, teamMap),
+    homeTeamId,
+    awayTeamId,
     homeScore: m.home_score ?? m.homeScore ?? 0,
     awayScore: m.away_score ?? m.awayScore ?? 0,
     date: m.date || null,
@@ -78,7 +112,8 @@ router.get('/', async (req, res) => {
 
     const raw = unwrapPayload(payload);
     const list = Array.isArray(raw) ? raw : (raw?.matches || []);
-    res.json(list.map(toFrontendMatch));
+    const teamMap = await getTeamNameMap(req.app.locals.db);
+    res.json(list.map((m) => toFrontendMatch(m, teamMap)));
   } catch (error) {
     console.error('Matches list error:', error);
     sendGatewayError(res, error, 'Failed to fetch matches');
@@ -94,7 +129,8 @@ router.get('/live', async (req, res) => {
 
     const raw = unwrapPayload(payload);
     const list = Array.isArray(raw) ? raw : (raw?.matches || []);
-    res.json(list.map(toFrontendMatch));
+    const teamMap = await getTeamNameMap(req.app.locals.db);
+    res.json(list.map((m) => toFrontendMatch(m, teamMap)));
   } catch (error) {
     console.error('Live matches error:', error);
     sendGatewayError(res, error, 'Failed to fetch live matches');
@@ -131,19 +167,29 @@ router.get('/:id/shots-map', async (req, res) => {
       type_name: 'shot'
     }).toArray();
 
-    const data = events.map(e => ({
-      id: String(e._id),
-      player_id: String(e.player_id || ''),
-      player_name: e.player_name || `Player ${e.player_id || 'Unknown'}`,
-      x: e.location?.x || 0,
-      y: e.location?.y || 0,
-      is_goal: !!e.is_goal,
-      xg: e.qualifiers?.expected_goals || 0,
-      is_successful: !!e.is_goal,
-      body_part: 'foot', // fallback or map from qualifiers if known
-      shot_type: 'regular',
-      timestamp: e.minute ? `${e.minute}'` : ''
-    }));
+    const data = events.map(e => {
+      const x = e.location?.x ?? 0;
+      const y = e.location?.y ?? 0;
+      // Heuristic xG: distance-based exp(-d/30), same as XGModel fallback in statistics-service
+      const dist = Math.sqrt(Math.pow(x - 100, 2) + Math.pow(y - 50, 2));
+      const xg = Math.round(Math.exp(-dist / 30) * 10000) / 10000;
+
+      return {
+        id: String(e._id),
+        player_id: String(e.player_id || e.playerID || ''),
+        player_name: e.player_name || `Player ${e.player_id || 'Unknown'}`,
+        x,
+        y,
+        is_goal: !!e.is_goal,
+        xg,
+        is_successful: !!e.is_goal,
+        body_part: e.raw_event?.body_part || 'foot',
+        shot_type: e.raw_event?.shot_type || 'regular',
+        minute: e.minute ?? null,
+        period: e.period ?? null,
+        timestamp: e.minute != null ? `${e.minute}'` : '',
+      };
+    });
 
     res.json({ success: true, data });
   } catch (error) {
@@ -279,6 +325,77 @@ router.get('/:id/pass-map', async (req, res) => {
   } catch (error) {
     console.error('Pass map error:', error);
     sendGatewayError(res, error, 'Failed to fetch pass map');
+  }
+});
+
+// GET /api/matches/:id/events/filter — filter F24 events by type/team/player/period
+router.get('/:id/events/filter', async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    if (!db) return res.status(503).json({ success: false, error: 'Database not available' });
+
+    const { type_name, team_id, player_id, period } = req.query;
+    const mId = req.params.id;
+    const mIdNum = Number(mId);
+
+    const query = {
+      $or: [
+        { matchID: mId },
+        ...(Number.isFinite(mIdNum) ? [{ matchID: mIdNum }] : []),
+        { match_id: mId },
+        ...(Number.isFinite(mIdNum) ? [{ match_id: mIdNum }] : []),
+      ],
+    };
+
+    if (type_name) query.type_name = type_name;
+    if (period) query.period = Number(period);
+    if (team_id) {
+      const tidNum = Number(team_id);
+      query.team_id = Number.isFinite(tidNum)
+        ? { $in: [team_id, tidNum] }
+        : team_id;
+    }
+    if (player_id) {
+      const pidNum = Number(player_id);
+      const pidVariants = Number.isFinite(pidNum) ? [player_id, pidNum] : [player_id];
+      query.$and = query.$and || [];
+      query.$and.push({
+        $or: [
+          { player_id: { $in: pidVariants } },
+          { playerID: { $in: pidVariants } },
+        ],
+      });
+    }
+
+    const events = await db.collection('match_events')
+      .find(query)
+      .sort({ timestamp: 1 })
+      .toArray();
+    events.forEach(e => { delete e._id; });
+
+    res.json({ success: true, data: events, count: events.length });
+  } catch (error) {
+    console.error('Events filter error:', error);
+    sendGatewayError(res, error, 'Failed to filter match events');
+  }
+});
+
+// GET /api/matches/:id/players/:playerId/stats — per-player per-match aggregated F24 stats
+router.get('/:id/players/:playerId/stats', async (req, res) => {
+  try {
+    const analyticsServiceUrl = (process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8012').replace(/\/$/, '');
+    const payload = await requestJson(
+      analyticsServiceUrl,
+      `/api/v2/analytics/match/${req.params.id}/player/${req.params.playerId}/stats`,
+      { timeoutMs: 15000 }
+    );
+    if (!payload.ok) {
+      return res.status(payload.status || 502).json(payload.payload || { error: 'Analytics unavailable' });
+    }
+    res.json(payload.payload);
+  } catch (error) {
+    console.error('Player match stats error:', error);
+    sendGatewayError(res, error, 'Failed to fetch player match stats');
   }
 });
 

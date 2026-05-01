@@ -7,10 +7,18 @@ const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'scoutpro-secret-key-2025';
 const JWT_EXPIRES_IN = '7d';
 const AUTH_OP_TIMEOUT_MS = Number(process.env.AUTH_OP_TIMEOUT_MS || 5000);
-const AUTH_DEV_FASTPATH_ENABLED = process.env.NODE_ENV !== 'production' && process.env.AUTH_DEV_FASTPATH !== 'false';
+// Fastpath is disabled unless explicitly opted in via AUTH_DEV_FASTPATH=true
+const AUTH_DEV_FASTPATH_ENABLED = process.env.AUTH_DEV_FASTPATH === 'true';
+
+if (!process.env.JWT_SECRET) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('JWT_SECRET env var is required in production');
+  }
+  console.error('⚠️  JWT_SECRET not set — using insecure dev fallback. Never run this in production without JWT_SECRET.');
+}
+const JWT_SECRET = process.env.JWT_SECRET || 'scoutpro-dev-CHANGE-IN-PROD';
 
 function getDefaultRoleAndPermissions(email) {
   let role = 'scout';

@@ -55,27 +55,37 @@ class KafkaConsumerClient:
         if self._started:
             return
 
-        try:
-            self.consumer = AIOKafkaConsumer(
-                *self.topics,
-                bootstrap_servers=self.bootstrap_servers,
-                group_id=self.group_id,
-                auto_offset_reset=self.auto_offset_reset,
-                enable_auto_commit=False,  # Disabled auto-commit
-                value_deserializer=lambda m: json.loads(m.decode('utf-8')) if m else None,
-                key_deserializer=lambda k: k.decode('utf-8') if k else None,
-            )
-            await self.consumer.start()
-            self._started = True
-            self._running = True
-            logger.info(
-                f"Kafka consumer started: topics={self.topics}, "
-                f"group={self.group_id}, bootstrap={self.bootstrap_servers}"
-            )
+        max_retries = int(os.getenv("KAFKA_CONNECT_RETRIES", "10"))
+        retry_delay = float(os.getenv("KAFKA_CONNECT_RETRY_DELAY_S", "5"))
 
-        except Exception as e:
-            logger.error(f"Failed to start Kafka consumer: {e}")
-            raise
+        for attempt in range(1, max_retries + 1):
+            try:
+                self.consumer = AIOKafkaConsumer(
+                    *self.topics,
+                    bootstrap_servers=self.bootstrap_servers,
+                    group_id=self.group_id,
+                    auto_offset_reset=self.auto_offset_reset,
+                    enable_auto_commit=False,
+                    value_deserializer=lambda m: json.loads(m.decode('utf-8')) if m else None,
+                    key_deserializer=lambda k: k.decode('utf-8') if k else None,
+                )
+                await self.consumer.start()
+                self._started = True
+                self._running = True
+                logger.info(
+                    f"Kafka consumer started: topics={self.topics}, "
+                    f"group={self.group_id}, bootstrap={self.bootstrap_servers}"
+                )
+                return
+            except Exception as e:
+                logger.warning(
+                    f"Kafka consumer connect attempt {attempt}/{max_retries} failed: {e}"
+                )
+                if attempt < max_retries:
+                    await asyncio.sleep(retry_delay)
+                else:
+                    logger.error(f"Failed to start Kafka consumer after {max_retries} attempts: {e}")
+                    raise
 
     async def stop(self):
         """Stop Kafka consumer"""

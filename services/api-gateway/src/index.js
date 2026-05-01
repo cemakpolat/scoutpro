@@ -34,6 +34,7 @@ const calendarRouter = require('./routes/calendar');
 const collaborationRouter = require('./routes/collaboration');
 const adminRouter = require('./routes/admin');
 const detailedStatsRouter = require('./routes/detailed-stats');
+const tasksRouter = require('./routes/tasks');
 
 const app = express();
 const server = http.createServer(app);
@@ -54,7 +55,13 @@ app.use(express.urlencoded({ extended: true }));
 app.use(morgan('dev'));
 
 // MongoDB connection
-const MONGODB_URL = process.env.MONGODB_URL || 'mongodb://root:scoutpro123@localhost:27017/scoutpro?authSource=admin';
+if (!process.env.MONGODB_URL) {
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error('MONGODB_URL env var is required in production');
+  }
+  console.error('⚠️  MONGODB_URL not set — connecting to unauthenticated localhost MongoDB. Set MONGODB_URL for any real deployment.');
+}
+const MONGODB_URL = process.env.MONGODB_URL || 'mongodb://localhost:27017/scoutpro';
 
 let db;
 async function connectDB() {
@@ -117,6 +124,7 @@ app.get('/', (req, res) => {
       market: '/api/market',
       tactical: '/api/tactical',
       ai: '/api/ai',
+      tasks: '/api/tasks',
       websocket: 'ws://localhost:3001/ws'
     }
   });
@@ -146,6 +154,7 @@ app.use('/api/ai', aiRouter);
 app.use('/api/v2/videos', videosRouter);
 app.use('/api/v2/events', eventsRouter);
 app.use('/api/v2/analytics', advancedAnalyticsRouter);
+app.use('/api/tasks', tasksRouter);
 
 // WebSocket stats endpoint
 app.get('/api/ws/stats', (req, res) => {

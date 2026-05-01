@@ -1,10 +1,11 @@
 /**
  * WebSocket Server - Integrated into API Gateway
- * Provides real-time updates for live matches, notifications, 
- * player updates, market changes, and tactical events.
+ * Provides real-time updates for live matches, notifications,
+ * player updates, market changes, tactical events, and background task completions.
  */
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
+const { Kafka } = require('kafkajs');
 
 class WebSocketManager {
   constructor(server, db) {
@@ -56,7 +57,34 @@ class WebSocketManager {
       console.log('WebSocket simulations disabled; waiting for real upstream events');
     }
 
+    this._taskKafkaConsumer = null;
+    this._startTaskCompletionBridge().catch(err =>
+      console.warn('[WS] Task completion Kafka bridge not started:', err.message)
+    );
+
     console.log('✅ WebSocket server initialized on /ws');
+  }
+
+  async _startTaskCompletionBridge() {
+    const brokers = (process.env.KAFKA_BOOTSTRAP_SERVERS || 'kafka:9092').split(',');
+    const kafka = new Kafka({ clientId: 'api-gateway-ws', brokers });
+    const consumer = kafka.consumer({ groupId: 'api-gateway-ws-group' });
+    await consumer.connect();
+    await consumer.subscribe({ topic: 'task.completed', fromBeginning: false });
+    this._taskKafkaConsumer = consumer;
+
+    await consumer.run({
+      eachMessage: async ({ message }) => {
+        try {
+          const event = JSON.parse(message.value.toString());
+          // Broadcast to all clients subscribed to 'tasks' or 'general'
+          this.broadcast('task_completed', event, 'tasks');
+        } catch (err) {
+          console.error('[WS] Bad task.completed message:', err.message);
+        }
+      },
+    });
+    console.log('[WS] Subscribed to Kafka task.completed topic');
   }
 
   handleMessage(clientId, message) {
@@ -295,6 +323,9 @@ class WebSocketManager {
   stop() {
     this.simulationIntervals.forEach(id => clearInterval(id));
     this.simulationIntervals = [];
+    if (this._taskKafkaConsumer) {
+      this._taskKafkaConsumer.disconnect().catch(() => {});
+    }
     this.wss.close();
   }
 

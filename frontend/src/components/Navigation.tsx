@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import {
   Home, Users, Activity, Search, FileText, BarChart3, Settings,
   Target, Bell, ChevronDown, Zap, TrendingUp, Shield, Menu, X, LogOut, User as UserIcon, Film,
-  Calendar as CalendarIcon, Upload
+  Calendar as CalendarIcon, Upload, Cpu
 } from 'lucide-react';
 import { Database, Layers, LineChart } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -36,6 +36,7 @@ const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab, notifi
     { id: 'ml-lab', label: 'ML Laboratory', icon: TrendingUp },
     { id: 'data-management', label: 'Data Management', icon: Database },
     { id: 'data-importer', label: 'Data Import/Export', icon: Upload },
+    { id: 'task-queue', label: 'Background Tasks', icon: Cpu },
     { id: 'tactical-analyzer', label: 'Tactical Analyzer', icon: Layers },
     { id: 'performance-tracker', label: 'Performance Tracker', icon: LineChart },
     { id: 'admin', label: 'Admin Console', icon: Shield },
