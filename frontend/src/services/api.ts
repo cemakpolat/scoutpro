@@ -19,6 +19,7 @@ import {
 import { CalendarEvent, MatchSchedule, ScoutingTrip } from '../types/calendar';
 import { Activity as CollaborationActivity, Task, Workspace } from '../types/collaboration';
 import { SavedSearch, SearchHistory } from '../types/search';
+import { BackgroundTask, TaskResult } from '../types/tasks';
 
 import { API_BASE_URL } from '../config/api';
 
@@ -498,7 +499,7 @@ class ApiService {
     return this.request<any>(`/v2/videos/${videoId}`);
   }
 
-  async getVideoStreamUrl(videoId: string): string {
+  getVideoStreamUrl(videoId: string): string {
     return `${this.baseUrl}/v2/videos/${videoId}/stream`;
   }
 
@@ -577,21 +578,21 @@ class ApiService {
   async predictTacticalRole(stats: Record<string, any>): Promise<ApiResponse<any>> {
     return this.request<any>('/ml/engine/predict/tactical_role_classifier', {
       method: 'POST',
-      body: stats,
+      body: JSON.stringify(stats),
     });
   }
 
   async predictPerformanceAnomaly(stats: Record<string, any>): Promise<ApiResponse<any>> {
     return this.request<any>('/ml/engine/predict/performance_anomaly_detector', {
       method: 'POST',
-      body: stats,
+      body: JSON.stringify(stats),
     });
   }
 
   async predictFatigueRisk(stats: Record<string, any>): Promise<ApiResponse<any>> {
     return this.request<any>('/ml/engine/predict/fatigue_risk_predictor', {
       method: 'POST',
-      body: stats,
+      body: JSON.stringify(stats),
     });
   }
   // =======================================================================
@@ -1025,6 +1026,99 @@ class ApiService {
     if (position) params.append('position', position);
     const query = params.toString();
     return this.request<any>(`/players/${playerId}/percentiles${query ? `?${query}` : ''}`);
+  }
+
+  // ============ BACKGROUND TASK QUEUE ============
+
+  async submitTask(taskType: string, payload: Record<string, unknown>): Promise<ApiResponse<BackgroundTask>> {
+    return this.request<BackgroundTask>('/tasks', {
+      method: 'POST',
+      body: JSON.stringify({ task_type: taskType, payload }),
+    });
+  }
+
+  async getTask(taskId: string): Promise<ApiResponse<BackgroundTask>> {
+    return this.request<BackgroundTask>(`/tasks/${taskId}`);
+  }
+
+  async getTaskResult(taskId: string): Promise<ApiResponse<TaskResult>> {
+    return this.request<TaskResult>(`/tasks/${taskId}/result`);
+  }
+
+  async listTasks(limit = 50): Promise<ApiResponse<BackgroundTask[]>> {
+    return this.request<BackgroundTask[]>(`/tasks?limit=${limit}`);
+  }
+
+  // ─── Match analysis (analytics-service) ────────────────────────────────────
+
+  /** Directed pass-network graph for a match (nodes = players, edges = pass connections). */
+  async getMatchPassNetwork(matchId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/pass-network/${matchId}`);
+  }
+
+  /** PPDA, pressing intensity, possession zones per team for a match. */
+  async getMatchTacticalMetrics(matchId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/tactical/${matchId}`);
+  }
+
+  /** Possession-sequence summary (direct attacks, box entries, goals) for a match. */
+  async getMatchSequenceInsights(matchId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/sequences/${matchId}`);
+  }
+
+  /** Per-player per-match aggregated F24 stats (shots, passes, tackles, xG …). */
+  async getPlayerMatchStats(matchId: string, playerId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/matches/${matchId}/players/${playerId}/stats`);
+  }
+
+  /** Filter match events by type, team, player or period (returns raw F24 events). */
+  async getMatchFilteredEvents(
+    matchId: string,
+    filters: { type_name?: string; team_id?: string; player_id?: string; period?: number } = {}
+  ): Promise<ApiResponse<any[]>> {
+    const params = new URLSearchParams();
+    if (filters.type_name) params.append('type_name', filters.type_name);
+    if (filters.team_id) params.append('team_id', filters.team_id);
+    if (filters.player_id) params.append('player_id', filters.player_id);
+    if (filters.period != null) params.append('period', String(filters.period));
+    const q = params.toString();
+    return this.request<any[]>(`/matches/${matchId}/events/filter${q ? `?${q}` : ''}`);
+  }
+
+  // ─── Player spatial analysis (analytics-service, cross-match) ───────────────
+
+  /** Shot map with heuristic xG across the player's last N matches. */
+  async getPlayerShotMapAnalytics(playerId: string, lastN = 10): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/player/${playerId}/shots-map?last_n=${lastN}`);
+  }
+
+  /** Heat map of all (or filtered) event locations across the player's last N matches. */
+  async getPlayerHeatMapAnalytics(playerId: string, eventType?: string, lastN = 10): Promise<ApiResponse<any>> {
+    const params = new URLSearchParams({ last_n: String(lastN) });
+    if (eventType) params.append('event_type', eventType);
+    return this.request<any>(`/v2/analytics/player/${playerId}/heat-map?${params.toString()}`);
+  }
+
+  /** Pass map (start/end locations + progressive flag) across the player's last N matches. */
+  async getPlayerPassMapAnalytics(playerId: string, lastN = 10): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/player/${playerId}/pass-map?last_n=${lastN}`);
+  }
+
+  /** Poll until status is completed or failed, then return the task. */
+  async pollTask(
+    taskId: string,
+    opts: { intervalMs?: number; timeoutMs?: number; onProgress?: (task: BackgroundTask) => void } = {}
+  ): Promise<BackgroundTask> {
+    const { intervalMs = 2000, timeoutMs = 300_000, onProgress } = opts;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const res = await this.getTask(taskId);
+      const task = res.data!;
+      onProgress?.(task);
+      if (task.status === 'completed' || task.status === 'failed') return task;
+      await new Promise(r => setTimeout(r, intervalMs));
+    }
+    throw new Error(`Task ${taskId} did not finish within ${timeoutMs}ms`);
   }
 }
 

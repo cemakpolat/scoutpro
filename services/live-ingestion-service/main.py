@@ -1,6 +1,8 @@
 """
 Live Ingestion Service - Main Application
 """
+import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from prometheus_fastapi_instrumentator import Instrumentator
@@ -16,34 +18,23 @@ from aiokafka import AIOKafkaProducer
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
 
-# Global clients to be injected
 kafka_producer = None
 stream_processor = None
 
-app = FastAPI(
-    title="Live Ingestion Service",
-    description="ScoutPro Live Data Ingestion Service",
-    version="2.0.0",
-    docs_url="/docs",
-    redoc_url="/redoc"
-)
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://api-gateway:3001,http://localhost:3001,http://localhost:5173,http://localhost:5174",
+    ).split(",")
+    if o.strip()
+]
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
-Instrumentator().instrument(app).expose(app, endpoint="/metrics")
-
-app.include_router(ingestion_router)
-
-@app.on_event("startup")
-async def startup_event():
-    logger.info(f"Starting {settings.service_name}")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     global kafka_producer, stream_processor
+    logger.info(f"Starting {settings.service_name}")
 
     stream_processor = LiveDataProcessor(
         kafka_producer=None,
@@ -52,30 +43,43 @@ async def startup_event():
     app.state.processor = stream_processor
 
     try:
-        # Initialize connections
         logger.info("Initializing Kafka producer...")
-        kafka_producer = AIOKafkaProducer(
-            bootstrap_servers=settings.kafka_bootstrap_servers
-        )
+        kafka_producer = AIOKafkaProducer(bootstrap_servers=settings.kafka_bootstrap_servers)
         await kafka_producer.start()
-
         stream_processor.kafka = kafka_producer
-
         logger.info(f"{settings.service_name} started successfully")
-
     except Exception as e:
         logger.error(f"Startup failed: {e}")
-        # Keep running even if kafka fails on local without compose
-        
-@app.on_event("shutdown")
-async def shutdown_event():
-    logger.info(f"Shutting down {settings.service_name}")
-    global kafka_producer, stream_processor
 
+    yield
+
+    logger.info(f"Shutting down {settings.service_name}")
     if stream_processor:
         await stream_processor.close()
     elif kafka_producer:
         await kafka_producer.stop()
+
+
+app = FastAPI(
+    title="Live Ingestion Service",
+    description="ScoutPro Live Data Ingestion Service",
+    version="2.0.0",
+    docs_url="/docs",
+    redoc_url="/redoc",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+Instrumentator().instrument(app).expose(app, endpoint="/metrics")
+
+app.include_router(ingestion_router)
 
 
 @app.get("/health")

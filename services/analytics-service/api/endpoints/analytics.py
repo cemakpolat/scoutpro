@@ -245,3 +245,56 @@ async def get_sequence_insights(
         return await handler.get_sequence_insights(match_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ------------------------------------------------------------------
+# Player spatial analysis (cross-match)
+# ------------------------------------------------------------------
+
+@router.get("/player/{player_id}/shots-map", summary="Shot map with xG for a player across recent matches")
+async def get_player_shot_map(
+    player_id: str,
+    last_n: int = Query(10, ge=1, le=30, description="Number of recent matches to include"),
+    handler: AnalyticsHandler = Depends(get_analytics_handler),
+):
+    try:
+        return await handler.get_player_shot_map(player_id, last_n_matches=last_n)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/player/{player_id}/heat-map", summary="Heat map of player event locations across recent matches")
+async def get_player_heat_map(
+    player_id: str,
+    event_type: Optional[str] = Query(None, description="Filter by event type (pass, shot, tackle …)"),
+    last_n: int = Query(10, ge=1, le=30),
+    handler: AnalyticsHandler = Depends(get_analytics_handler),
+):
+    try:
+        return await handler.get_player_heat_map(player_id, event_type=event_type, last_n_matches=last_n)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/player/{player_id}/pass-map", summary="Pass map with progressive flag for a player across recent matches")
+async def get_player_pass_map(
+    player_id: str,
+    last_n: int = Query(10, ge=1, le=30),
+    handler: AnalyticsHandler = Depends(get_analytics_handler),
+):
+    try:
+        return await handler.get_player_pass_map(player_id, last_n_matches=last_n)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/match/{match_id}/player/{player_id}/stats", summary="Per-player per-match aggregated stats from F24 events")
+async def get_match_player_stats(
+    match_id: str,
+    player_id: str,
+    handler: AnalyticsHandler = Depends(get_analytics_handler),
+):
+    try:
+        return await handler.get_match_player_stats(match_id, player_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

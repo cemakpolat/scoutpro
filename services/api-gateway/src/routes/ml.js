@@ -333,7 +333,7 @@ function mapExperiment(experiment) {
     id: experiment.id,
     name: experiment.name,
     algorithm: experiment.algorithm,
-    dataset: experimentset,
+    dataset: experiment.dataset,
     status: experiment.status,
     accuracy: experiment.accuracy || 0,
     runtime: experiment.runtime || toRuntimeLabel(experiment.startedAt || experiment.createdAt, experiment.completedAt || experiment.updatedAt),
@@ -594,14 +594,14 @@ router.post('/experiments', async (req, res) => {
     const datasets = await buildDatasetCatalog(req.app.locals.db);
 
     const algorithm = algorithmCatalog.find((entry) => entry.id === req.body.algorithmId) || algorithmCatalog[0];
-    const dataset = datasets.find((entry) => entry.id === req.bodysetId) || datasets[0] || null;
+    const dataset = datasets.find((entry) => entry.id === req.body.datasetId) || datasets[0] || null;
     const now = new Date().toISOString();
 
     const experiment = {
       id: uuidv4(),
       name: req.body.name || `${algorithm?.name || 'Model'} Experiment`,
       algorithm: algorithm?.name || req.body.algorithm || 'Unknown Algorithm',
-      dataset: dataset?.name || req.bodyset || 'Unspecified Dataset',
+      dataset: dataset?.name || req.body.datasetId || 'Unspecified Dataset',
       status: req.body.status || 'running',
       accuracy: req.body.accuracy || 0,
       runtime: req.body.runtime || '0m 0s',
@@ -636,14 +636,14 @@ router.post('/train', async (req, res) => {
       return res.status(404).json({ error: `Unknown algorithm: ${modelName}` });
     }
 
-    const dataset = datasets.find((entry) => entry.id === req.bodysetId) || null;
+    const dataset = datasets.find((entry) => entry.id === req.body.datasetId) || null;
     const experimentId = uuidv4();
     const startedAt = new Date().toISOString();
     const experiment = {
       id: experimentId,
       name: req.body.name || `${algorithm.name} Training Run`,
       algorithm: algorithm.name,
-      dataset: dataset?.name || req.bodysetId || 'Ad-hoc Dataset',
+      dataset: dataset?.name || req.body.datasetId || 'Ad-hoc Dataset',
       status: 'running',
       accuracy: 0,
       runtime: '0m 0s',
@@ -789,7 +789,6 @@ router.post('/engine/predict/:modelName', async (req, res) => {
       }),
       `Failed to run ${modelName} prediction`
     );
-
     res.json(unwrapPayload(payload) ?? payload);
   } catch (error) {
     console.warn(`ML engine predict fallback (${modelName}):`, error.message);
@@ -797,61 +796,55 @@ router.post('/engine/predict/:modelName', async (req, res) => {
   }
 });
 
+// Time-series Form Analysis
+function formFallback(playerId) {
+  return {
+    success: true,
+    player_id: playerId,
+    data: {
+      rolling_passes: 45.2,
+      rolling_pass_accuracy: 0.88,
+      rolling_shots: 1.5,
+      rolling_xg: 0.12,
+      momentum_xg: 0.05,
+      matches_played: 5,
+    },
+    _simulated: true,
+  };
+}
 
-// Phase 4: Time-series Form Analysis
 router.get('/form/:playerId', async (req, res) => {
+  const { playerId } = req.params;
   try {
-    const { playerId } = req.params;
-    const res_raw = await fetch(`${mlServiceUrl}/api/v2/ml/form/${playerId}`, { timeout: 10000 });
-    
-    if (!res_raw.ok) {
-      if (res_raw.status === 404) {
-      // Return a simulated default if not found
-      return res.json({
-        success: true,
-        player_id: req.params.playerId,
-        data: {
-          rolling_passes: 45.2,
-          rolling_pass_accuracy: 0.88,
-          rolling_shots: 1.5,
-          rolling_xg: 0.12,
-          momentum_xg: 0.05,
-          matches_played: 5
-        },
-        _simulated: true
-      });
-    }
-    throw new Error(`HTTP Error ${res_raw.status}`);
-    }
-    const response = { data: await res_raw.json() };
-    res.json(response);
+    const payload = ensureSuccess(
+      await requestJson(mlServiceUrl, `/api/v2/ml/form/${playerId}`),
+      'Failed to fetch player form'
+    );
+    res.json({ data: unwrapPayload(payload) ?? payload });
   } catch (error) {
+    // 404 from ml-service means player has no form history yet — return simulated data
+    if (error.status === 404 || /404|not found/i.test(error.message)) {
+      return res.json(formFallback(playerId));
+    }
     console.error('Error fetching player form:', error.message);
-    res.status(500).json({ error: error.message });
+    res.json(formFallback(playerId));
   }
 });
 
 router.get('/form/:playerId/tensor', async (req, res) => {
+  const { playerId } = req.params;
   try {
-    const { playerId } = req.params;
-    const res_raw = await fetch(`${mlServiceUrl}/api/v2/ml/form/${playerId}/tensor`, { timeout: 10000 });
-    if (!res_raw.ok) {
-      if (res_raw.status === 404) {
-      // Simulated tensor
-      return res.json({
-         success: true,
-         player_id: req.params.playerId,
-         tensor: [45.2, 0.88, 1.5, 0.12, 0.05],
-         _simulated: true
-      });
-    }
-    throw new Error(`HTTP Error ${res_raw.status}`);
-    }
-    const response = { data: await res_raw.json() };
-    res.json(response);
+    const payload = ensureSuccess(
+      await requestJson(mlServiceUrl, `/api/v2/ml/form/${playerId}/tensor`),
+      'Failed to fetch player form tensor'
+    );
+    res.json({ data: unwrapPayload(payload) ?? payload });
   } catch (error) {
+    if (error.status === 404 || /404|not found/i.test(error.message)) {
+      return res.json({ success: true, player_id: playerId, tensor: [45.2, 0.88, 1.5, 0.12, 0.05], _simulated: true });
+    }
     console.error('Error fetching player tensor:', error.message);
-    res.status(500).json({ error: error.message });
+    res.json({ success: true, player_id: playerId, tensor: [45.2, 0.88, 1.5, 0.12, 0.05], _simulated: true });
   }
 });
 

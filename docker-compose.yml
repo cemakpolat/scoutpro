@@ -9,11 +9,14 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
-      - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
-      - JWT_SECRET=scoutpro-secret-key-2025
+      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
+      - JWT_SECRET=${JWT_SECRET:-scoutpro-dev-CHANGE-IN-PROD}
       - NODE_ENV=development
+      - TASK_WORKER_URL=http://task-worker-service:8013
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
     depends_on:
-      - mongo
+      mongo:
+        condition: service_started
     volumes:
       - ./services/api-gateway/src:/app/src
     networks:
@@ -38,7 +41,8 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl:ro
       - ./frontend/dist:/usr/share/nginx/html:ro
     depends_on:
-      - api-gateway
+      api-gateway:
+        condition: service_started
     networks:
       - scoutpro-network
     extra_hosts:
@@ -54,8 +58,8 @@ services:
     ports:
       - "28001:8000"
     environment:
-      - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
-      - REDIS_URL=redis://:scoutpro123@redis:6379/0
+      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SERVICE_NAME=player-service
       - LOG_LEVEL=INFO
@@ -63,9 +67,12 @@ services:
       - STATSBOMB_API_KEY=${STATSBOMB_API_KEY}
       - DATA_ROOT=/app/data
     depends_on:
-      - mongo
-      - redis
-      - kafka
+      mongo:
+        condition: service_started
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_healthy
     volumes:
       - ./services/player-service:/app
       - ./services/shared:/app/shared
@@ -88,14 +95,17 @@ services:
     ports:
       - "28002:8000"
     environment:
-      - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
-      - REDIS_URL=redis://:scoutpro123@redis:6379/0
+      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SERVICE_NAME=team-service
     depends_on:
-      - mongo
-      - redis
-      - kafka
+      mongo:
+        condition: service_started
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_healthy
     volumes:
       - ./services/team-service:/app
       - ./services/shared:/app/shared
@@ -111,15 +121,18 @@ services:
     ports:
       - "28003:8000"
     environment:
-      - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
-      - REDIS_URL=redis://:scoutpro123@redis:6379/0
-      - TIMESCALEDB_URL=postgresql://scoutpro:scoutpro123@timescaledb:5432/scoutpro
+      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
+      - TIMESCALEDB_URL=postgresql://scoutpro:${TIMESCALE_PASSWORD:-scoutpro123}@timescaledb:5432/scoutpro
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SERVICE_NAME=match-service
     depends_on:
-      - mongo
-      - timescaledb
-      - kafka
+      mongo:
+        condition: service_started
+      timescaledb:
+        condition: service_started
+      kafka:
+        condition: service_healthy
     volumes:
       - ./services/match-service:/app
       - ./services/shared:/app/shared
@@ -135,14 +148,17 @@ services:
     ports:
       - "28004:8000"
     environment:
-      - TIMESCALEDB_URL=postgresql://scoutpro:scoutpro123@timescaledb:5432/scoutpro
-      - REDIS_URL=redis://:scoutpro123@redis:6379/0
+      - TIMESCALEDB_URL=postgresql://scoutpro:${TIMESCALE_PASSWORD:-scoutpro123}@timescaledb:5432/scoutpro
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SERVICE_NAME=statistics-service
     depends_on:
-      - timescaledb
-      - redis
-      - kafka
+      timescaledb:
+        condition: service_started
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_healthy
     volumes:
       - ./services/statistics-service:/app
       - ./services/shared:/app/shared
@@ -192,15 +208,16 @@ services:
       - MONGODB_DATABASE=scoutpro
       - SERVICE_NAME=data-sync-service
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_URL=redis://:scoutpro123@redis:6379
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379
 
       # Data provider URLs (swap to real Opta/StatsBomb in production)
       - OPTA_BASE_URL=http://data-provider:7000
       - STATSBOMB_BASE_URL=http://data-provider:7000
 
       # Sync configuration
-      - OPTA_SYNC_INTERVAL_MINUTES=60       # daily squads
-      - STATSBOMB_SYNC_INTERVAL_MINUTES=1440 # weekly
+      - SYNC_PROVIDERS=opta,statsbomb
+      - OPTA_SYNC_INTERVAL_MINUTES=60       # hourly squads
+      - STATSBOMB_SYNC_INTERVAL_MINUTES=1440 # daily
       - OPTA_EVENT_SYNC_INTERVAL_MINUTES=15  # frequent event polling
       - COMPETITION_ID=115
       - SEASON_ID=2019
@@ -212,8 +229,10 @@ services:
       - STATSBOMB_API_KEY="dummy_key"
       - FIREBASE_CREDENTIALS="{}"
     depends_on:
-      - mongo
-      - data-provider
+      mongo:
+        condition: service_started
+      data-provider:
+        condition: service_started
     networks:
       - scoutpro-network
     restart: unless-stopped
@@ -226,16 +245,19 @@ services:
     ports:
       - "28005:8000"
     environment:
-      - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
+      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
       - MLFLOW_TRACKING_URI=http://mlflow:5000
       - S3_ENDPOINT=http://minio:9000
-      - AWS_ACCESS_KEY_ID=minioadmin
-      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
       - SERVICE_NAME=ml-service
     depends_on:
-      - mongo
-      - minio
-      - mlflow
+      mongo:
+        condition: service_started
+      minio:
+        condition: service_started
+      mlflow:
+        condition: service_started
     volumes:
       - ml-models:/models
       - ./services/ml-service:/app
@@ -256,12 +278,14 @@ services:
       - OPTA_WEBSOCKET_URL=${OPTA_WEBSOCKET_URL}
       - STATSBOMB_API_KEY=${STATSBOMB_API_KEY}
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_URL=redis://:scoutpro123@redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
       - SERVICE_NAME=live-ingestion-service
       - DATA_ROOT=/app/data
     depends_on:
-      - kafka
-      - redis
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_started
     volumes:
       - ./services/live-ingestion-service:/app
       - ./services/shared:/app/shared
@@ -279,12 +303,14 @@ services:
       - "28007:8000"
     environment:
       - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - REDIS_URL=redis://:scoutpro123@redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - SERVICE_NAME=search-service
     depends_on:
-      - elasticsearch
-      - kafka
+      elasticsearch:
+        condition: service_started
+      kafka:
+        condition: service_healthy
     volumes:
       - ./services/search-service:/app
       - ./services/shared:/app/shared
@@ -301,13 +327,15 @@ services:
       - "28008:8000"
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_URL=redis://:scoutpro123@redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
       - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
       - SENDGRID_API_KEY=${SENDGRID_API_KEY}
       - SERVICE_NAME=notification-service
     depends_on:
-      - kafka
-      - redis
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_started
     volumes:
       - ./services/notification-service:/app
       - ./services/shared:/app/shared
@@ -324,11 +352,13 @@ services:
       - "28080:8080"
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_URL=redis://:scoutpro123@redis:6379/0
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
       - SERVICE_NAME=websocket-server
     depends_on:
-      - kafka
-      - redis
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_started
     volumes:
       - ./services/websocket-server:/app
       - ./services/shared:/app/shared
@@ -344,14 +374,16 @@ services:
     ports:
       - "28009:8009"
     environment:
-      - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
+      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin123
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
       - SERVICE_NAME=report-service
     depends_on:
-      - mongo
-      - minio
+      mongo:
+        condition: service_started
+      minio:
+        condition: service_started
     volumes:
       - ./services/report-service:/app
       - ./services/shared:/app/shared
@@ -367,10 +399,11 @@ services:
     ports:
       - "28010:8010"
     environment:
-      - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
+      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
       - SERVICE_NAME=export-service
     depends_on:
-      - mongo
+      mongo:
+        condition: service_started
     volumes:
       - ./services/export-service:/app
       - ./services/shared:/app/shared
@@ -386,14 +419,16 @@ services:
     ports:
       - "28011:8011"
     environment:
-      - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
+      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin123
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
       - SERVICE_NAME=video-service
     depends_on:
-      - mongo
-      - minio
+      mongo:
+        condition: service_started
+      minio:
+        condition: service_started
     volumes:
       - ./services/video-service:/app
       - ./services/shared:/app/shared
@@ -409,20 +444,67 @@ services:
     ports:
       - "28012:8012"
     environment:
-      - MONGODB_URL=mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin
-      - REDIS_URL=redis://:scoutpro123@redis:6379/0
-      - TIMESCALEDB_URL=postgresql://scoutpro:scoutpro123@timescaledb:5432/scoutpro
+      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
+      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
+      - TIMESCALEDB_URL=postgresql://scoutpro:${TIMESCALE_PASSWORD:-scoutpro123}@timescaledb:5432/scoutpro
       - SERVICE_NAME=analytics-service
     depends_on:
-      - mongo
-      - redis
-      - timescaledb
+      mongo:
+        condition: service_started
+      redis:
+        condition: service_started
+      timescaledb:
+        condition: service_started
     volumes:
       - ./services/analytics-service:/app
       - ./services/shared:/app/shared
     networks:
       - scoutpro-network
     restart: unless-stopped
+
+  # ============ BACKGROUND TASK WORKER ============
+  task-worker-service:
+    build:
+      context: ./services/task-worker-service
+      dockerfile: Dockerfile
+    container_name: scoutpro-task-worker
+    ports:
+      - "28013:8013"
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - KAFKA_TASKS_TOPIC=tasks
+      - KAFKA_TASK_COMPLETED_TOPIC=task.completed
+      - KAFKA_CONSUMER_GROUP=task-worker-group
+      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
+      - MINIO_TASKS_BUCKET=task-results
+      - ML_SERVICE_URL=http://ml-service:8000
+      - REPORT_SERVICE_URL=http://report-service:8009
+      - EXPORT_SERVICE_URL=http://export-service:8010
+      - DATA_SYNC_SERVICE_URL=http://data-sync-service:8012
+      - VIDEO_SERVICE_URL=http://video-service:8011
+      - STATISTICS_SERVICE_URL=http://statistics-service:8000
+      - TASK_WORKER_URL=http://task-worker-service:8013
+    depends_on:
+      kafka:
+        condition: service_healthy
+      mongo:
+        condition: service_started
+      minio:
+        condition: service_started
+    volumes:
+      - ./services/task-worker-service:/app
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8013/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
   # ============ MESSAGE BROKER ============
   zookeeper:
@@ -439,12 +521,19 @@ services:
     networks:
       - scoutpro-network
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
     container_name: scoutpro-kafka
     depends_on:
-      - zookeeper
+      zookeeper:
+        condition: service_healthy
     ports:
       - "9092:9092"
       - "9093:9093"
@@ -465,9 +554,10 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
-      interval: 30s
+      interval: 15s
       timeout: 10s
-      retries: 3
+      retries: 5
+      start_period: 30s
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
@@ -479,7 +569,8 @@ services:
       - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
       - KAFKA_CLUSTERS_0_ZOOKEEPER=zookeeper:2181
     depends_on:
-      - kafka
+      kafka:
+        condition: service_healthy
     networks:
       - scoutpro-network
     restart: unless-stopped
@@ -490,7 +581,7 @@ services:
     container_name: scoutpro-mongo
     environment:
       MONGO_INITDB_ROOT_USERNAME: root
-      MONGO_INITDB_ROOT_PASSWORD: scoutpro123
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-scoutpro123}
       MONGO_INITDB_DATABASE: scoutpro
     volumes:
       - mongo-data:/data/db
@@ -513,7 +604,7 @@ services:
     environment:
       POSTGRES_DB: scoutpro
       POSTGRES_USER: scoutpro
-      POSTGRES_PASSWORD: scoutpro123
+      POSTGRES_PASSWORD: ${TIMESCALE_PASSWORD:-scoutpro123}
     volumes:
       - timescale-data:/var/lib/postgresql/data
       - ./init-scripts/init-timescale.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -531,7 +622,7 @@ services:
     container_name: scoutpro-redis
     ports:
       - "6379:6379"
-    command: redis-server --appendonly yes --requirepass scoutpro123
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-scoutpro123}
     volumes:
       - redis-data:/data
     networks:
@@ -574,8 +665,8 @@ services:
       - "9002:9000"
       - "9003:9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin123
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
     command: server /data --console-address ":9001"
     volumes:
       - minio-data:/data
@@ -595,60 +686,63 @@ services:
     ports:
       - "5000:5000"
     environment:
-      - MLFLOW_BACKEND_STORE_URI=postgresql://scoutpro:scoutpro123@timescaledb:5432/mlflow
+      - MLFLOW_BACKEND_STORE_URI=postgresql://scoutpro:${TIMESCALE_PASSWORD:-scoutpro123}@timescaledb:5432/mlflow
       - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
-      - AWS_ACCESS_KEY_ID=minioadmin
-      - AWS_SECRET_ACCESS_KEY=minioadmin123
+      - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER:-minioadmin}
+      - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
     depends_on:
-      - timescaledb
-      - minio
+      timescaledb:
+        condition: service_started
+      minio:
+        condition: service_started
     networks:
       - scoutpro-network
     restart: unless-stopped
     command: >
       mlflow server
-      --backend-store-uri postgresql://scoutpro:scoutpro123@timescaledb:5432/mlflow
+      --backend-store-uri postgresql://scoutpro:${TIMESCALE_PASSWORD:-scoutpro123}@timescaledb:5432/mlflow
       --default-artifact-root s3://mlflow/
       --host 0.0.0.0
       --port 5000
 
   # ============ MONITORING ============
-  # prometheus:
-  #   image: prom/prometheus:latest
-  #   container_name: scoutpro-prometheus
-  #   ports:
-  #     - "9090:9090"
-  #   volumes:
-  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-  #     - prometheus-data:/prometheus
-  #   command:
-  #     - '--config.file=/etc/prometheus/prometheus.yml'
-  #     - '--storage.tsdb.path=/prometheus'
-  #     - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-  #     - '--web.console.templates=/usr/share/prometheus/consoles'
-  #   networks:
-  #     - scoutpro-network
-  #   restart: unless-stopped
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: scoutpro-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
 
-  # grafana:
-  #   image: grafana/grafana:latest
-  #   container_name: scoutpro-grafana
-  #   ports:
-  #     - "3000:3000"
-  #   environment:
-  #     - GF_SECURITY_ADMIN_USER=admin
-  #     - GF_SECURITY_ADMIN_PASSWORD=admin123
-  #     - GF_INSTALL_PLUGINS=redis-datasource,kafka-datasource
-  #     - GF_SERVER_ROOT_URL=http://localhost:3000
-  #   volumes:
-  #     - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
-  #     - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
-  #     - grafana-data:/var/lib/grafana
-  #   depends_on:
-  #     - prometheus
-  #   networks:
-  #     - scoutpro-network
-  #   restart: unless-stopped
+  grafana:
+    image: grafana/grafana:latest
+    container_name: scoutpro-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
+      - GF_INSTALL_PLUGINS=redis-datasource,kafka-datasource
+      - GF_SERVER_ROOT_URL=http://localhost:3000
+    volumes:
+      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_started
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
 
   # jaeger:
   #   image: jaegertracing/all-in-one:latest

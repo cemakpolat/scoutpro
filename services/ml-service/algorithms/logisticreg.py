@@ -1,181 +1,118 @@
 """
-@author: Cem Akpolat, Hüseyin Eren
-@created by cemakpolat at 2020-09-06
+Logistic Regression Algorithm
+Binary or multi-class classification for football events/player data.
 """
-import random
-import pandas as pd
-from sklearn.model_selection import train_test_split
+from typing import Any, List, Dict, Optional
+import logging
+import numpy as np
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import classification_report, confusion_matrix
-from src.danalyticAPI.algorithms.algorithm import Algorithm
-from src.danalyticAPI.algorithms import alg
-from src.utils.Utils import Logger, df_to_dict
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import accuracy_score, classification_report
+from .base import MLAlgorithm
+
+logger = logging.getLogger(__name__)
 
 
-config_params = {
-    alg.test_size: "test_size",
-    alg.random_state: "random_state",
-    alg.criterion: "criterion"
-}
+class LogisticRegressionAlgorithm(MLAlgorithm):
+    """
+    Logistic Regression for classification tasks on player/event data.
 
+    Common use-cases:
+    - Goal scored (yes/no) from shot event features
+    - Player position classification from performance metrics
+    - Match outcome prediction (win/draw/loss)
 
-# Define logger.
-logger = Logger(__name__).get_logistic_regression_logger()
+    Data format (list of dicts from MongoDB):
+        [{"player_id": "...", "shots": 3, "xg": 0.45, "position": "Forward", ...}, ...]
+    """
 
+    def __init__(
+        self,
+        target_field: str = "position",
+        test_size: float = 0.2,
+        random_state: int = 42,
+        max_iter: int = 500,
+    ):
+        self.target_field = target_field
+        self.test_size = test_size
+        self.random_state = random_state
+        self.max_iter = max_iter
+        self.model: Optional[LogisticRegression] = None
+        self.scaler = StandardScaler()
+        self.encoder = LabelEncoder()
+        self.feature_names: List[str] = []
+        self.classes_: List[str] = []
+        self.is_fitted = False
+        self.metrics: Dict[str, Any] = {}
 
-class LogisticRegressionAlgorithm(Algorithm):
-    def __init__(self):
-        """
+    def train(self, data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not data:
+            return {"error": "No data provided"}
 
-        Parameters:
-            :param pd.Dataframe self.X_train:
-            :param pd.Dataframe self.X_test:
-            :param pd.Dataframe self.y_train:
-            :param pd.Dataframe self.y_test:
-            :param pd.Dataframe self.y_predict:
-            :param int self.random_state:
-            :param float self.test_size:
-            :param LogisticRegression self.regression:
+        exclude = {self.target_field, "player_id", "_id", "updated_at", "playerID", "teamID"}
+        self.feature_names = [
+            k for k in data[0].keys()
+            if k not in exclude and isinstance(data[0].get(k), (int, float))
+        ]
 
-        """
-        super().__init__()
-        self.X_train = None
-        self.X_test = None
-        self.y_train = None
-        self.y_test = None
-        self.random_state = None
-        self.test_size = 0.2
-        self.criterion = None
-        self.y_predict = None
-        self.regression = None
+        X, y_raw = [], []
+        for row in data:
+            label = row.get(self.target_field)
+            if label is not None and str(label).strip():
+                feats = [float(row.get(f, 0) or 0) for f in self.feature_names]
+                X.append(feats)
+                y_raw.append(str(label))
 
-    def _config(self, config_data: dict):
-        if alg.config in config_data:
-            config = config_data[alg.config]
-            for key, value in config_params.items():
-                if key in config:
-                    setattr(self, value, config[key])
-        return self
+        if len(X) < 5:
+            return {"error": f"Insufficient data ({len(X)} samples with '{self.target_field}')", "n_samples": len(X)}
 
-    def _adjust_y(self):
-        total_targets = len(self.target_columns)
-        if total_targets > 1:
-            objective_target = random.choice(self.target_columns)
-            logger.warning(
-                f"The Logistic Regression algorithms require only"
-                f"one target feature, however provided number of target "
-                f"features are {total_targets}. Thus, only one of them "
-                f"will be chosen: {objective_target}"
+        unique_classes = list(set(y_raw))
+        if len(unique_classes) < 2:
+            return {"error": f"Need at least 2 classes, found: {unique_classes}"}
+
+        X_arr = np.array(X)
+        y_arr = self.encoder.fit_transform(y_raw)
+        self.classes_ = list(self.encoder.classes_)
+
+        if len(X) >= 10:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_arr, y_arr, test_size=self.test_size, random_state=self.random_state, stratify=y_arr if len(unique_classes) <= len(X) // 2 else None
             )
-            self.target_columns = [objective_target]
-
-    def _convert_y(self):
-        if len(self.target_columns) > 0:
-            objective_target = self.target_columns[0]
-            try:
-                self.y = self.y[objective_target]
-            except KeyError:
-                logger.error(
-                    f"Target data frame does not have the column: {objective_target}"
-                )
-
-    def setup(self, setup_data: dict):
-        # General data loading.
-        try:
-            self._load_data(setup_data=setup_data)
-        except Exception as err:
-            logger.error(
-                "While pre-loading data, "
-                f"following error occurred: {err}"
-            )
-        # Construct self.X and self.y
-        self._construct_X()
-        # Make sure there is only one target.
-        self._adjust_y()
-        # Define data y from pima.
-        self._construct_y()
-        # Make sure target y is in Series class.
-        self._convert_y()
-        # Define config.
-        if alg.algorithm in setup_data:
-            self._config(config_data=setup_data[alg.algorithm])
         else:
-            logger.warning(
-                f"Setup data has a missing crucial key: {alg.algorithm}"
-            )
-        # Split dataset into training set and test set.
-        try:
-            self.X_train, self.X_test, self.y_train, self.y_test = train_test_split(
-                self.X, self.y, test_size=self.test_size, random_state=self.random_state
-            )
-        except Exception as err:
-            logger.error(
-                "While using train test split function, "
-                f"following error occurred: {err}"
-            )
-        return self
+            X_train, X_test, y_train, y_test = X_arr, X_arr, y_arr, y_arr
 
-    def train(self):
-        # Building Regression Model
-        # Create Logistic Regression classifier object
-        self.regression = LogisticRegression(
-            solver="liblinear", C=10.0, random_state=0
+        X_train_s = self.scaler.fit_transform(X_train)
+        X_test_s = self.scaler.transform(X_test)
+
+        self.model = LogisticRegression(
+            solver="lbfgs", max_iter=self.max_iter, random_state=self.random_state, multi_class="auto"
         )
-        try:
-            self.regression.fit(self.X_train, self.y_train)
-        except Exception as err:
-            logger.error(
-                f"Logistic Regression can not be trained: {err}"
-            )
-        else:
-            logger.info("Logistic Regression has been trained")
-        return self
+        self.model.fit(X_train_s, y_train)
+        self.is_fitted = True
 
-    def predict(self):
-        if self.regression is None:
-            self.train()
-        # Predict the response for test dataset
-        try:
-            self.y_predict = self.regression.predict(self.X_test)
-        except Exception as err:
-            logger.error(
-                f"Logistic Regression can not being executed: {err}"
-            )
-        else:
-            logger.info("Logistic Regression is being executed")
-        y_predict = pd.DataFrame(
-            data=self.y_predict,
-            index=self.X_test.index,
-            columns=self.target_columns
-        )
-        # Evaluating the applied model using the test data
-        result = {
-            "y_predict": df_to_dict(y_predict),
-            "score": self.regression.score(self.X_test, self.y_test)
+        y_pred = self.model.predict(X_test_s)
+        self.metrics = {
+            "n_samples": len(X),
+            "n_features": len(self.feature_names),
+            "target": self.target_field,
+            "classes": self.classes_,
+            "accuracy": round(float(accuracy_score(y_test, y_pred)), 4),
+            "features": self.feature_names,
         }
-        return result
+        logger.info(f"LogisticRegression trained: {self.metrics}")
+        return self.metrics
 
-    def result(self):
-        self.predict()
-        prediction = pd.DataFrame(
-            data=self.y_predict,
-            index=self.X_test.index,
-            columns=self.target_columns
-        )
-        result_data = prediction.join(
-            other=self.y_test,
-            lsuffix=" (true)",
-            rsuffix=" (predict)"
-        )
-        return df_to_dict(result_data)
-
-    def confusion(self):
-        if self.y_predict is None:
-            self.predict()
-        cm = confusion_matrix(self.y_test, self.y_predict)
-        cm_df = pd.DataFrame(
-            data=cm,
-            index=self.regression.classes_,
-            columns=self.regression.classes_
-        )
-        return df_to_dict(cm_df)
+    def predict(self, input_data: Dict[str, Any]) -> Any:
+        if not self.is_fitted or self.model is None:
+            return {"error": "Model not fitted — call train() first"}
+        feats = [float(input_data.get(f, 0) or 0) for f in self.feature_names]
+        X = self.scaler.transform(np.array([feats]))
+        pred_class_idx = int(self.model.predict(X)[0])
+        pred_class = self.classes_[pred_class_idx] if pred_class_idx < len(self.classes_) else str(pred_class_idx)
+        probas = self.model.predict_proba(X)[0].tolist()
+        return {
+            "predicted_" + self.target_field: pred_class,
+            "probabilities": {cls: round(p, 4) for cls, p in zip(self.classes_, probas)},
+            "model": "logistic_regression",
+        }

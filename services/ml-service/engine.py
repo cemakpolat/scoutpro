@@ -2,6 +2,8 @@ from typing import Any, List, Dict, Optional
 from algorithms.base import MLAlgorithm
 from algorithms.clustering import ClusteringAlgorithm
 from algorithms.regression import RegressionAlgorithm
+from algorithms.linearreg import LinearRegressionAlgorithm
+from algorithms.logisticreg import LogisticRegressionAlgorithm
 from algorithms.timeseries import TimeSeriesForecaster
 from algorithms.anomaly import MatchPerformanceAnomalyDetector
 from algorithms.role_classifier import TacticalRoleClassifier
@@ -20,13 +22,20 @@ class AnalyticsEngine:
 
     def _register_defaults(self):
         """Pre-register standard and football-specific ML algorithms."""
+        # Core regression / classification
         self.register_algorithm("player_clustering", ClusteringAlgorithm(n_clusters=5))
         self.register_algorithm("goals_regression", RegressionAlgorithm(target_field="goals"))
         self.register_algorithm("shots_regression", RegressionAlgorithm(target_field="shots"))
+        self.register_algorithm("goals_linear_regression", LinearRegressionAlgorithm(target_field="goals"))
+        self.register_algorithm("xg_linear_regression", LinearRegressionAlgorithm(target_field="xg"))
+        self.register_algorithm("position_classifier", LogisticRegressionAlgorithm(target_field="position"))
+        self.register_algorithm("outcome_classifier", LogisticRegressionAlgorithm(target_field="outcome"))
+
+        # Time-series forecasting
         self.register_algorithm("form_xg_forecaster", TimeSeriesForecaster(target_field="next_xg"))
         self.register_algorithm("form_passes_forecaster", TimeSeriesForecaster(target_field="next_passes"))
-        
-        # New Football-Specific Models
+
+        # Football-specific models
         self.register_algorithm("performance_anomaly_detector", MatchPerformanceAnomalyDetector())
         self.register_algorithm("tactical_role_classifier", TacticalRoleClassifier(n_clusters=6))
         self.register_algorithm("fatigue_risk_predictor", PhysicalFatiguePredictor(risk_threshold=0.6))

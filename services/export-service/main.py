@@ -2,8 +2,11 @@
 Export Service - Main Application
 Handles data exports in CSV, JSON, and Excel formats
 """
+import os
+from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 import logging
 import sys
@@ -12,51 +15,46 @@ from shared.utils.logger import setup_logger
 from config.settings import get_settings
 from api.endpoints.exports import router as exports_router
 
-# Settings
 settings = get_settings()
-
-# Setup logging
 logger = setup_logger(settings.service_name, settings.log_level)
 
-# FastAPI app
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://api-gateway:3001,http://localhost:3001,http://localhost:5173,http://localhost:5174",
+    ).split(",")
+    if o.strip()
+]
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info(f"Starting {settings.service_name}")
+    yield
+    logger.info(f"Shutting down {settings.service_name}")
+
+
 app = FastAPI(
     title="Export Service",
     description="ScoutPro Data Export Service",
     version="1.0.0",
     docs_url="/docs",
-    redoc_url="/redoc"
+    redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
-# CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Prometheus metrics
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 
-# Include routers
 app.include_router(exports_router)
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Initialize connections on startup"""
-    logger.info(f"Starting {settings.service_name}")
-    logger.info(f"{settings.service_name} started successfully")
-
-
-from fastapi.responses import StreamingResponse
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Clean up connections on shutdown"""
-    logger.info(f"Shutting down {settings.service_name}")
-    logger.info(f"{settings.service_name} shutdown complete")
 
 async def large_data_generator():
     yield "timestamp,player_id,x_pos,y_pos\n"

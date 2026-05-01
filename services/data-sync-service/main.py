@@ -62,8 +62,8 @@ from sync import (
 
 _MONGO_URL = os.getenv(
     "MONGODB_URL",
-    f"mongodb://root:scoutpro123@{os.getenv('MONGODB_HOST', 'mongo')}:"
-    f"{os.getenv('MONGODB_PORT', '27017')}/scoutpro?authSource=admin",
+    f"mongodb://{os.getenv('MONGODB_HOST', 'mongo')}:"
+    f"{os.getenv('MONGODB_PORT', '27017')}/scoutpro",
 )
 _MONGO_DB = os.getenv("MONGODB_DATABASE", "scoutpro")
 
@@ -156,9 +156,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "CORS_ORIGINS",
+        "http://api-gateway:3001,http://localhost:3001,http://localhost:5173,http://localhost:5174",
+    ).split(",")
+    if o.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

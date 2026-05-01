@@ -1790,6 +1790,289 @@ class AnalyticsHandler:
             "last_updated": datetime.now().isoformat(),
         }
 
+    # ------------------------------------------------------------------
+    # Player spatial analysis (cross-match)
+    # ------------------------------------------------------------------
+
+    async def _get_player_events(
+        self,
+        player_id: str,
+        player: Dict[str, Any],
+        event_type: Optional[str] = None,
+        last_n_matches: int = 10,
+    ) -> List[Dict[str, Any]]:
+        """Fetch all events for a player across recent matches directly from MongoDB."""
+        candidate_values = self._player_event_candidates(player_id, player)
+        if not candidate_values:
+            return []
+
+        # Build both string and int variants for match_events lookup
+        str_candidates = [str(v) for v in candidate_values]
+        int_candidates = [int(v) for v in candidate_values if str(v).isdigit()]
+        all_candidates: List[Any] = list(dict.fromkeys(str_candidates + int_candidates))
+
+        recent_matches = await self._get_recent_player_matches(player_id, player, limit=last_n_matches)
+        if not recent_matches:
+            return []
+
+        match_ids: List[Any] = []
+        for m in recent_matches:
+            mid = str(m.get('id') or m.get('uID') or m.get('matchID') or '').strip()
+            if mid:
+                match_ids.append(mid)
+                if mid.isdigit():
+                    match_ids.append(int(mid))
+
+        if not match_ids:
+            return []
+
+        and_clauses: List[Dict[str, Any]] = [
+            {'$or': [
+                {'player_id': {'$in': all_candidates}},
+                {'playerID': {'$in': all_candidates}},
+            ]},
+            {'$or': [
+                {'matchID': {'$in': match_ids}},
+                {'match_id': {'$in': match_ids}},
+            ]},
+        ]
+        if event_type:
+            and_clauses.append({'type_name': event_type})
+
+        try:
+            events = await self.db['match_events'].find(
+                {'$and': and_clauses}
+            ).to_list(length=10_000)
+            for ev in events:
+                ev.pop('_id', None)
+            return events
+        except Exception as exc:
+            logger.error('Failed to fetch player events for %s: %s', player_id, exc)
+            return []
+
+    @staticmethod
+    def _compute_xg_heuristic(x: float, y: float) -> float:
+        import math
+        dist = math.sqrt((x - 100) ** 2 + (y - 50) ** 2)
+        return round(math.exp(-dist / 30), 4)
+
+    @staticmethod
+    def _is_progressive_pass(start_x: float, end_x: float) -> bool:
+        """Pass that gains ≥15 x-units toward goal in the middle or attacking third."""
+        return (end_x - start_x) >= 15 and (start_x >= 33 or end_x >= 50)
+
+    async def get_player_shot_map(
+        self, player_id: str, last_n_matches: int = 10
+    ) -> Dict[str, Any]:
+        dashboard = await self.get_player_dashboard(player_id)
+        player = dashboard.get('player', {})
+        events = await self._get_player_events(player_id, player, event_type='shot', last_n_matches=last_n_matches)
+
+        shots = []
+        total_xg = 0.0
+        for ev in events:
+            loc = ev.get('location') or {}
+            x = self._to_float(loc.get('x'), default=0.0)
+            y = self._to_float(loc.get('y'), default=0.0)
+            xg = self._compute_xg_heuristic(x, y)
+            is_goal = bool(ev.get('is_goal'))
+            shots.append({
+                'match_id': str(ev.get('matchID') or ev.get('match_id') or ''),
+                'minute': self._to_int(ev.get('minute')),
+                'period': self._to_int(ev.get('period'), default=1),
+                'x': round(x, 2),
+                'y': round(y, 2),
+                'is_goal': is_goal,
+                'xg': xg,
+                'type_name': ev.get('type_name') or 'shot',
+            })
+            total_xg += xg
+
+        goals = sum(1 for s in shots if s['is_goal'])
+        n = len(shots)
+        return {
+            'player_id': player_id,
+            'player': player,
+            'shots': shots,
+            'summary': {
+                'total_shots': n,
+                'goals': goals,
+                'total_xg': round(total_xg, 3),
+                'conversion_rate': round(goals / n, 3) if n else 0,
+                'xg_per_shot': round(total_xg / n, 3) if n else 0,
+                'xg_overperformance': round(goals - total_xg, 3),
+            },
+            'last_updated': datetime.now().isoformat(),
+        }
+
+    async def get_player_heat_map(
+        self,
+        player_id: str,
+        event_type: Optional[str] = None,
+        last_n_matches: int = 10,
+    ) -> Dict[str, Any]:
+        dashboard = await self.get_player_dashboard(player_id)
+        player = dashboard.get('player', {})
+        events = await self._get_player_events(
+            player_id, player, event_type=event_type, last_n_matches=last_n_matches
+        )
+
+        points = []
+        for ev in events:
+            loc = ev.get('location') or {}
+            x = self._optional_number(loc.get('x'))
+            y = self._optional_number(loc.get('y'))
+            if x is None or y is None:
+                continue
+            points.append({
+                'x': round(x, 2),
+                'y': round(y, 2),
+                'event_type': ev.get('type_name') or 'unknown',
+                'minute': self._to_int(ev.get('minute')),
+                'intensity': 1,
+            })
+
+        return {
+            'player_id': player_id,
+            'player': player,
+            'data': points,
+            'event_type': event_type or 'all',
+            'total_events': len(points),
+            'last_updated': datetime.now().isoformat(),
+        }
+
+    async def get_player_pass_map(
+        self, player_id: str, last_n_matches: int = 10
+    ) -> Dict[str, Any]:
+        dashboard = await self.get_player_dashboard(player_id)
+        player = dashboard.get('player', {})
+        events = await self._get_player_events(player_id, player, event_type='pass', last_n_matches=last_n_matches)
+
+        passes = []
+        for ev in events:
+            loc = ev.get('location') or {}
+            x = self._optional_number(loc.get('x'))
+            y = self._optional_number(loc.get('y'))
+            if x is None or y is None:
+                continue
+
+            end_loc = self._get_qualifier_end_location(ev)
+            end_x = end_loc.get('x') if end_loc else None
+            end_y = end_loc.get('y') if end_loc else None
+
+            is_progressive = (
+                end_x is not None and self._is_progressive_pass(x, end_x)
+            )
+            raw = ev.get('raw_event') or {}
+            is_successful = bool(raw.get('outcome') in (1, '1', True))
+
+            passes.append({
+                'match_id': str(ev.get('matchID') or ev.get('match_id') or ''),
+                'start_x': round(x, 2),
+                'start_y': round(y, 2),
+                'end_x': round(end_x, 2) if end_x is not None else None,
+                'end_y': round(end_y, 2) if end_y is not None else None,
+                'is_successful': is_successful,
+                'is_progressive': is_progressive,
+                'minute': self._to_int(ev.get('minute')),
+            })
+
+        total = len(passes)
+        successful = sum(1 for p in passes if p['is_successful'])
+        progressive = sum(1 for p in passes if p['is_progressive'])
+        return {
+            'player_id': player_id,
+            'player': player,
+            'passes': passes,
+            'summary': {
+                'total_passes': total,
+                'successful_passes': successful,
+                'pass_accuracy': round(successful / total * 100, 1) if total else 0,
+                'progressive_passes': progressive,
+                'progressive_pct': round(progressive / total * 100, 1) if total else 0,
+            },
+            'last_updated': datetime.now().isoformat(),
+        }
+
+    async def get_match_player_stats(self, match_id: str, player_id: str) -> Dict[str, Any]:
+        """Aggregate per-player per-match stats from F24 events."""
+        import math
+
+        events = await self._get_events_from_mongodb(match_id)
+        pid_variants = self._identifier_variants(player_id)
+        pid_set: set = set(pid_variants)
+        for v in list(pid_variants):
+            if v.isdigit():
+                pid_set.add(int(v))
+
+        player_events = [
+            ev for ev in events
+            if str(ev.get('player_id') or '') in pid_set
+            or str(ev.get('playerID') or '') in pid_set
+            or ev.get('player_id') in pid_set
+            or ev.get('playerID') in pid_set
+        ]
+
+        counts: Dict[str, Any] = {
+            'passes': 0, 'successful_passes': 0,
+            'shots': 0, 'shots_on_target': 0, 'goals': 0, 'total_xg': 0.0,
+            'tackles': 0, 'interceptions': 0, 'dribbles': 0,
+            'fouls_committed': 0, 'fouls_won': 0,
+            'yellow_cards': 0, 'red_cards': 0,
+            'touches': 0, 'aerials_won': 0,
+        }
+
+        for ev in player_events:
+            ev_type = str(ev.get('type_name') or '').lower()
+            raw = ev.get('raw_event') or {}
+            is_successful = bool(raw.get('outcome') in (1, '1', True))
+            loc = ev.get('location') or {}
+            counts['touches'] += 1
+
+            if 'pass' in ev_type:
+                counts['passes'] += 1
+                if is_successful:
+                    counts['successful_passes'] += 1
+            elif ev_type in ('shot', 'attempt saved', 'miss', 'post'):
+                counts['shots'] += 1
+                x = self._to_float(loc.get('x'), default=50.0)
+                y = self._to_float(loc.get('y'), default=50.0)
+                counts['total_xg'] += self._compute_xg_heuristic(x, y)
+                if bool(ev.get('is_goal')):
+                    counts['goals'] += 1
+                if ev_type == 'attempt saved' or is_successful:
+                    counts['shots_on_target'] += 1
+            elif 'tackle' in ev_type:
+                counts['tackles'] += 1
+            elif 'interception' in ev_type:
+                counts['interceptions'] += 1
+            elif 'take on' in ev_type or 'dribble' in ev_type:
+                counts['dribbles'] += 1
+            elif 'foul committed' in ev_type:
+                counts['fouls_committed'] += 1
+            elif 'foul' in ev_type:
+                counts['fouls_won'] += 1
+            elif 'yellow card' in ev_type:
+                counts['yellow_cards'] += 1
+            elif 'red card' in ev_type:
+                counts['red_cards'] += 1
+            elif 'aerial' in ev_type and is_successful:
+                counts['aerials_won'] += 1
+
+        counts['pass_accuracy'] = (
+            round(counts['successful_passes'] / counts['passes'] * 100, 1)
+            if counts['passes'] else 0
+        )
+        counts['total_xg'] = round(counts['total_xg'], 3)
+
+        return {
+            'match_id': match_id,
+            'player_id': player_id,
+            'events_count': len(player_events),
+            'stats': counts,
+            'last_updated': datetime.now().isoformat(),
+        }
+
     async def close(self):
         await self.client.aclose()
 
