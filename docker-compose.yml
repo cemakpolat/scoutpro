@@ -251,6 +251,7 @@ services:
       - AWS_ACCESS_KEY_ID=${MINIO_ROOT_USER:-minioadmin}
       - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
       - SERVICE_NAME=ml-service
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
     depends_on:
       mongo:
         condition: service_started
@@ -258,6 +259,8 @@ services:
         condition: service_started
       mlflow:
         condition: service_started
+      kafka:
+        condition: service_healthy
     volumes:
       - ml-models:/models
       - ./services/ml-service:/app
