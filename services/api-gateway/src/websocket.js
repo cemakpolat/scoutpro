@@ -5,7 +5,6 @@
  */
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
-const { Kafka } = require('kafkajs');
 
 class WebSocketManager {
   constructor(server, db) {
@@ -66,6 +65,13 @@ class WebSocketManager {
   }
 
   async _startTaskCompletionBridge() {
+    let Kafka;
+    try {
+      Kafka = require('kafkajs').Kafka;
+    } catch {
+      console.warn('[WS] kafkajs not available — task completion bridge disabled');
+      return;
+    }
     const brokers = (process.env.KAFKA_BOOTSTRAP_SERVERS || 'kafka:9092').split(',');
     const kafka = new Kafka({ clientId: 'api-gateway-ws', brokers });
     const consumer = kafka.consumer({ groupId: 'api-gateway-ws-group' });
