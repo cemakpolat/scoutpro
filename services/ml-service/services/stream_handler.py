@@ -27,18 +27,20 @@ class MLFeatureStreamProcessor:
     async def start(self):
         self.running = True
         logger.info("Starting ML Feature Stream Processor...")
-        await self.consumer.start()
-        
+        try:
+            await self.consumer.start()
+        except Exception as e:
+            logger.warning(f"Kafka unavailable — feature streaming disabled: {e}")
+            self.running = False
+            return
+
         try:
             async for message in self.consumer.consume():
                 if not self.running:
                     break
-                    
                 await self.process_event(message)
-                    
         except Exception as e:
             logger.error(f"Error in ML feature stream: {e}")
-            raise
 
     async def stop(self):
         self.running = False
