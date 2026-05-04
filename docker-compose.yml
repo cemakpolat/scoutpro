@@ -175,7 +175,7 @@ services:
       dockerfile: Dockerfile
     container_name: scoutpro-data-provider
     ports:
-      - "7000:7000"
+      - "17000:7000"
     environment:
       - DATA_ROOT=/app/data
       - PORT=7000
@@ -185,7 +185,7 @@ services:
       - scoutpro-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7000/api/health"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7000/api/health')"]
       interval: 20s
       timeout: 5s
       retries: 3
@@ -233,6 +233,10 @@ services:
         condition: service_started
       data-provider:
         condition: service_started
+    volumes:
+      - ./services/data-sync-service:/app
+      - ./services/shared:/app/shared
+      - ./data:/data:ro
     networks:
       - scoutpro-network
     restart: unless-stopped
@@ -297,29 +301,29 @@ services:
       - scoutpro-network
     restart: unless-stopped
 
-  search-service:
-    build:
-      context: ./services
-      dockerfile: search-service/Dockerfile
-    container_name: scoutpro-search-service
-    ports:
-      - "28007:8000"
-    environment:
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - SERVICE_NAME=search-service
-    depends_on:
-      elasticsearch:
-        condition: service_started
-      kafka:
-        condition: service_healthy
-    volumes:
-      - ./services/search-service:/app
-      - ./services/shared:/app/shared
-    networks:
-      - scoutpro-network
-    restart: unless-stopped
+  # search-service:
+  #   build:
+  #     context: ./services
+  #     dockerfile: search-service/Dockerfile
+  #   container_name: scoutpro-search-service
+  #   ports:
+  #     - "28007:8000"
+  #   environment:
+  #     - ELASTICSEARCH_URL=http://elasticsearch:9200
+  #     - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
+  #     - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+  #     - SERVICE_NAME=search-service
+  #   depends_on:
+  #     elasticsearch:
+  #       condition: service_started
+  #     kafka:
+  #       condition: service_healthy
+  #   volumes:
+  #     - ./services/search-service:/app
+  #     - ./services/shared:/app/shared
+  #   networks:
+  #     - scoutpro-network
+  #   restart: unless-stopped
 
   notification-service:
     build:
@@ -414,30 +418,31 @@ services:
       - scoutpro-network
     restart: unless-stopped
 
-  video-service:
-    build:
-      context: ./services
-      dockerfile: video-service/Dockerfile
-    container_name: scoutpro-video-service
-    ports:
-      - "28011:8011"
-    environment:
-      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
-      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
-      - SERVICE_NAME=video-service
-    depends_on:
-      mongo:
-        condition: service_started
-      minio:
-        condition: service_started
-    volumes:
-      - ./services/video-service:/app
-      - ./services/shared:/app/shared
-    networks:
-      - scoutpro-network
-    restart: unless-stopped
+  # ============ DISABLED FOR FUTURE IMPLEMENTATION ============
+  # video-service:
+  #   build:
+  #     context: ./services
+  #     dockerfile: video-service/Dockerfile
+  #   container_name: scoutpro-video-service
+  #   ports:
+  #     - "28011:8011"
+  #   environment:
+  #     - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
+  #     - MINIO_ENDPOINT=minio:9000
+  #     - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+  #     - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
+  #     - SERVICE_NAME=video-service
+  #   depends_on:
+  #     mongo:
+  #       condition: service_started
+  #     minio:
+  #       condition: service_started
+  #   volumes:
+  #     - ./services/video-service:/app
+  #     - ./services/shared:/app/shared
+  #   networks:
+  #     - scoutpro-network
+  #   restart: unless-stopped
 
   analytics-service:
     build:
@@ -465,31 +470,30 @@ services:
       - scoutpro-network
     restart: unless-stopped
 
-  # ============ BACKGROUND TASK WORKER ============
+  # ============ BACKGROUND TASK WORKER (Internal Async Service) ============
+  # Pure Kafka-based background worker - NO HTTP interface
+  # Processes long-running tasks: ML training, bulk analysis, report generation, etc.
+  # Tasks submitted via Kafka → results published back to Kafka or stored in MinIO
   task-worker-service:
     build:
       context: ./services/task-worker-service
       dockerfile: Dockerfile
     container_name: scoutpro-task-worker
-    ports:
-      - "28013:8013"
+    # No external ports - internal service only
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - KAFKA_TASKS_TOPIC=tasks
-      - KAFKA_TASK_COMPLETED_TOPIC=task.completed
+      - KAFKA_TASKS_TOPIC=tasks.submitted
+      - KAFKA_TASK_COMPLETED_TOPIC=tasks.completed
       - KAFKA_CONSUMER_GROUP=task-worker-group
       - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
-      - MINIO_TASKS_BUCKET=task-results
+      - MINIO_RESULTS_BUCKET=task-results
       - ML_SERVICE_URL=http://ml-service:8000
       - REPORT_SERVICE_URL=http://report-service:8009
       - EXPORT_SERVICE_URL=http://export-service:8010
-      - DATA_SYNC_SERVICE_URL=http://data-sync-service:8012
-      - VIDEO_SERVICE_URL=http://video-service:8011
       - STATISTICS_SERVICE_URL=http://statistics-service:8000
-      - TASK_WORKER_URL=http://task-worker-service:8013
     depends_on:
       kafka:
         condition: service_healthy
@@ -499,15 +503,10 @@ services:
         condition: service_started
     volumes:
       - ./services/task-worker-service:/app
+      - ./services/shared:/app/shared
     networks:
       - scoutpro-network
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8013/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 30s
 
   # ============ MESSAGE BROKER ============
   zookeeper:
@@ -525,7 +524,7 @@ services:
       - scoutpro-network
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "bash", "-c", "echo ruok | nc -w 2 localhost 2181 | grep imok"]
+      test: ["CMD", "bash", "-c", "echo srvr | nc -w 2 localhost 2181 | grep -q 'Mode:'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -562,21 +561,21 @@ services:
       retries: 5
       start_period: 30s
 
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: scoutpro-kafka-ui
-    ports:
-      - "28090:8080"
-    environment:
-      - KAFKA_CLUSTERS_0_NAME=scoutpro-local
-      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
-      - KAFKA_CLUSTERS_0_ZOOKEEPER=zookeeper:2181
-    depends_on:
-      kafka:
-        condition: service_healthy
-    networks:
-      - scoutpro-network
-    restart: unless-stopped
+  # kafka-ui:
+  #   image: provectuslabs/kafka-ui:latest
+  #   container_name: scoutpro-kafka-ui
+  #   ports:
+  #     - "28090:8080"
+  #   environment:
+  #     - KAFKA_CLUSTERS_0_NAME=scoutpro-local
+  #     - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+  #     - KAFKA_CLUSTERS_0_ZOOKEEPER=zookeeper:2181
+  #   depends_on:
+  #     kafka:
+  #       condition: service_healthy
+  #   networks:
+  #     - scoutpro-network
+  #   restart: unless-stopped
 
   # ============ DATABASES ============
   mongo:
@@ -637,28 +636,28 @@ services:
       timeout: 10s
       retries: 3
 
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
-    container_name: scoutpro-elasticsearch
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - xpack.security.enrollment.enabled=false
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
-      - cluster.name=scoutpro-search
-    ports:
-      - "29200:9200"
-    volumes:
-      - elasticsearch-data:/usr/share/elasticsearch/data
-    networks:
-      - scoutpro-network
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
+  # elasticsearch:
+  #   image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+  #   container_name: scoutpro-elasticsearch
+  #   environment:
+  #     - discovery.type=single-node
+  #     - xpack.security.enabled=false
+  #     - xpack.security.enrollment.enabled=false
+  #     - ES_JAVA_OPTS=-Xms512m -Xmx512m
+  #     - cluster.name=scoutpro-search
+  #   ports:
+  #     - "29200:9200"
+  #   volumes:
+  #     - elasticsearch-data:/usr/share/elasticsearch/data
+  #   networks:
+  #     - scoutpro-network
+  #   restart: unless-stopped
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 60s
 
   # ============ OBJECT STORAGE ============
   minio:
@@ -709,43 +708,43 @@ services:
       --port 5000
 
   # ============ MONITORING ============
-  prometheus:
-    image: prom/prometheus:latest
-    container_name: scoutpro-prometheus
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
-      - '--web.console.templates=/usr/share/prometheus/consoles'
-    networks:
-      - scoutpro-network
-    restart: unless-stopped
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: scoutpro-prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  #     - prometheus-data:/prometheus
+  #   command:
+  #     - '--config.file=/etc/prometheus/prometheus.yml'
+  #     - '--storage.tsdb.path=/prometheus'
+  #     - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+  #     - '--web.console.templates=/usr/share/prometheus/consoles'
+  #   networks:
+  #     - scoutpro-network
+  #   restart: unless-stopped
 
-  grafana:
-    image: grafana/grafana:latest
-    container_name: scoutpro-grafana
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
-      - GF_INSTALL_PLUGINS=redis-datasource,kafka-datasource
-      - GF_SERVER_ROOT_URL=http://localhost:3000
-    volumes:
-      - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
-      - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
-      - grafana-data:/var/lib/grafana
-    depends_on:
-      prometheus:
-        condition: service_started
-    networks:
-      - scoutpro-network
-    restart: unless-stopped
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: scoutpro-grafana
+  #   ports:
+  #     - "3000:3000"
+  #   environment:
+  #     - GF_SECURITY_ADMIN_USER=admin
+  #     - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin123}
+  #     - GF_INSTALL_PLUGINS=redis-datasource,kafka-datasource
+  #     - GF_SERVER_ROOT_URL=http://localhost:3000
+  #   volumes:
+  #     - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+  #     - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+  #     - grafana-data:/var/lib/grafana
+  #   depends_on:
+  #     prometheus:
+  #       condition: service_started
+  #   networks:
+  #     - scoutpro-network
+  #   restart: unless-stopped
 
   # jaeger:
   #   image: jaegertracing/all-in-one:latest
@@ -828,11 +827,11 @@ volumes:
   redis-data:
   es-data:
   es-logs-data:
-  elasticsearch-data:
+  # elasticsearch-data:
   minio-data:
   kafka-data:
   zookeeper-data:
   zookeeper-logs:
   ml-models:
-  prometheus-data:
-  grafana-data:
+  # prometheus-data:
+  # grafana-data:

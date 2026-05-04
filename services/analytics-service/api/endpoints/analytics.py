@@ -247,6 +247,23 @@ async def get_sequence_insights(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class MultiMatchRequest(BaseModel):
+    match_ids: List[str]
+
+
+@router.post("/multi-match", summary="Aggregate analytics across multiple matches")
+async def get_multi_match_analytics(
+    request: MultiMatchRequest = Body(...),
+    handler: AnalyticsHandler = Depends(get_analytics_handler),
+):
+    """Server-side aggregation of events across multiple matches.
+    Returns player leaderboard, match KPIs, patterns, and key insights."""
+    try:
+        return await handler.get_multi_match_analytics(request.match_ids)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ------------------------------------------------------------------
 # Player spatial analysis (cross-match)
 # ------------------------------------------------------------------

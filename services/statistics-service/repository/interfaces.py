@@ -71,3 +71,35 @@ class IStatisticsRepository(ABC):
     ) -> Dict[str, Any]:
         """Aggregate player stats over time period"""
         pass
+
+    @abstractmethod
+    async def get_match_advanced_metrics(
+        self,
+        match_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get persisted advanced match metrics"""
+        pass
+
+    @abstractmethod
+    async def get_match_tactical_snapshot(
+        self,
+        match_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get persisted tactical snapshot for a match"""
+        pass
+
+    @abstractmethod
+    async def get_match_pass_network(
+        self,
+        match_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get persisted pass network for a match"""
+        pass
+
+    @abstractmethod
+    async def get_match_sequence_summary(
+        self,
+        match_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get persisted sequence summary for a match"""
+        pass

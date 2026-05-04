@@ -8,6 +8,7 @@ Provides common CRUD operations and query functionality for MongoDB.
 from abc import ABC, abstractmethod
 from typing import List, Optional, Dict, Any, TypeVar, Generic
 from datetime import datetime
+import os
 import pymongo
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from dataclasses import asdict
@@ -35,8 +36,8 @@ class BaseRepository(ABC, Generic[T]):
 
     def __init__(
         self,
-        mongo_uri: str = 'mongodb://localhost:27017',
-        db_name: str = 'scoutpro',
+        mongo_uri: Optional[str] = None,
+        db_name: Optional[str] = None,
         collection_name: Optional[str] = None
     ):
         """
@@ -47,8 +48,12 @@ class BaseRepository(ABC, Generic[T]):
             db_name: Database name
             collection_name: Collection name (defaults to entity type)
         """
-        self.mongo_uri = mongo_uri
-        self.db_name = db_name
+        default_mongo_uri = (
+            os.getenv('MONGODB_URL')
+            or f"mongodb://{os.getenv('MONGODB_HOST', 'localhost')}:{os.getenv('MONGODB_PORT', '27017')}"
+        )
+        self.mongo_uri = mongo_uri or default_mongo_uri
+        self.db_name = db_name or os.getenv('MONGODB_DATABASE', 'scoutpro')
         self.collection_name = collection_name or self.get_collection_name()
 
         # MongoDB connection (lazy loading)

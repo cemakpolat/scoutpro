@@ -143,6 +143,13 @@ class EnhancedEventAggregator:
         self.zones = FieldZones()
         self.qualifiers = QualifierExtractor()
 
+    @staticmethod
+    def _norm_qualifiers(raw) -> Dict:
+        """Normalize qualifiers to dict. DB stores [{qualifier_id: N, value: V}, ...]."""
+        if isinstance(raw, list):
+            return {str(q["qualifier_id"]): q.get("value", "") for q in raw if "qualifier_id" in q}
+        return raw or {}
+
     def _build_match_filters(
         self,
         player_id: Optional[str] = None,
@@ -150,33 +157,51 @@ class EnhancedEventAggregator:
         competition_id: Optional[int] = None,
         season_id: Optional[int] = None
     ) -> Dict[str, Any]:
-        """Build MongoDB match filters from parameters"""
+        """Build MongoDB match filters from parameters.
+
+        Events are stored with numeric player_id/team_id integers.  Provider
+        IDs from the players/teams collections carry a letter prefix
+        (e.g. 'p101380', 't405').  Strip that prefix and try both variants so
+        queries always resolve correctly.
+        """
         filters = {}
-        
+
         if player_id:
-            try:
-                filters["player_id"] = int(player_id) if isinstance(player_id, str) else player_id
-            except (ValueError, TypeError):
-                filters["player_id"] = player_id
-        
+            pid = str(player_id).strip()
+            # Strip leading 'p' / 'P' prefix that Opta player UIDs carry
+            numeric_str = pid[1:] if pid and pid[0].lower() == 'p' and pid[1:].isdigit() else pid
+            if numeric_str.isdigit():
+                num = int(numeric_str)
+                # Try both the numeric int and the original string form
+                filters["player_id"] = {"$in": [num, pid, numeric_str]} if pid != numeric_str else {"$in": [num, pid]}
+            else:
+                filters["player_id"] = pid
+
         if team_id:
-            try:
-                filters["team_id"] = int(team_id) if isinstance(team_id, str) else team_id
-            except (ValueError, TypeError):
-                filters["team_id"] = team_id
-        
+            tid = str(team_id).strip()
+            # Strip leading 't' / 'T' prefix that Opta team UIDs carry
+            numeric_str = tid[1:] if tid and tid[0].lower() == 't' and tid[1:].isdigit() else tid
+            if numeric_str.isdigit():
+                num = int(numeric_str)
+                filters["team_id"] = {"$in": [num, tid, numeric_str]} if tid != numeric_str else {"$in": [num, tid]}
+            else:
+                try:
+                    filters["team_id"] = int(tid)
+                except (ValueError, TypeError):
+                    filters["team_id"] = tid
+
         if competition_id:
             try:
                 filters["competition_id"] = int(competition_id) if isinstance(competition_id, str) else competition_id
             except (ValueError, TypeError):
                 pass
-        
+
         if season_id:
             try:
                 filters["season_id"] = int(season_id) if isinstance(season_id, str) else season_id
             except (ValueError, TypeError):
                 pass
-        
+
         return filters
 
     # ==================== PASS STATISTICS (ENHANCED) ====================
@@ -236,7 +261,7 @@ class EnhancedEventAggregator:
             # Process each pass event
             for doc in docs:
                 location = doc.get("location", {})
-                qualifiers = doc.get("qualifiers", {})
+                qualifiers = self._norm_qualifiers(doc.get("qualifiers"))
                 
                 # Regional analysis
                 if location and "x" in location:
@@ -352,7 +377,7 @@ class EnhancedEventAggregator:
             # Process each shot
             for doc in docs:
                 location = doc.get("location", {})
-                qualifiers = doc.get("qualifiers", {})
+                qualifiers = self._norm_qualifiers(doc.get("qualifiers"))
                 is_goal = doc.get("is_goal", False)
                 
                 # Goal tracking
@@ -531,7 +556,7 @@ class EnhancedEventAggregator:
             # Process tackles
             for doc in docs:
                 location = doc.get("location", {})
-                qualifiers = doc.get("qualifiers", {})
+                qualifiers = self._norm_qualifiers(doc.get("qualifiers"))
                 
                 # Success tracking
                 if doc.get("is_successful"):
@@ -673,7 +698,7 @@ class EnhancedEventAggregator:
             # Process fouls
             for doc in docs:
                 location = doc.get("location", {})
-                qualifiers = doc.get("qualifiers", {})
+                qualifiers = self._norm_qualifiers(doc.get("qualifiers"))
                 
                 # Foul type analysis
                 if self.qualifiers.has_qualifier(qualifiers, "13"):
@@ -918,7 +943,7 @@ class EnhancedEventAggregator:
             
             for doc in docs:
                 event_type = doc.get("type_name")
-                qualifiers = doc.get("qualifiers", {})
+                qualifiers = self._norm_qualifiers(doc.get("qualifiers"))
                 
                 if event_type == "goalkeeper_save" or (event_type == "goalkeeper" and self.qualifiers.has_qualifier(qualifiers, "82")): # 82 inside opta might mean save
                     stats["saves"] += 1
@@ -971,7 +996,7 @@ class EnhancedEventAggregator:
             }
             
             for doc in docs:
-                qualifiers = doc.get("qualifiers", {})
+                qualifiers = self._norm_qualifiers(doc.get("qualifiers"))
                 
                 # Check for assist (211) and key pass (210) or similar Opta ones
                 has_assist = self.qualifiers.has_qualifier(qualifiers, "211")
@@ -1213,3 +1238,108 @@ class EnhancedEventAggregator:
         except Exception as e:
             logger.error(f"Error calculating player similarity: {e}", exc_info=True)
             return {"error": str(e)}
+
+    async def get_analytics_bundle(
+        self,
+        player_id: str,
+        team_id: Optional[str] = None,
+        competition_id: Optional[int] = None,
+        season_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Return all player analytics in one call, persisted to MongoDB player_analytics.
+
+        Lookup order:
+          1. MongoDB player_analytics — persistent, survives Redis restarts.
+          2. Compute everything in parallel, store to MongoDB + Redis (24hr TTL).
+
+        Historical data never changes, so MongoDB records are permanent once written.
+        """
+        import asyncio
+        from datetime import timezone
+
+        mongo_col = self.db.scoutpro.player_analytics
+        mongo_key = {
+            "player_id": player_id,
+            "competition_id": competition_id,
+            "season_id": season_id,
+        }
+
+        # 1. Persistent cache — check MongoDB first
+        existing = await mongo_col.find_one(mongo_key)
+        if existing:
+            existing.pop("_id", None)
+            return existing
+
+        # 2. Compute all metrics in parallel
+        results = await asyncio.gather(
+            self.get_pass_statistics_enhanced(player_id=player_id, competition_id=competition_id, season_id=season_id),
+            self.get_shot_statistics_enhanced(player_id=player_id, competition_id=competition_id, season_id=season_id),
+            self.get_duel_statistics_enhanced(player_id=player_id, competition_id=competition_id, season_id=season_id),
+            self.get_tackle_statistics_enhanced(player_id=player_id, competition_id=competition_id, season_id=season_id),
+            self.get_ball_control_statistics_enhanced(player_id=player_id, competition_id=competition_id, season_id=season_id),
+            self.get_spatial_density_heatmap(player_id=player_id, team_id=team_id, competition_id=competition_id, season_id=season_id),
+            self.get_player_composite_index(player_id=player_id, competition_id=competition_id, season_id=season_id),
+            self.get_expected_metrics(player_id=player_id, team_id=team_id, competition_id=competition_id, season_id=season_id),
+            self._get_match_count(player_id=player_id, competition_id=competition_id, season_id=season_id),
+            return_exceptions=True,
+        )
+
+        def _safe(r):
+            return r if not isinstance(r, Exception) else {"error": str(r)}
+
+        (pass_stats, shot_stats, duel_stats, tackle_stats, ball_control_stats,
+         heatmap, composite_index, expected_metrics, match_count) = [_safe(r) for r in results]
+
+        bundle = {
+            **mongo_key,
+            "computed_at": datetime.now(timezone.utc).isoformat(),
+            "pass_stats": pass_stats,
+            "shot_stats": shot_stats,
+            "duel_stats": duel_stats,
+            "tackle_stats": tackle_stats,
+            "ball_control_stats": ball_control_stats,
+            "heatmap": heatmap,
+            "composite_index": composite_index,
+            "expected_metrics": expected_metrics,
+            "match_count": match_count,
+        }
+
+        # 3. Persist to MongoDB and warm Redis
+        try:
+            await mongo_col.replace_one(mongo_key, bundle, upsert=True)
+        except Exception as exc:
+            logger.warning(f"Failed to persist analytics bundle: {exc}")
+
+        redis_key = f"event:bundle:{player_id}:{competition_id}:{season_id}"
+        try:
+            await self.redis.setex(redis_key, 86400, json.dumps(bundle, default=str))
+        except Exception:
+            pass
+
+        return bundle
+
+    async def _get_match_count(
+        self,
+        player_id: str,
+        competition_id: Optional[int] = None,
+        season_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """Count distinct matches and total events for a player."""
+        try:
+            filters = self._build_match_filters(player_id, competition_id=competition_id, season_id=season_id)
+            pipeline = [
+                {"$match": filters},
+                {"$group": {"_id": "$match_id"}},
+                {"$count": "match_count"},
+            ]
+            cursor = self.db.scoutpro.match_events.aggregate(pipeline)
+            rows = await cursor.to_list(length=1)
+            count = rows[0]["match_count"] if rows else 0
+            total_pipeline = [{"$match": filters}, {"$count": "total"}]
+            total_cursor = self.db.scoutpro.match_events.aggregate(total_pipeline)
+            total_rows = await total_cursor.to_list(length=1)
+            total = total_rows[0]["total"] if total_rows else 0
+            return {"match_count": count, "total_events": total}
+        except Exception as e:
+            logger.error(f"Error counting matches for player {player_id}: {e}")
+            return {"match_count": 0, "total_events": 0}

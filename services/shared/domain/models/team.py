@@ -18,7 +18,7 @@ class ScoutProTeam:
     """
 
     # ====== IDENTITY ======
-    id: str                           # ScoutPro canonical ID (e.g., "scoutpro_team_123")
+    id: int                           # ScoutPro canonical numeric ID
     external_id: str                  # Primary provider's ID
     provider: str                     # Primary data source ('opta', 'statsbomb', etc.)
 
@@ -40,7 +40,7 @@ class ScoutProTeam:
     badge_url: Optional[str] = None   # URL to team badge/logo
 
     # ====== CURRENT STATUS ======
-    current_competition_ids: List[str] = field(default_factory=list)  # Competitions they're in
+    current_competition_ids: List[int] = field(default_factory=list)  # Competitions they're in
     current_league: Optional[str] = None
     manager: Optional[str] = None     # Current manager/coach
 
@@ -99,6 +99,24 @@ class ScoutProTeam:
     def get_display_name(self) -> str:
         """Get best display name"""
         return self.short_name or self.common_name or self.name
+
+    @property
+    def code(self) -> Optional[str]:
+        """Backward-compatible alias for legacy code paths."""
+        return self.abbreviation
+
+    @code.setter
+    def code(self, value: Optional[str]) -> None:
+        self.abbreviation = value
+
+    @property
+    def league(self) -> Optional[str]:
+        """Backward-compatible alias for legacy code paths."""
+        return self.current_league
+
+    @league.setter
+    def league(self, value: Optional[str]) -> None:
+        self.current_league = value
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for MongoDB storage"""

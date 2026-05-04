@@ -305,69 +305,78 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
 
         const eventAnalyticsPlayerId = resolveEventAnalyticsPlayerId(detailedPlayer);
 
-        
-        // Fetch ML form data
-        const formRes = await fetch(`http://localhost:3001/api/ml/form/${internalPlayerId}`).then(r => r.json()).catch(() => null);
-        if (formRes && formRes.success && formRes.data) {
-          setFormData(formRes.data as FormDataSnapshot);
-        }
-
-        // Parallel fetch for Enhanced Strategy Metrics
-        const [passRes, heatRes, compRes, expRes, sequenceRes] = await Promise.allSettled([
-          apiService.getPlayerEnhancedPassStats(eventAnalyticsPlayerId),
-          apiService.getPlayerHeatmap(eventAnalyticsPlayerId),
-          apiService.getPlayerCompositeIndex(eventAnalyticsPlayerId),
-          apiService.getPlayerExpectedMetrics(eventAnalyticsPlayerId),
+        // Single bundle call: replaces 5 separate analytics requests.
+        // First call computes and persists to MongoDB; subsequent calls return instantly.
+        const [bundleRes, formRes, sequenceRes] = await Promise.allSettled([
+          apiService.getPlayerAnalyticsBundle(eventAnalyticsPlayerId),
+          fetch(`/api/ml/form/${internalPlayerId}`).then(r => r.json()).catch(() => null),
           apiService.getPlayerSequenceInsights(internalPlayerId),
         ]);
 
-        if (passRes.status === 'fulfilled' && passRes.value.data) {
-          setEnhancedStats(passRes.value.data);
+        if (bundleRes.status === 'fulfilled' && bundleRes.value.data) {
+          const b = bundleRes.value.data;
+          if (b.pass_stats && !b.pass_stats.error) setEnhancedStats(b.pass_stats);
+          if (b.heatmap && !b.heatmap.error) setHeatmap(normalizeHeatmap(b.heatmap));
+          if (b.composite_index && !b.composite_index.error) setCompositeIndex(normalizeCompositeIndex(b.composite_index));
+          if (b.expected_metrics && !b.expected_metrics.error) setExpectedMetrics(normalizeExpectedMetrics(b.expected_metrics));
         }
-        if (heatRes.status === 'fulfilled' && heatRes.value.data) {
-          setHeatmap(normalizeHeatmap(heatRes.value.data));
+
+        if (formRes.status === 'fulfilled') {
+          const formJson = formRes.value;
+          if (formJson?.success && formJson.data) setFormData(formJson.data as FormDataSnapshot);
         }
-        if (compRes.status === 'fulfilled' && compRes.value.data) {
-          setCompositeIndex(normalizeCompositeIndex(compRes.value.data));
-        }
-        if (expRes.status === 'fulfilled' && expRes.value.data) {
-          setExpectedMetrics(normalizeExpectedMetrics(expRes.value.data));
-        }
+
         if (sequenceRes.status === 'fulfilled' && sequenceRes.value.data) {
           setSequenceInsights(sequenceRes.value.data as SequenceInsightsData);
         }
 
-        // ML Predictions (Phase 4 integration)
+        // ML Predictions — use real computed values from bundle
         try {
-          const compData = compRes.status === 'fulfilled' ? normalizeCompositeIndex(compRes.value.data) : null;
-          
+          const bundleData = bundleRes.status === 'fulfilled' ? bundleRes.value.data : null;
+          const compData = bundleData?.composite_index ? normalizeCompositeIndex(bundleData.composite_index) : null;
+          const passStats = bundleData?.pass_stats ?? {};
+          const matchCount = bundleData?.match_count ?? {};
+          const passAccuracy = Number(passStats.open_play_completion ?? 0);
+          const totalEvents = Number(matchCount.total_events ?? 0);
+          const matchesPlayed = Number(matchCount.match_count ?? 0);
+          const estimatedMinsPerMatch = 80;
+
           const predictionsRes = await Promise.allSettled([
             apiService.predictTacticalRole({
               composite_defending: compData?.defending ?? 0,
               composite_possession: compData?.possession ?? 0,
               composite_attacking: compData?.attacking ?? 0,
-              pass_accuracy: 85.0,
-              touches_in_box_per_90: 2.5
+              pass_accuracy: passAccuracy || 75.0,
+              touches_in_box_per_90: totalEvents > 0 ? Math.min((totalEvents / Math.max(matchesPlayed, 1)) * 0.05, 10) : 2.5,
             }),
             apiService.predictFatigueRisk({
-              minutes_last_14d: Math.floor(Math.random() * 400),
-              days_since_last: Math.floor(Math.random() * 10),
+              minutes_last_14d: matchesPlayed * estimatedMinsPerMatch,
+              days_since_last: 3,
               age: detailedPlayer.age || 25,
-              intensity_index: 1.1
+              intensity_index: totalEvents > 0 ? Math.min(totalEvents / Math.max(matchesPlayed * 60, 1), 3.0) : 1.1,
             }),
             apiService.predictPerformanceAnomaly({
-              xg_differential: (Math.random() * 2) - 1,
-              pass_volume_diff: (Math.random() * 20) - 10,
-              defensive_actions_diff: (Math.random() * 5) - 2.5,
-              composite_index_deviation: (compData?.totalIndex ?? 0) - 50
-            })
+              xg_differential: (bundleData?.expected_metrics?.total_xg ?? 0) - (compData?.attacking ?? 0) * 0.1,
+              pass_volume_diff: (passStats.total_passes ?? 0) - 30,
+              defensive_actions_diff: (bundleData?.duel_stats?.total_duels ?? 0) - 10,
+              composite_index_deviation: (compData?.totalIndex ?? 0) - 50,
+            }),
           ]);
 
           const [roleRes, fatigueRes, anomalyRes] = predictionsRes;
+
+          // Gateway wraps predictions as { algorithm, prediction: { ... } } — unwrap.
+          const unwrapPrediction = (data: unknown): unknown => {
+            if (data && typeof data === 'object' && 'prediction' in data) {
+              return (data as { prediction: unknown }).prediction;
+            }
+            return data;
+          };
+
           setMlPredictions({
-            tacticalRole: roleRes.status === 'fulfilled' ? roleRes.value.data : null,
-            fatigueRisk: fatigueRes.status === 'fulfilled' ? fatigueRes.value.data : null,
-            anomalyInsight: anomalyRes.status === 'fulfilled' ? anomalyRes.value.data : null,
+            tacticalRole: roleRes.status === 'fulfilled' ? unwrapPrediction(roleRes.value.data) as TacticalRolePrediction : null,
+            fatigueRisk: fatigueRes.status === 'fulfilled' ? unwrapPrediction(fatigueRes.value.data) as FatigueRiskPrediction : null,
+            anomalyInsight: anomalyRes.status === 'fulfilled' ? unwrapPrediction(anomalyRes.value.data) as AnomalyInsightPrediction : null,
           });
         } catch (mlErr) {
           console.error("Failed to fetch ML predictions", mlErr);
@@ -643,14 +652,14 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
                 {mlPredictions.tacticalRole && mlPredictions.tacticalRole.assigned_role_id !== undefined && (
                   <div className="p-3 bg-indigo-900/30 border border-indigo-700/50 rounded-lg">
                     <div className="text-xs text-indigo-300 font-semibold uppercase tracking-wide mb-1">Clustered Tactical Role</div>
-                    <div className="text-white text-sm font-medium">{mlPredictions.tacticalRole.role_name} <span className="text-xs text-indigo-400 font-normal">({(mlPredictions.tacticalRole.confidence_score * 100).toFixed(0)}% Match)</span></div>
+                    <div className="text-white text-sm font-medium">{mlPredictions.tacticalRole.role_name} <span className="text-xs text-indigo-400 font-normal">({((mlPredictions.tacticalRole.confidence_score ?? 0) * 100).toFixed(0)}% Match)</span></div>
                   </div>
                 )}
 
                 {mlPredictions.fatigueRisk && (
                   <div className={`p-3 border rounded-lg ${mlPredictions.fatigueRisk.is_high_risk ? 'bg-red-900/30 border-red-700/50' : 'bg-green-900/30 border-green-700/50'}`}>
                     <div className={`text-xs font-semibold uppercase tracking-wide mb-1 ${mlPredictions.fatigueRisk.is_high_risk ? 'text-red-400' : 'text-green-400'}`}>Physical Fatigue Risk</div>
-                    <div className="text-white text-sm">{(mlPredictions.fatigueRisk.fatigue_risk_percentage).toFixed(1)}% <span className="text-xs text-slate-400 ml-1">- {mlPredictions.fatigueRisk.recommendation}</span></div>
+                    <div className="text-white text-sm">{(mlPredictions.fatigueRisk.fatigue_risk_percentage ?? 0).toFixed(1)}% <span className="text-xs text-slate-400 ml-1">- {mlPredictions.fatigueRisk.recommendation}</span></div>
                   </div>
                 )}
 

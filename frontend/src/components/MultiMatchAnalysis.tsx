@@ -23,8 +23,7 @@ const toNumber = (value: unknown): number => {
 };
 
 const analysisMatchFilters: MatchFilters & { limit: number } = {
-  status: ['finished'],
-  limit: 50,
+  limit: 100,
 };
 
 // Extracts a plain date string from either a regular string or an Opta XML-style
@@ -118,7 +117,6 @@ type AnalysisEvent = Record<string, unknown> & {
 type AppliedAnalysisSnapshot = {
   matchIds: string[];
   analysisType: string;
-  events: AnalysisEvent[];
 };
 
 type PatternCard = {
@@ -151,14 +149,14 @@ const toAnalysisMatchRecord = (match: any, index: number, teams: any[]): Analysi
   return {
     id: String(match.id),
     uiKey: `${match.id || 'match'}-${index}`,
-    home: resolveTeamName(match.homeTeam || match.home_team, match.homeTeamId || match.home_team_id, teams, 'Home'),
-    away: resolveTeamName(match.awayTeam || match.away_team, match.awayTeamId || match.away_team_id, teams, 'Away'),
+    home: resolveTeamName(match.homeTeam || match.home_team || match.home_team_name, match.homeTeamId || match.home_team_id, teams, 'Home'),
+    away: resolveTeamName(match.awayTeam || match.away_team || match.away_team_name, match.awayTeamId || match.away_team_id, teams, 'Away'),
     date: formatDate(match.date),
     rawDate: extractRawDateString(match.date),
     status,
     competition: match.competition || 'Turkish Süper Lig',
-    homeScore: toNumber(match.homeScore),
-    awayScore: toNumber(match.awayScore),
+    homeScore: toNumber(match.homeScore ?? match.home_score),
+    awayScore: toNumber(match.awayScore ?? match.away_score),
   };
 };
 
@@ -225,6 +223,7 @@ const MultiMatchAnalysis: React.FC = () => {
   const [matchPickerError, setMatchPickerError] = useState<string | null>(null);
   const [matchCache, setMatchCache] = useState<AnalysisMatchRecord[]>([]);
   const [appliedAnalysis, setAppliedAnalysis] = useState<AppliedAnalysisSnapshot | null>(null);
+  const [backendAnalysis, setBackendAnalysis] = useState<any | null>(null);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -383,8 +382,6 @@ const MultiMatchAnalysis: React.FC = () => {
   const closePicker = useCallback(() => setShowMatchPicker(false), []);
 
   const appliedMatchIds = appliedAnalysis?.matchIds ?? [];
-  const appliedAnalysisType = appliedAnalysis?.analysisType ?? analysisType;
-  const appliedEvents = appliedAnalysis?.events ?? [];
 
   const selectedMatchRecords = useMemo(
     () => appliedMatchIds
@@ -403,247 +400,32 @@ const MultiMatchAnalysis: React.FC = () => {
   const highScoringMatches = selectedMatchRecords.filter((match) => match.homeScore + match.awayScore >= 3).length;
   const liveSelections = selectedMatchRecords.filter((match) => ['live', 'in_progress'].includes(String(match.status).toLowerCase())).length;
 
-  const generatedAnalysis = useMemo(() => {
-    const orderedMatches = [...selectedMatchRecords].sort(
-      (left, right) => new Date(left.rawDate).getTime() - new Date(right.rawDate).getTime(),
-    );
-    const matchIds = new Set(orderedMatches.map((match) => match.id));
-    const eventBuckets = new Map<string, AnalysisEvent[]>(orderedMatches.map((match) => [match.id, []]));
-    const playerBuckets = new Map<string, {
-      id: string;
-      name: string;
-      matches: Set<string>;
-      goals: number;
-      shots: number;
-      completedPasses: number;
-      successfulActions: number;
-      totalActions: number;
-      assists: number;
-      keyPasses: number;
-      progressivePasses: number;
-      tackles: number;
-      interceptions: number;
-    }>();
+  const patterns: PatternCard[] = useMemo(
+    () => (backendAnalysis?.patterns ?? []).map((p: any) => ({
+      pattern: p.name,
+      frequency: typeof p.frequency === 'number' ? `${p.frequency} per match` : String(p.frequency),
+      impact: 'Medium' as const,
+      trend: 'stable' as const,
+    })),
+    [backendAnalysis],
+  );
 
-    let totalShots = 0;
-    let totalXg = 0;
-    let keyPasses = 0;
-    let assists = 0;
-    let progressivePasses = 0;
-    let finalThirdEntries = 0;
-    let boxEntries = 0;
-    let highRegains = 0;
-    let recoveries = 0;
-    let tackles = 0;
-    let interceptions = 0;
-    let completedPasses = 0;
+  const keyInsights: string[] = backendAnalysis?.key_insights ?? [];
 
-    for (const rawEvent of appliedEvents) {
-      const event = rawEvent as AnalysisEvent;
-      const matchId = getEventMatchId(event);
-      if (!matchIds.has(matchId)) {
-        continue;
-      }
-
-      eventBuckets.get(matchId)?.push(event);
-
-      const typeName = String(event.type_name || '').toLowerCase();
-      const isShot = isShotEvent(event);
-
-      if (isShot) {
-        totalShots += 1;
-        totalXg += toNumber(event.analytical_xg);
-      }
-      if (event.is_key_pass) {
-        keyPasses += 1;
-      }
-      if (event.is_assist) {
-        assists += 1;
-      }
-      if (event.progressive_pass) {
-        progressivePasses += 1;
-      }
-      if (event.entered_final_third) {
-        finalThirdEntries += 1;
-      }
-      if (event.entered_box) {
-        boxEntries += 1;
-      }
-      if (event.high_regain) {
-        highRegains += 1;
-      }
-      if (typeName === 'tackle') {
-        tackles += 1;
-      }
-      if (typeName === 'interception') {
-        interceptions += 1;
-      }
-      if (typeName === 'good_skill' && String(event.action_type || '').toLowerCase() === 'recovery') {
-        recoveries += 1;
-      }
-      if (typeName === 'pass' && event.is_successful) {
-        completedPasses += 1;
-      }
-
-      const playerId = getEventPlayerId(event);
-      if (!playerId) {
-        continue;
-      }
-
-      const rawEventPayload = (event.raw_event || {}) as Record<string, unknown>;
-      const playerName = String(
-        event.player_name
-        || rawEventPayload.player_name
-        || playerLookup.get(playerId)?.name
-        || `Player #${playerId}`
-      );
-      const bucket = playerBuckets.get(playerId) || {
-        id: playerId,
-        name: playerName,
-        matches: new Set<string>(),
-        goals: 0,
-        shots: 0,
-        completedPasses: 0,
-        successfulActions: 0,
-        totalActions: 0,
-        assists: 0,
-        keyPasses: 0,
-        progressivePasses: 0,
-        tackles: 0,
-        interceptions: 0,
-      };
-
-      bucket.matches.add(matchId);
-
-      if (isShot) {
-        bucket.shots += 1;
-      }
-      if (event.is_goal) {
-        bucket.goals += 1;
-      }
-      if (typeName === 'pass' && event.is_successful) {
-        bucket.completedPasses += 1;
-      }
-      if (event.is_assist) {
-        bucket.assists += 1;
-      }
-      if (event.is_key_pass) {
-        bucket.keyPasses += 1;
-      }
-      if (event.progressive_pass) {
-        bucket.progressivePasses += 1;
-      }
-      if (typeName === 'tackle') {
-        bucket.tackles += 1;
-      }
-      if (typeName === 'interception') {
-        bucket.interceptions += 1;
-      }
-
-      if (['pass', 'tackle', 'interception', 'take_on', 'clearance', 'blocked_pass'].includes(typeName)) {
-        bucket.totalActions += 1;
-        if (event.is_successful !== false) {
-          bucket.successfulActions += 1;
-        }
-      }
-
-      playerBuckets.set(playerId, bucket);
-    }
-
-    const buildSeries = (selector: (event: AnalysisEvent) => boolean): number[] =>
-      orderedMatches.map((match) => (eventBuckets.get(match.id) || []).filter(selector).length);
-
-    const buildPattern = (
-      pattern: string,
-      series: number[],
-      highThreshold: number,
-      mediumThreshold: number,
-    ): PatternCard | null => {
-      const total = series.reduce((sum, value) => sum + value, 0);
-      if (total === 0) {
-        return null;
-      }
-
-      const perMatch = total / Math.max(series.length, 1);
-
-      return {
-        pattern,
-        frequency: perMatch >= 1 ? `${perMatch.toFixed(1)} per match` : `${total} total`,
-        impact: perMatch >= highThreshold ? 'High' : perMatch >= mediumThreshold ? 'Medium' : 'Medium',
-        trend: getSeriesTrend(series),
-      };
-    };
-
-    const patterns = [
-      buildPattern('Progressive build-up', buildSeries((event) => Boolean(event.progressive_pass)), 12, 4),
-      buildPattern('Chance creation', buildSeries((event) => Boolean(event.is_key_pass || event.is_assist)), 5, 2),
-      buildPattern('Final-third pressure', buildSeries((event) => Boolean(event.entered_final_third || event.entered_box || isShotEvent(event))), 14, 6),
-      buildPattern('Defensive regains', buildSeries((event) => {
-        const typeName = String(event.type_name || '').toLowerCase();
-        return Boolean(event.high_regain || typeName === 'tackle' || typeName === 'interception' || String(event.action_type || '').toLowerCase() === 'recovery');
-      }), 10, 4),
-    ].filter(Boolean) as PatternCard[];
-
-    const playerOutput = Array.from(playerBuckets.values())
-      .sort((left, right) => {
-        const leftScore = (left.goals * 12) + (left.assists * 9) + (left.keyPasses * 4) + (left.progressivePasses * 2) + (left.tackles * 2) + (left.interceptions * 2) + left.shots + (left.completedPasses * 0.03);
-        const rightScore = (right.goals * 12) + (right.assists * 9) + (right.keyPasses * 4) + (right.progressivePasses * 2) + (right.tackles * 2) + (right.interceptions * 2) + right.shots + (right.completedPasses * 0.03);
-        return rightScore - leftScore;
-      })
-      .slice(0, 6)
-      .map((player, index) => ({
-        id: player.id,
-        uiKey: `${player.id}-${index}`,
-        name: player.name,
-        rank: index + 1,
-        matches: player.matches.size,
-        goals: player.goals,
-        shots: player.shots,
-        completedPasses: player.completedPasses,
-        actionSuccessRate: player.totalActions > 0 ? Math.round((player.successfulActions / player.totalActions) * 100) : 0,
-      }));
-
-    const topPlayer = playerOutput[0];
-    const averageEventsPerMatch = selectedMatchRecords.length > 0 ? appliedEvents.length / selectedMatchRecords.length : 0;
-    const averageXgPerShot = totalShots > 0 ? totalXg / totalShots : 0;
-    const homeWinRate = selectedMatchRecords.length > 0 ? Math.round((homeWins / selectedMatchRecords.length) * 100) : 0;
-    const drawRate = selectedMatchRecords.length > 0 ? Math.round((draws / selectedMatchRecords.length) * 100) : 0;
-
-    const keyInsights = selectedMatchRecords.length === 0
-      ? []
-      : [
-        `${selectedMatchRecords.length} selected matches generated ${appliedEvents.length} tracked events, averaging ${averageEventsPerMatch.toFixed(0)} actions per match.`,
-        `${totalShots} shot events produced ${totalXg.toFixed(2)} xG, with ${keyPasses} key passes and ${assists} direct assists in the sample.`,
-        `${progressivePasses} progressive passes, ${finalThirdEntries} final-third entries and ${boxEntries} box entries define this ${appliedAnalysisType} view.`,
-        topPlayer
-          ? `${topPlayer.name} leads the selected set with ${topPlayer.goals} goals, ${topPlayer.shots} shots and ${topPlayer.completedPasses} completed passes.`
-          : `Home sides won ${homeWinRate}% of the sample, with draws in ${drawRate}% of fixtures.`,
-      ];
-
-    return {
-      patterns,
-      playerOutput,
-      keyInsights,
-      totalEvents: appliedEvents.length,
-      totalShots,
-      totalXg,
-      averageXgPerShot,
-      keyPasses,
-      assists,
-      progressivePasses,
-      finalThirdEntries,
-      boxEntries,
-      highRegains,
-      recoveries,
-      tackles,
-      interceptions,
-      completedPasses,
-    };
-  }, [appliedAnalysisType, appliedEvents, draws, homeWins, playerLookup, selectedMatchRecords]);
-
-  const patterns = generatedAnalysis.patterns;
-  const keyInsights = generatedAnalysis.keyInsights;
-  const playerOutput = generatedAnalysis.playerOutput;
+  const playerOutput: PlayerOutputRow[] = useMemo(
+    () => (backendAnalysis?.player_leaderboard ?? []).map((p: any, index: number) => ({
+      id: String(p.player_id),
+      uiKey: `${p.player_id}-${index}`,
+      name: p.player_name || `Player ${p.player_id}`,
+      rank: index + 1,
+      matches: 1,
+      goals: p.goals ?? 0,
+      shots: p.shots ?? 0,
+      completedPasses: p.completed_passes ?? 0,
+      actionSuccessRate: 0,
+    })),
+    [backendAnalysis],
+  );
 
   const applyAnalysis = async () => {
     if (selectedMatches.length === 0) {
@@ -654,41 +436,17 @@ const MultiMatchAnalysis: React.FC = () => {
     setAnalysisError(null);
     try {
       await refetchAnalysisMatches();
+      setAppliedAnalysis({ matchIds: [...selectedMatches], analysisType });
 
-      const eventResponses = await Promise.allSettled(
-        selectedMatches.map((matchId) => apiService.getMatchEvents(matchId)),
-      );
-
-      const collectedEvents: AnalysisEvent[] = [];
-      let failedRequests = 0;
-
-      eventResponses.forEach((result, index) => {
-        const fallbackMatchId = selectedMatches[index];
-
-        if (result.status !== 'fulfilled' || !result.value.success) {
-          failedRequests += 1;
-          return;
+      const response = await apiService.getMultiMatchAnalytics(selectedMatches);
+      if (response.success && response.data) {
+        setBackendAnalysis(response.data);
+        if ((response.data.matches_with_data ?? 0) === 0) {
+          setAnalysisError('No event data was returned for the selected matches. Score-based summaries are still available.');
         }
-
-        const events = Array.isArray(result.value.data) ? result.value.data : [];
-        collectedEvents.push(
-          ...events.map((event) => ({
-            ...(event as AnalysisEvent),
-            match_id: getEventMatchId(event as AnalysisEvent) || fallbackMatchId,
-          })),
-        );
-      });
-
-      setAppliedAnalysis({
-        matchIds: [...selectedMatches],
-        analysisType,
-        events: collectedEvents,
-      });
-
-      if (failedRequests > 0) {
-        setAnalysisError(`Loaded event data for ${selectedMatches.length - failedRequests} of ${selectedMatches.length} selected matches. Some matches did not return event feeds.`);
-      } else if (collectedEvents.length === 0) {
-        setAnalysisError('No event data was returned for the selected matches. Score-based summaries are still available, but event-derived sections will stay empty.');
+      } else {
+        setBackendAnalysis(null);
+        setAnalysisError('Analytics service did not return results for the selected matches.');
       }
     } finally {
       setIsAnalyzing(false);
@@ -1047,16 +805,16 @@ const MultiMatchAnalysis: React.FC = () => {
             <h3 className="text-xl font-semibold mb-6">Generated Signals</h3>
             <div className="space-y-4">
               <div className="p-3 bg-green-600/10 border border-green-600/20 rounded">
-                <div className="text-sm font-medium text-green-400 mb-1">Event Volume</div>
-                <div className="text-xs text-slate-300">{generatedAnalysis.totalEvents} tracked event rows and {generatedAnalysis.completedPasses} completed passes were generated from the selected matches.</div>
+                <div className="text-sm font-medium text-green-400 mb-1">Match Coverage</div>
+                <div className="text-xs text-slate-300">{backendAnalysis?.matches_with_data ?? 0} of {selectedMatches.length} selected matches returned event data.</div>
               </div>
               <div className="p-3 bg-yellow-600/10 border border-yellow-600/20 rounded">
                 <div className="text-sm font-medium text-yellow-400 mb-1">Chance Quality</div>
-                <div className="text-xs text-slate-300">{generatedAnalysis.totalShots} shots produced {generatedAnalysis.totalXg.toFixed(2)} xG, averaging {generatedAnalysis.averageXgPerShot.toFixed(2)} xG per shot.</div>
+                <div className="text-xs text-slate-300">Avg {backendAnalysis?.kpis?.avg_shots_per_match ?? 0} shots/match — avg xG {backendAnalysis?.kpis?.avg_xg_per_match ?? 0} per match.</div>
               </div>
               <div className="p-3 bg-blue-600/10 border border-blue-600/20 rounded">
-                <div className="text-sm font-medium text-blue-400 mb-1">Transition Signal</div>
-                <div className="text-xs text-slate-300">{generatedAnalysis.progressivePasses} progressive passes, {generatedAnalysis.finalThirdEntries} final-third entries and {generatedAnalysis.highRegains + generatedAnalysis.recoveries} regain events were found in the applied sample.</div>
+                <div className="text-sm font-medium text-blue-400 mb-1">Scoring</div>
+                <div className="text-xs text-slate-300">Avg {backendAnalysis?.kpis?.avg_goals_per_match ?? 0} goals/match — {backendAnalysis?.kpis?.high_scoring_pct ?? 0}% of matches had more than 3 goals.</div>
               </div>
             </div>
           </div>

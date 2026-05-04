@@ -102,10 +102,10 @@ const MatchCentre: React.FC = () => {
     || filteredMatchOptions[0]
     || matchOptions.find((match: any) => hasReliableLiveContext(match, teams))
     || matchOptions[0];
-  const [selectedMatchId, setSelectedMatchId] = useState<string>(defaultMatch?.id || 'match-003');
+  const [selectedMatchId, setSelectedMatchId] = useState<string>(defaultMatch?.id ? String(defaultMatch.id) : '');
 
   useEffect(() => {
-    if ((selectedMatchId === 'match-003' || !filteredMatchOptions.some((match: any) => String(match.id) === String(selectedMatchId))) && defaultMatch?.id) {
+    if ((!selectedMatchId || !filteredMatchOptions.some((match: any) => String(match.id) === String(selectedMatchId))) && defaultMatch?.id) {
       setSelectedMatchId(String(defaultMatch.id));
     }
   }, [defaultMatch?.id, filteredMatchOptions, selectedMatchId]);

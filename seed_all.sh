@@ -114,39 +114,83 @@ fi
 
 echo "[seed] Phase 1 complete."
 
-# ── Phase 2: F40 biometric enrichment ───────────────────────────
+# ── Phase 2: F40 biometric seeding (via OptaBatchSeeder) ─────────
+#
+# enrich_f40.py was removed.  The OptaBatchSeeder (sync/batch_seeder.py)
+# handles F40 parsing and player upsert inline using the shared
+# parser/mapper stack, so all ScoutPro IDs are assigned correctly.
+# If the main sync already ran F40, this is a no-op (upsert is idempotent).
 
 echo ""
 echo "======================================================================"
-echo "[seed] Phase 2/3 — enriching players with F40 biometrics"
+echo "[seed] Phase 2/3 — F40 player profiles (OptaBatchSeeder)"
 echo "======================================================================"
 
-python /scripts/enrich_f40.py
-ENRICH_F40_EXIT=$?
+python - <<'PYEOF'
+import sys, os
+sys.path.insert(0, '/app')
+try:
+    from sync.batch_seeder import OptaBatchSeeder
+    seeder = OptaBatchSeeder(
+        data_root=os.environ.get('DATA_ROOT', '/app/data/opta/2019'),
+        competition_id=int(os.environ.get('COMPETITION_ID', 115)),
+        season_id=int(os.environ.get('SEASON_ID', 2019)),
+    )
+    seeder.seed_f40()
+    seeder.close()
+    print('[seed] F40 seeding complete')
+except Exception as e:
+    print(f'[seed] WARNING: F40 seeding failed: {e} (non-fatal)')
+PYEOF
 
-if [[ $ENRICH_F40_EXIT -ne 0 ]]; then
-  echo "[seed] WARNING: enrich_f40.py exited with $ENRICH_F40_EXIT (non-fatal, continuing)"
-fi
-
-# ── Phase 3: match / event enrichment ────────────────────────────
+# ── Phase 3: aggregate player/team statistics from events ────────
+#
+# enrich_matches_and_events.py was removed.  The BatchAggregator
+# (statistics-service/services/batch_aggregator.py) computes
+# player_statistics and team_statistics from match_events directly.
 
 echo ""
 echo "======================================================================"
-echo "[seed] Phase 3/3 — enriching matches and events with team/player names"
+echo "[seed] Phase 3/3 — aggregating player/team statistics (BatchAggregator)"
 echo "======================================================================"
 
-python /scripts/enrich_matches_and_events.py
-ENRICH_ME_EXIT=$?
-
-if [[ $ENRICH_ME_EXIT -ne 0 ]]; then
-  echo "[seed] WARNING: enrich_matches_and_events.py exited with $ENRICH_ME_EXIT (non-fatal)"
-fi
+python - <<'PYEOF'
+import sys
+sys.path.insert(0, '/app')
+try:
+    # The BatchAggregator lives in the statistics-service but we can import
+    # it directly here since it only depends on pymongo.
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+        'batch_aggregator',
+        '/statistics-service/services/batch_aggregator.py'
+    )
+    if spec and spec.loader:
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        agg = mod.BatchAggregator()
+        result = agg.run()
+        agg.close()
+        print(f'[seed] Aggregation complete: {result}')
+    else:
+        print('[seed] batch_aggregator not found in container — skipping aggregation step')
+except Exception as e:
+    print(f'[seed] WARNING: aggregation failed: {e} (non-fatal)')
+PYEOF
 
 # ── Done ──────────────────────────────────────────────────────────
 
 echo ""
 echo "======================================================================"
 echo "[seed] All phases complete. Database is seeded and ready."
-echo "       Run the full system with:"
-echo "         docker compose up -d"
+echo ""
+echo "  Verify counts from the host:"
+echo "    docker exec scoutpro-mongo mongosh -u root -p scoutpro123 \\"
+echo "      --authenticationDatabase admin --quiet \\"
+echo "      --eval \"db=db.getSiblingDB('scoutpro'); \\"
+echo "             ['players','teams','matches','match_events'].forEach(c => \\"
+echo "               print(c+': '+db.getCollection(c).countDocuments({})))\""
+echo ""
+echo "  Or use the management script:"
+echo "    ./manage.sh status"
 echo "======================================================================"

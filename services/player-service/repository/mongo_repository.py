@@ -1,6 +1,7 @@
 """
 MongoDB implementation of Player Repository
 """
+from datetime import date, datetime
 from typing import Optional, List, Dict, Any
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from .interfaces import IPlayerRepository
@@ -15,6 +16,27 @@ logger = logging.getLogger(__name__)
 class MongoPlayerRepository(IPlayerRepository):
     """MongoDB implementation of player repository"""
 
+    POSITION_ALIAS_MAP = {
+        'GK': ['GK'],
+        'CB': ['DF'],
+        'LB': ['DF'],
+        'RB': ['DF'],
+        'LWB': ['DF'],
+        'RWB': ['DF'],
+        'DF': ['DF'],
+        'CDM': ['MF'],
+        'CM': ['MF'],
+        'CAM': ['MF'],
+        'LM': ['MF'],
+        'RM': ['MF'],
+        'MF': ['MF'],
+        'LW': ['FW'],
+        'RW': ['FW'],
+        'ST': ['FW'],
+        'CF': ['FW'],
+        'FW': ['FW'],
+    }
+
     def __init__(self, db: AsyncIOMotorDatabase):
         self.db = db
         self.players_collection = db['players']
@@ -22,6 +44,22 @@ class MongoPlayerRepository(IPlayerRepository):
 
     def _has_value(self, value: Any) -> bool:
         return value not in (None, '', [], {})
+
+    def _prepare_doc_for_player(self, doc: Dict[str, Any]) -> Dict[str, Any]:
+        """Sanitize a raw MongoDB document before passing to Player().
+
+        - Removes _id (not in model)
+        - Removes duplicate 'id' when 'scoutpro_id' is present (Pydantic v2 alias conflict)
+        - Converts BSON Int64 / int scoutpro_id to str (Player.id is declared as str)
+        """
+        doc = dict(doc)
+        doc.pop('_id', None)
+        if 'scoutpro_id' in doc and 'id' in doc:
+            doc.pop('id')
+        # Motor returns BSON Int64 as Python int; Player.id is str
+        if 'scoutpro_id' in doc and not isinstance(doc['scoutpro_id'], str):
+            doc['scoutpro_id'] = str(doc['scoutpro_id'])
+        return doc
 
     def _normalize_identity_value(self, value: Any) -> str:
         if value is None:
@@ -118,6 +156,57 @@ class MongoPlayerRepository(IPlayerRepository):
             return deduplicated_docs[:limit]
         return deduplicated_docs
 
+    def _expand_position_filters(self, position_filter: Any) -> List[str]:
+        if isinstance(position_filter, list):
+            values = position_filter
+        else:
+            values = [position_filter]
+
+        expanded: List[str] = []
+        for value in values:
+            normalized = self._normalize_identity_value(value).upper()
+            if not normalized:
+                continue
+
+            for candidate in self.POSITION_ALIAS_MAP.get(normalized, [normalized]):
+                if candidate not in expanded:
+                    expanded.append(candidate)
+
+        return expanded
+
+    def _derive_player_age(self, doc: Dict[str, Any]) -> Optional[int]:
+        raw_age = doc.get('age')
+        if raw_age not in (None, ''):
+            try:
+                age = int(raw_age)
+                if age >= 0:
+                    return age
+            except (TypeError, ValueError):
+                pass
+
+        raw_birth_date = doc.get('birth_date') or doc.get('birthDate')
+        if not raw_birth_date:
+            return None
+
+        normalized_birth_date = self._normalize_identity_value(raw_birth_date)
+        if not normalized_birth_date:
+            return None
+
+        parsed_birth_date = None
+        try:
+            parsed_birth_date = datetime.fromisoformat(normalized_birth_date.replace('Z', '+00:00')).date()
+        except ValueError:
+            try:
+                parsed_birth_date = datetime.strptime(normalized_birth_date[:10], '%Y-%m-%d').date()
+            except ValueError:
+                return None
+
+        today = date.today()
+        age = today.year - parsed_birth_date.year - (
+            (today.month, today.day) < (parsed_birth_date.month, parsed_birth_date.day)
+        )
+        return age if age >= 0 else None
+
     async def _find_best_player_doc(
         self,
         query: Dict[str, Any],
@@ -139,19 +228,27 @@ class MongoPlayerRepository(IPlayerRepository):
           3. uID legacy field   (for backward compat during transition)
         """
         try:
-            # 1. Canonical ScoutPro ID
-            doc = await self._find_best_player_doc({"scoutpro_id": player_id})
+            # 1. Canonical ScoutPro ID — stored as BSON Long (integer).
+            # Query with both int and string so either storage format matches.
+            sp_id_values: List[Any] = [player_id]
+            try:
+                sp_id_values.append(int(player_id))
+            except (ValueError, TypeError):
+                pass
+            doc = await self._find_best_player_doc({"scoutpro_id": {"$in": sp_id_values}})
 
             if not doc:
-                # 2. Provider reference – Opta numeric ID (strip leading 'p' if present)
+                # 2. Provider reference – Opta numeric ID; DB stores either "p184522" or "184522"
                 numeric_opta = player_id.lstrip("p")
                 doc = await self._find_best_player_doc(
-                    {"provider_ids.opta": numeric_opta}
+                    {"provider_ids.opta": {"$in": [numeric_opta, f"p{numeric_opta}"]}}
                 )
 
             if not doc:
                 # 3. Legacy uID – covers "p184522" or "184522" stored directly
                 query_values: List[Any] = [player_id]
+                if not player_id.startswith("p"):
+                    query_values.append(f"p{player_id}")
                 try:
                     query_values.append(int(player_id))
                 except (ValueError, TypeError):
@@ -159,9 +256,7 @@ class MongoPlayerRepository(IPlayerRepository):
                 doc = await self._find_best_player_doc({"uID": {"$in": query_values}})
 
             if doc:
-                if '_id' in doc:
-                    doc.pop('_id')
-                return Player(**doc)
+                return Player(**self._prepare_doc_for_player(doc))
 
             return None
         except Exception as e:
@@ -172,12 +267,15 @@ class MongoPlayerRepository(IPlayerRepository):
         """Find players by filters"""
         try:
             query = {}
+            age_min = filters.get('age_min')
+            age_max = filters.get('age_max')
 
             if 'position' in filters and filters['position']:
-                if isinstance(filters['position'], list):
-                    query['position'] = {'$in': filters['position']}
-                else:
-                    query['position'] = filters['position']
+                expanded_positions = self._expand_position_filters(filters['position'])
+                if len(expanded_positions) == 1:
+                    query['position'] = expanded_positions[0]
+                elif expanded_positions:
+                    query['position'] = {'$in': expanded_positions}
 
             if 'club' in filters and filters['club']:
                 if isinstance(filters['club'], list):
@@ -187,12 +285,6 @@ class MongoPlayerRepository(IPlayerRepository):
 
             if 'nationality' in filters and filters['nationality']:
                 query['nationality'] = filters['nationality']
-
-            if 'age_min' in filters and filters['age_min']:
-                query.setdefault('age', {})['$gte'] = filters['age_min']
-
-            if 'age_max' in filters and filters['age_max']:
-                query.setdefault('age', {})['$lte'] = filters['age_max']
 
             if 'search' in filters and filters['search']:
                 search_value = filters['search']
@@ -211,10 +303,20 @@ class MongoPlayerRepository(IPlayerRepository):
 
             players = []
             for doc in docs:
-                if '_id' in doc:
-                    doc.pop('_id')
+                effective_age = self._derive_player_age(doc)
+                if age_min is not None and (effective_age is None or effective_age < age_min):
+                    continue
+                if age_max is not None and (effective_age is None or effective_age > age_max):
+                    continue
+
+                clean = self._prepare_doc_for_player(doc)
+                if effective_age is not None and not self._has_value(clean.get('age')):
+                    clean['age'] = effective_age
+
                 try:
-                    players.append(Player(**doc))
+                    players.append(Player(**clean))
+                    if len(players) >= limit:
+                        break
                 except Exception as e:
                     logger.warning(f"Skipping invalid player doc: {e}")
                     continue
@@ -242,10 +344,8 @@ class MongoPlayerRepository(IPlayerRepository):
 
             players = []
             for doc in docs:
-                if '_id' in doc:
-                    doc.pop('_id')
                 try:
-                    players.append(Player(**doc))
+                    players.append(Player(**self._prepare_doc_for_player(doc)))
                 except Exception as e:
                     logger.warning(f"Skipping invalid player doc: {e}")
                     continue
@@ -263,7 +363,16 @@ class MongoPlayerRepository(IPlayerRepository):
     ) -> Optional[PlayerStatistics]:
         """Get player statistics"""
         try:
-            query = {'playerID': int(player_id)}
+            raw = str(player_id).strip()
+            id_values: List[Any] = [raw]
+            if raw.isdigit():
+                id_values.append(int(raw))
+            elif raw.lower().startswith('p') and raw[1:].isdigit():
+                id_values.append(int(raw[1:]))
+            query = {'$or': [
+                {'playerID': {'$in': id_values}},
+                {'player_id': {'$in': id_values}},
+            ]}
 
             collection_name = 'player_statistics'
             if per_90:

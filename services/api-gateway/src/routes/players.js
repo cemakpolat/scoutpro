@@ -1,9 +1,64 @@
 /**
- * Players Routes - Proxies to player-service.
+ * Players Routes - Direct MongoDB read for list/search; proxies to player-service for detail.
  */
 const express = require('express');
-const { ObjectId } = require('mongodb');
+const { ObjectId, Long } = require('mongodb');
 const router = express.Router();
+
+/** Normalise a raw MongoDB player document to the frontend Player shape. */
+function toFrontendPlayer(doc) {
+  const scoutproId = doc.scoutpro_id ?? doc.id;
+  const uid = String(doc.uID || '');
+  const provOpta = (doc.provider_ids || {}).opta || (uid.startsWith('p') ? uid.slice(1) : uid) || null;
+  const name = doc.name
+    || [doc.first_name, doc.last_name].filter(Boolean).join(' ')
+    || [doc.first, doc.last].filter(Boolean).join(' ')
+    || 'Unknown Player';
+
+  return {
+    id: scoutproId != null ? String(scoutproId) : uid,
+    name,
+    firstName: doc.first_name || doc.first || null,
+    lastName: doc.last_name || doc.last || null,
+    position: doc.position || doc.detailedPosition || null,
+    age: doc.age ?? null,
+    nationality: doc.nationality || null,
+    club: doc.club || doc.current_team_name || doc.team_name || null,
+    height: doc.height_cm ? String(doc.height_cm) : (doc.height || null),
+    weight: doc.weight_kg ? String(doc.weight_kg) : (doc.weight || null),
+    shirtNumber: doc.shirt_number || doc.shirtNumber || null,
+    preferredFoot: doc.preferred_foot || doc.preferredFoot || null,
+    birth_date: doc.birth_date
+      ? String(doc.birth_date).substring(0, 10)
+      : (doc.birthDate ? String(doc.birthDate).substring(0, 10) : null),
+    opta_uid: uid || null,
+    provider_ids: doc.provider_ids || (provOpta ? { opta: provOpta } : {}),
+    team_id: doc.team_id != null ? String(doc.team_id) : null,
+    current_team_id: doc.current_team_id != null ? String(doc.current_team_id) : null,
+    current_team_name: doc.current_team_name || doc.team_name || null,
+    competition_id: doc.competition_id || null,
+    season_id: doc.season_id || null,
+    statsbombEnrichment: doc.statsbombEnrichment || null,
+  };
+}
+
+/** Build a MongoDB query from request query params (search, position, nationality, club). */
+function buildPlayerListQuery(params) {
+  const query = {};
+  if (params.q || params.search) {
+    const term = params.q || params.search;
+    const rx = new RegExp(String(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    query.$or = [
+      { name: rx }, { first_name: rx }, { last_name: rx },
+      { first: rx }, { last: rx }, { nationality: rx },
+      { club: rx }, { current_team_name: rx },
+    ];
+  }
+  if (params.position) query.position = params.position;
+  if (params.nationality) query.nationality = params.nationality;
+  if (params.club) query.club = params.club;
+  return query;
+}
 
 const {
   ensureSuccess,
@@ -78,7 +133,8 @@ function buildPlayerLookup(playerId) {
       return;
     }
 
-    const key = `${field}:${String(value)}`;
+    // Include value type so Long(X) and String(X) are treated as distinct lookups
+    const key = `${field}:${typeof value}:${String(value)}`;
     if (seen.has(key)) {
       return;
     }
@@ -110,7 +166,14 @@ function buildPlayerLookup(playerId) {
     }
 
     if (/^\d+$/.test(normalized)) {
-      addLookup('uID', Number(normalized));
+      // ScoutPro IDs are 64-bit integers stored as BSON Long — JS Number loses precision
+      // above MAX_SAFE_INTEGER. Use Long.fromString for exact match.
+      try { addLookup('scoutpro_id', Long.fromString(normalized)); } catch (_) {}
+      try { addLookup('id', Long.fromString(normalized)); } catch (_) {}
+
+      if (Number(normalized) <= Number.MAX_SAFE_INTEGER) {
+        addLookup('uID', Number(normalized));
+      }
       addLookup('uID', `p${normalized}`);
       addLookup('opta_uid', `p${normalized}`);
       addLookup('provider_ids.opta', normalized);
@@ -285,22 +348,40 @@ function mergePlayerReadModel(basePlayer = {}, analyticsPayload = null) {
 
 router.get('/', async (req, res) => {
   try {
+    const db = req.app.locals.db;
+    if (db) {
+      const limit = Math.min(parseInt(req.query.limit, 10) || 100, 500);
+      const query = buildPlayerListQuery(req.query);
+      const docs = await db.collection('players').find(query).limit(limit * 3).toArray();
+
+      // Deduplicate by scoutpro_id / uID so dual-source docs don't appear twice
+      const seen = new Set();
+      const players = [];
+      for (const doc of docs) {
+        const key = String(doc.scoutpro_id ?? doc.id ?? doc.uID ?? '');
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        players.push(toFrontendPlayer(doc));
+        if (players.length >= limit) break;
+      }
+      return res.json(players);
+    }
+
+    // Fallback: proxy to player-service when DB is not directly available
     const payload = ensureSuccess(
       await requestJson(playerServiceUrl, '/api/v2/players', {
         query: {
           q: req.query.search || req.query.q,
-          team: req.query.team,
-          club: req.query.club,
           position: req.query.position,
           nationality: req.query.nationality,
+          club: req.query.club,
           age_min: req.query.ageMin || req.query.age_min,
           age_max: req.query.ageMax || req.query.age_max,
-          limit: req.query.limit || 50,
+          limit: req.query.limit || 100,
         },
       }),
       'Failed to fetch players'
     );
-
     res.json(normalizeList(payload.players || unwrapPayload(payload)));
   } catch (error) {
     console.error('Players list error:', error);
@@ -310,16 +391,31 @@ router.get('/', async (req, res) => {
 
 router.get('/search', async (req, res) => {
   try {
+    const db = req.app.locals.db;
+    if (db) {
+      const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+      const query = buildPlayerListQuery({ q: req.query.q });
+      if (!Object.keys(query).length) return res.json([]);
+
+      const docs = await db.collection('players').find(query).limit(limit * 3).toArray();
+      const seen = new Set();
+      const players = [];
+      for (const doc of docs) {
+        const key = String(doc.scoutpro_id ?? doc.id ?? doc.uID ?? '');
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        players.push(toFrontendPlayer(doc));
+        if (players.length >= limit) break;
+      }
+      return res.json(players);
+    }
+
     const payload = ensureSuccess(
       await requestJson(playerServiceUrl, '/api/v2/players/search', {
-        query: {
-          q: req.query.q,
-          limit: req.query.limit || 20,
-        },
+        query: { q: req.query.q, limit: req.query.limit || 20 },
       }),
       'Search failed'
     );
-
     res.json(normalizeList(payload.players || unwrapPayload(payload)));
   } catch (error) {
     console.error('Players search error:', error);

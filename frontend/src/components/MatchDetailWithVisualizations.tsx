@@ -101,7 +101,7 @@ function SequenceInsightsPanel({ matchId }: { matchId: string }) {
   }, [matchId]);
 
   if (loading) return <p className="text-slate-400 text-sm animate-pulse">Loading sequence data…</p>;
-  if (!data || !data.teamSummaries?.length) return <p className="text-slate-500 text-sm">No sequence data available.</p>;
+  if (!data || (!data.teamSummaries?.length && !data.topSequences?.length)) return <p className="text-slate-500 text-sm">No sequence data available.</p>;
 
   return (
     <div className="space-y-4">
@@ -164,11 +164,23 @@ export const MatchDetailWithVisualizations: React.FC<MatchDetailWithVisualizatio
 }) => {
   const [expandedSections, setExpandedSections] = useState({
     shotMap: true,
-    heatMap: false,
+    heatMap: true,
     passNetwork: false,
     tactical: true,
-    sequences: false,
+    sequences: true,
   });
+
+  // Consolidated visualization data fetched in one request
+  const [vizData, setVizData] = useState<any>(null);
+  const [vizLoading, setVizLoading] = useState(true);
+
+  useEffect(() => {
+    setVizLoading(true);
+    apiService.getMatchViz(matchId, homeTeamId, awayTeamId)
+      .then(r => setVizData(r.success ? r.data : null))
+      .catch(() => setVizData(null))
+      .finally(() => setVizLoading(false));
+  }, [matchId, homeTeamId, awayTeamId]);
 
   const toggleSection = (section: keyof typeof expandedSections) => {
     setExpandedSections(prev => ({ ...prev, [section]: !prev[section] }));
@@ -218,7 +230,7 @@ export const MatchDetailWithVisualizations: React.FC<MatchDetailWithVisualizatio
       </div>
 
       <div className="max-w-7xl mx-auto px-4 py-6 sm:px-6 lg:px-8 space-y-6">
-        {/* Tactical Metrics */}
+        {/* Tactical Metrics — fetched independently (analytics service, cached) */}
         <section className="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
           <SectionHeader id="tactical" title="Tactical Metrics" icon={<Activity className="w-5 h-5 text-blue-400" />} />
           {expandedSections.tactical && (
@@ -230,7 +242,7 @@ export const MatchDetailWithVisualizations: React.FC<MatchDetailWithVisualizatio
           )}
         </section>
 
-        {/* Sequence Insights */}
+        {/* Sequence Insights — fetched independently (analytics service, cached) */}
         <section className="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
           <SectionHeader id="sequences" title="Possession Sequences" icon={<TrendingUp className="w-5 h-5 text-purple-400" />} />
           {expandedSections.sequences && (
@@ -242,19 +254,24 @@ export const MatchDetailWithVisualizations: React.FC<MatchDetailWithVisualizatio
           )}
         </section>
 
-        {/* Shot Map */}
+        {/* Shot Map — data from consolidated /viz call */}
         <section className="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
           <SectionHeader id="shotMap" title="Shot Map" icon={<Target className="w-5 h-5 text-red-400" />} />
           {expandedSections.shotMap && (
             <div className="border-t border-slate-700 p-4">
               <ErrorBoundary>
-                <ShotMap matchId={matchId} width={900} height={700} />
+                <ShotMap
+                  matchId={matchId}
+                  width={900}
+                  height={700}
+                  precomputedShots={vizLoading ? undefined : (vizData?.shots ?? null)}
+                />
               </ErrorBoundary>
             </div>
           )}
         </section>
 
-        {/* Heat Maps */}
+        {/* Heat Maps — pre-computed grids from consolidated /viz call */}
         <section className="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
           <SectionHeader id="heatMap" title="Player Activity" />
           {expandedSections.heatMap && (
@@ -262,20 +279,34 @@ export const MatchDetailWithVisualizations: React.FC<MatchDetailWithVisualizatio
               <div>
                 <h3 className="text-sm font-semibold text-slate-300 mb-4">{homeTeam} - Player Activity</h3>
                 <ErrorBoundary>
-                  <HeatMap matchId={matchId} teamId={homeTeamId} title={`${homeTeam} Activity`} width={900} height={700} />
+                  <HeatMap
+                    matchId={matchId}
+                    teamId={homeTeamId}
+                    title={`${homeTeam} Activity`}
+                    width={900}
+                    height={700}
+                    precomputedData={vizLoading ? undefined : (vizData?.heatmap_home ?? null)}
+                  />
                 </ErrorBoundary>
               </div>
               <div>
                 <h3 className="text-sm font-semibold text-slate-300 mb-4">{awayTeam} - Player Activity</h3>
                 <ErrorBoundary>
-                  <HeatMap matchId={matchId} teamId={awayTeamId} title={`${awayTeam} Activity`} width={900} height={700} />
+                  <HeatMap
+                    matchId={matchId}
+                    teamId={awayTeamId}
+                    title={`${awayTeam} Activity`}
+                    width={900}
+                    height={700}
+                    precomputedData={vizLoading ? undefined : (vizData?.heatmap_away ?? null)}
+                  />
                 </ErrorBoundary>
               </div>
             </div>
           )}
         </section>
 
-        {/* Pass Networks */}
+        {/* Pass Networks — pre-computed from consolidated /viz call */}
         <section className="bg-slate-800 border border-slate-700 rounded-lg overflow-hidden">
           <SectionHeader id="passNetwork" title="Pass Networks" />
           {expandedSections.passNetwork && (
@@ -283,13 +314,25 @@ export const MatchDetailWithVisualizations: React.FC<MatchDetailWithVisualizatio
               <div>
                 <h3 className="text-sm font-semibold text-slate-300 mb-4">{homeTeam} - Pass Network</h3>
                 <ErrorBoundary>
-                  <PassNetwork matchId={matchId} teamId={homeTeamId} width={900} height={700} />
+                  <PassNetwork
+                    matchId={matchId}
+                    teamId={homeTeamId}
+                    width={900}
+                    height={700}
+                    precomputedData={vizLoading ? undefined : (vizData?.pass_network_home ?? null)}
+                  />
                 </ErrorBoundary>
               </div>
               <div>
                 <h3 className="text-sm font-semibold text-slate-300 mb-4">{awayTeam} - Pass Network</h3>
                 <ErrorBoundary>
-                  <PassNetwork matchId={matchId} teamId={awayTeamId} width={900} height={700} />
+                  <PassNetwork
+                    matchId={matchId}
+                    teamId={awayTeamId}
+                    width={900}
+                    height={700}
+                    precomputedData={vizLoading ? undefined : (vizData?.pass_network_away ?? null)}
+                  />
                 </ErrorBoundary>
               </div>
             </div>

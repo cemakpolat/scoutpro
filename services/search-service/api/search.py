@@ -26,7 +26,7 @@ async def search_players(
 ):
     """Search for players"""
     search_client = request.app.state.search_client
-    results = await search_client.search_players(q, position=position, limit=size)
+    results = await search_client.search_players(q, position=position, club=club, limit=size)
 
     return APIResponse(
         success=True,
@@ -133,7 +133,16 @@ async def search_events(
         query: Dict[str, Any] = {}
         
         if player_id:
-            query['player_id'] = player_id
+            pid_variants: List[Any] = [player_id]
+            if player_id.isdigit():
+                pid_variants.append(int(player_id))
+            elif player_id.lower().startswith('p') and player_id[1:].isdigit():
+                pid_variants.append(player_id[1:])
+                pid_variants.append(int(player_id[1:]))
+            query['$or'] = [
+                {'player_id': {'$in': pid_variants}},
+                {'playerID': {'$in': pid_variants}},
+            ]
         
         if event_type:
             query['type_name'] = event_type
@@ -148,20 +157,18 @@ async def search_events(
         # If team_id provided, find their matches first
         if team_id:
             try:
-                # Get MongoDB client from search_client
-                mongo_client = search_client._mongo_client
-                db = mongo_client.get_default_database()
-                
-                # Find matches where this team played
+                db = search_client._get_db()
                 matches_collection = db['matches']
                 matches = await matches_collection.find({
                     '$or': [
                         {'homeTeamID': team_id},
-                        {'awayTeamID': team_id}
+                        {'awayTeamID': team_id},
+                        {'home_team_id': team_id},
+                        {'away_team_id': team_id},
                     ]
-                }).projection({'matchID': 1}).to_list(None)
-                
-                match_ids = [m.get('matchID') for m in matches]
+                }, {'matchID': 1, 'uID': 1}).to_list(None)
+
+                match_ids = [m.get('matchID') or m.get('uID') for m in matches if m.get('matchID') or m.get('uID')]
                 if match_ids:
                     query['matchID'] = {'$in': match_ids}
                 else:
@@ -172,11 +179,10 @@ async def search_events(
                     )
             except Exception as e:
                 logger.warning(f"Team filtering failed, skipping: {e}")
-        
+
         # Query events directly from MongoDB
         try:
-            mongo_client = search_client._mongo_client
-            db = mongo_client.get_default_database()
+            db = search_client._get_db()
             events_collection = db['match_events']
             
             events = await events_collection.find(query).sort('timestamp', -1).to_list(size)

@@ -14,6 +14,7 @@ from worker.ml_task import MLTaskHandler
 from worker.report_task import ReportTaskHandler
 from worker.export_task import ExportTaskHandler
 from worker.sync_task import SyncTaskHandler
+from worker.statistics_task import StatisticsTaskHandler
 from worker.video_task import VideoTaskHandler
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ TASK_HANDLERS = {
     "report_generate": "report",
     "data_export": "export",
     "data_sync": "sync",
+    "statistics_projection_rebuild": "statistics",
     "video_analysis": "video",
 }
 
@@ -46,6 +48,9 @@ class TaskConsumer:
                 self._task_store, self._file_store, s.export_service_url, s.statistics_service_url
             ),
             "sync": SyncTaskHandler(self._task_store, self._file_store, s.data_sync_service_url),
+            "statistics": StatisticsTaskHandler(
+                self._task_store, self._file_store, s.statistics_service_url
+            ),
             "video": VideoTaskHandler(self._task_store, self._file_store, s.video_service_url),
         }
 

@@ -18,6 +18,7 @@ from .team_syncer import TeamSyncer
 from .match_syncer import MatchSyncer
 from .event_syncer import EventSyncer
 from .provider_batch_sync import EventBatchSyncer
+from .read_model_projector import BatchEventReadModelProjector
 from .sync_scheduler import (
     SyncScheduler,
     SyncFrequency,
@@ -35,6 +36,7 @@ __all__ = [
     'MatchSyncer',
     'EventSyncer',
     'EventBatchSyncer',
+    'BatchEventReadModelProjector',
     'SyncScheduler',
     'SyncFrequency',
     'create_default_scheduler',

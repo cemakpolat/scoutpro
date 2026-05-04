@@ -1,6 +1,7 @@
 """
 Statistics Service - Business Logic Layer
 """
+import asyncio
 from typing import Optional, List, Dict, Any
 import json
 import logging
@@ -10,6 +11,8 @@ import sys
 sys.path.append('/app')
 from shared.models.base import PlayerStatistics
 from repository.interfaces import IStatisticsRepository
+from services.batch_aggregator import BatchAggregator
+from services.match_projection_builder import MatchProjectionBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -213,4 +216,99 @@ class StatisticsService:
             return aggregated
         except Exception as e:
             logger.error(f"Error in aggregate_player_stats: {e}")
+            raise
+
+    async def get_match_advanced_metrics(
+        self,
+        match_id: str,
+        time_bucket: str = "5m",
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            cache_key = f"stats:match:advanced:{match_id}:{time_bucket}"
+            cached = await self.redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
+
+            payload = await self.repository.get_match_advanced_metrics(match_id)
+            if not payload:
+                return None
+
+            minute_timeline = payload.get('minuteTimeline') or []
+            bucket_digits = ''.join(ch for ch in str(time_bucket) if ch.isdigit())
+            bucket_minutes = max(1, int(bucket_digits)) if bucket_digits else 5
+            payload['time_bucket'] = time_bucket
+            payload['timeline'] = MatchProjectionBuilder.rebucket_timeline(minute_timeline, bucket_minutes)
+
+            await self.redis.setex(cache_key, self.cache_ttl, json.dumps(payload))
+            return payload
+        except Exception as e:
+            logger.error(f"Error in get_match_advanced_metrics: {e}")
+            raise
+
+    async def get_match_tactical_snapshot(self, match_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            cache_key = f"stats:match:tactical:{match_id}"
+            cached = await self.redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
+
+            payload = await self.repository.get_match_tactical_snapshot(match_id)
+            if payload:
+                await self.redis.setex(cache_key, self.cache_ttl, json.dumps(payload))
+            return payload
+        except Exception as e:
+            logger.error(f"Error in get_match_tactical_snapshot: {e}")
+            raise
+
+    async def get_match_pass_network(self, match_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            cache_key = f"stats:match:pass-network:{match_id}"
+            cached = await self.redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
+
+            payload = await self.repository.get_match_pass_network(match_id)
+            if payload:
+                await self.redis.setex(cache_key, self.cache_ttl, json.dumps(payload))
+            return payload
+        except Exception as e:
+            logger.error(f"Error in get_match_pass_network: {e}")
+            raise
+
+    async def get_match_sequence_summary(self, match_id: str) -> Optional[Dict[str, Any]]:
+        try:
+            cache_key = f"stats:match:sequences:{match_id}"
+            cached = await self.redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
+
+            payload = await self.repository.get_match_sequence_summary(match_id)
+            if payload:
+                await self.redis.setex(cache_key, self.cache_ttl, json.dumps(payload))
+            return payload
+        except Exception as e:
+            logger.error(f"Error in get_match_sequence_summary: {e}")
+            raise
+
+    async def rebuild_match_projections(
+        self,
+        match_id: Optional[str] = None,
+        competition_id: Optional[str] = None,
+        season_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            def _run() -> Dict[str, Any]:
+                aggregator = BatchAggregator()
+                try:
+                    return aggregator.run(
+                        match_id=match_id,
+                        competition_id=competition_id,
+                        season_id=season_id,
+                    )
+                finally:
+                    aggregator.close()
+
+            return await asyncio.to_thread(_run)
+        except Exception as e:
+            logger.error(f"Error in rebuild_match_projections: {e}")
             raise

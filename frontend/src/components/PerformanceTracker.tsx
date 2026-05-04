@@ -89,18 +89,44 @@ const PerformanceTracker: React.FC = () => {
     [],
   );
 
-  // Build player list from real player statistics
-  const players = (playerStatsData?.data || []).map((p: any) => ({
-    id: p.player_id,
-    name: p.player_name,
-    position: p.player_position || 'Unknown',
-    club: 'N/A',
-  })) || contextPlayers.map((p: any) => ({
-    id: p.id,
-    name: p.name,
-    position: p.position || 'Unknown',
-    club: p.club || p.team || 'Unknown'
-  }));
+  // Build lookup map from contextPlayers for name/position enrichment
+  const contextPlayerMap = React.useMemo(() => {
+    const map: Record<string, any> = {};
+    (contextPlayers || []).forEach((p: any) => {
+      if (p.id) map[String(p.id)] = p;
+      if (p.opta_uid) map[String(p.opta_uid).replace(/^p/, '')] = p;
+    });
+    return map;
+  }, [contextPlayers]);
+
+  // Prefer stats-derived list (deduplicated by player_id, enriched with names from contextPlayers)
+  // Fall back to contextPlayers when stats haven't loaded or are empty
+  const players = React.useMemo(() => {
+    const statsEntries = playerStatsData?.data || [];
+    if (statsEntries.length > 0) {
+      const seen = new Set<string>();
+      const result: any[] = [];
+      for (const p of statsEntries) {
+        const pid = String(p.player_id || '');
+        if (!pid || seen.has(pid)) continue;
+        seen.add(pid);
+        const ctx = contextPlayerMap[pid] || contextPlayerMap[pid.replace(/^p/, '')] || {};
+        result.push({
+          id: pid,
+          name: p.player_name || ctx.name || `Player ${pid}`,
+          position: p.player_position || ctx.position || 'Unknown',
+          club: ctx.club || ctx.current_team_name || 'N/A',
+        });
+      }
+      return result;
+    }
+    return (contextPlayers || []).map((p: any) => ({
+      id: String(p.id || ''),
+      name: p.name || 'Unknown',
+      position: p.position || 'Unknown',
+      club: p.club || p.current_team_name || 'Unknown',
+    })).filter(p => p.id);
+  }, [playerStatsData, contextPlayers, contextPlayerMap]);
 
   useEffect(() => {
     if (players.length > 0 && !selectedPlayer) {

@@ -172,7 +172,7 @@ class EventRepository(BaseRepository[ScoutProEvent]):
 
         event = ScoutProEvent(
             id=doc['_id'],
-            match_id=doc.get('match_id', ''),
+            match_id=doc.get('match_id', 0),
             event_type=event_type,
             minute=doc.get('minute', 0),
             second=doc.get('second', 0),

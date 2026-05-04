@@ -231,41 +231,30 @@ function pickLiveMatchWithContext(liveMatches, matchId) {
 }
 
 async function loadSequenceInsights(matchId) {
+  // When a specific matchId is provided, query the analytics service directly for
+  // that match (works for both live and finished matches).  When no matchId is
+  // given, fall back to the first live match that has concrete team context.
   try {
-    let liveMatch = null;
+    let resolvedMatchId = matchId;
 
-    if (matchId) {
-      const payload = ensureSuccess(
-        await requestJson(matchServiceUrl, `/api/v2/matches/${matchId}`),
-        'Failed to fetch tactical match context'
-      );
-      liveMatch = unwrapPayload(payload);
-
-      if (!hasConcreteTeamContext(liveMatch)) {
-        const liveMatchesPayload = ensureSuccess(
-          await requestJson(matchServiceUrl, '/api/v2/matches/live'),
-          'Failed to fetch live matches for tactical context'
-        );
-        liveMatch = pickLiveMatchWithContext(unwrapPayload(liveMatchesPayload) || [], matchId) || liveMatch;
-      }
-    } else {
-      const payload = ensureSuccess(
-        await requestJson(matchServiceUrl, '/api/v2/matches/live'),
-        'Failed to fetch live matches for tactical context'
-      );
-      liveMatch = pickLiveMatchWithContext(unwrapPayload(payload) || []);
+    if (!resolvedMatchId) {
+      const payload = await requestJson(matchServiceUrl, '/api/v2/matches/live');
+      if (!payload.ok) return null;
+      const liveMatch = pickLiveMatchWithContext(unwrapPayload(payload.payload) || []);
+      if (!liveMatch?.id) return null;
+      resolvedMatchId = liveMatch.id;
     }
 
-    if (!liveMatch?.id) {
-      return null;
-    }
-
-    return ensureSuccess(
-      await requestJson(analyticsServiceUrl, `/api/v2/analytics/sequences/${liveMatch.id}`, { timeoutMs: 15000 }),
-      'Failed to fetch tactical sequence insights'
+    const result = await requestJson(
+      analyticsServiceUrl,
+      `/api/v2/analytics/sequences/${resolvedMatchId}`,
+      { timeoutMs: 15000 }
     );
+
+    if (!result.ok) return null;
+    return unwrapPayload(result.payload);
   } catch (error) {
-    console.error('Tactical live sequence analysis error:', error);
+    console.error('Tactical sequence analysis error:', error);
     return null;
   }
 }

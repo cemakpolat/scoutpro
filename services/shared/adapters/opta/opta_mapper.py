@@ -161,14 +161,16 @@ class OptaMapper(BaseMapper):
             known_name=known_name,
             birth_date=birth_date_val,
             position=self.standardize_position(position_raw),
-            detailed_position=stats.get('real_position', position_raw),
+            detailed_position=stats.get('real_position') or stats.get('detailedPosition') or position_raw,
             nationality=stats.get('first_nationality') or stats.get('country') or '',
             height_cm=height_cm,
             weight_kg=weight_kg,
             jersey_number=jersey_num,
             foot=foot,
             current_team_id=team_id,
-            provider_ids={'opta': player_id},
+            # provider_ids stores the stripped numeric ID so it is not tied
+            # to the provider's letter-prefix format ('p101380' → '101380').
+            provider_ids={'opta': self.provider_numeric_id('player', player_id)},
             provider_data={
                 'opta': {
                     'source': 'opta',
@@ -227,7 +229,7 @@ class OptaMapper(BaseMapper):
             name=name,
             short_name=attrs.get('short_club_name'),
             country=attrs.get('country', raw_data.get('Country', '')),
-            provider_ids={'opta': team_id},
+            provider_ids={'opta': self.provider_numeric_id('team', team_id)},
             provider_data={
                 'opta': {
                     'source': 'opta',
@@ -265,7 +267,13 @@ class OptaMapper(BaseMapper):
         }
         """
         attrs = raw_data.get('@attributes', {})
-        match_id = attrs.get('uID', raw_data.get('id', ''))
+        match_id = (
+            attrs.get('uID')
+            or raw_data.get('uID')
+            or raw_data.get('id')
+            or attrs.get('id')
+            or ''
+        )
 
         # Extract match info
         match_info = raw_data.get('MatchInfo', {})
@@ -278,6 +286,8 @@ class OptaMapper(BaseMapper):
 
         # Extract team data and scores
         team_data_list = raw_data.get('TeamData', [])
+        if isinstance(team_data_list, dict):
+            team_data_list = [team_data_list]
         home_score = None
         away_score = None
         home_team_id = None
@@ -305,19 +315,30 @@ class OptaMapper(BaseMapper):
         elif match_info.get('Status') == 'Live':
             status = MatchStatus.LIVE
 
+        competition_id_raw = (
+            attrs.get('competition_id')
+            or raw_data.get('competition_id')
+            or ''
+        )
+        season_id_raw = (
+            attrs.get('season_id')
+            or raw_data.get('season_id')
+            or ''
+        )
+
         scoutpro_match = ScoutProMatch(
             id=self.generate_scoutpro_id('match', match_id),
             external_id=match_id,
             provider='opta',
-            home_team_id=self.generate_scoutpro_id('team', home_team_id) if home_team_id else '',
-            away_team_id=self.generate_scoutpro_id('team', away_team_id) if away_team_id else '',
-            competition_id='',  # Would need to be extracted from parent data
-            season_id='',
+            home_team_id=self.generate_scoutpro_id('team', home_team_id) if home_team_id else 0,
+            away_team_id=self.generate_scoutpro_id('team', away_team_id) if away_team_id else 0,
+            competition_id=self.generate_scoutpro_id('competition', competition_id_raw) if competition_id_raw else 0,
+            season_id=self.generate_scoutpro_id('season', season_id_raw) if season_id_raw else 0,
             date=match_date,
             status=status,
             home_score=home_score,
             away_score=away_score,
-            provider_ids={'opta': match_id},
+            provider_ids={'opta': self.provider_numeric_id('match', match_id)},
             provider_data={
                 'opta': {
                     'source': 'opta',
@@ -414,7 +435,7 @@ class OptaMapper(BaseMapper):
         # Create canonical event
         scoutpro_event = ScoutProEvent(
             id=self.generate_scoutpro_id('event', event_id),
-            match_id='',  # Would be set by context
+            match_id=0,  # Set by EventSyncer after mapping
             event_type=canonical_type,
             minute=minute,
             second=second,

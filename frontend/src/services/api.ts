@@ -568,6 +568,18 @@ class ApiService {
     return this.request<any>(`/v2/events/heatmap/player/${playerId}${query}`);
   }
 
+  async getPlayerAnalyticsBundle(
+    playerId: string,
+    opts?: { teamId?: string; competitionId?: number; seasonId?: number }
+  ): Promise<ApiResponse<any>> {
+    const params = new URLSearchParams();
+    if (opts?.teamId) params.set('team_id', opts.teamId);
+    if (opts?.competitionId != null) params.set('competition_id', String(opts.competitionId));
+    if (opts?.seasonId != null) params.set('season_id', String(opts.seasonId));
+    const qs = params.toString();
+    return this.request<any>(`/v2/events/player/${playerId}/analytics-bundle${qs ? `?${qs}` : ''}`);
+  }
+
   async getPlayerSimilarity(playerId: string, targets: string[] = []): Promise<ApiResponse<any>> {
     const query = targets.length > 0 ? `?targets=${targets.join(',')}` : '';
     return this.request<any>(`/v2/events/similarity/player/${playerId}${query}`);
@@ -986,6 +998,15 @@ class ApiService {
     return this.request<any>(`/matches/${matchId}/shots-map`);
   }
 
+  /** Consolidated visualization data: shots + both heatmaps + both pass networks in one call. */
+  async getMatchViz(matchId: string, homeTeamId?: string, awayTeamId?: string): Promise<ApiResponse<any>> {
+    const params = new URLSearchParams();
+    if (homeTeamId) params.append('home_team_id', homeTeamId);
+    if (awayTeamId) params.append('away_team_id', awayTeamId);
+    const query = params.toString();
+    return this.request<any>(`/matches/${matchId}/viz${query ? `?${query}` : ''}`);
+  }
+
   async getMatchHeatMap(matchId: string, teamId?: string, playerId?: string): Promise<ApiResponse<any>> {
     const params = new URLSearchParams();
     if (teamId) params.append('team_id', teamId);
@@ -1064,6 +1085,14 @@ class ApiService {
   /** Possession-sequence summary (direct attacks, box entries, goals) for a match. */
   async getMatchSequenceInsights(matchId: string): Promise<ApiResponse<any>> {
     return this.request<any>(`/v2/analytics/sequences/${matchId}`);
+  }
+
+  /** Server-side aggregation across multiple matches: leaderboard, KPIs, patterns. */
+  async getMultiMatchAnalytics(matchIds: string[]): Promise<ApiResponse<any>> {
+    return this.request<any>('/v2/analytics/multi-match', {
+      method: 'POST',
+      body: JSON.stringify({ match_ids: matchIds }),
+    });
   }
 
   /** Per-player per-match aggregated F24 stats (shots, passes, tackles, xG …). */

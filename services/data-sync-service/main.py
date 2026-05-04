@@ -135,8 +135,23 @@ _ENTITY_SYNCERS = {
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    _get_scheduler()          # warm up scheduler
+    scheduler = _get_scheduler()
+    bg_task = None
+    if scheduler:
+        # Run the scheduler loop in the background so the HTTP server stays up.
+        # Jobs fire at their configured intervals (Opta events every 15 min,
+        # StatsBomb events every hour, players/teams/matches daily).
+        bg_task = asyncio.create_task(scheduler.start())
     yield
+    # Graceful shutdown: stop the scheduler loop then cancel the task.
+    if scheduler:
+        scheduler.stop()
+    if bg_task:
+        bg_task.cancel()
+        try:
+            await bg_task
+        except asyncio.CancelledError:
+            pass
     global _mongo_client
     if _mongo_client:
         _mongo_client.close()
@@ -494,15 +509,15 @@ def parse_args():
     parser.add_argument(
         '--competition',
         type=str,
-        default='8',
-        help='Competition ID (default: 8 for Premier League)'
+        default=os.getenv('COMPETITION_ID', os.getenv('OPTA_COMPETITION_ID', '115')),
+        help='Competition ID (default: from COMPETITION_ID env var or 115)'
     )
 
     parser.add_argument(
         '--season',
         type=str,
-        default='2023',
-        help='Season ID (default: 2023)'
+        default=os.getenv('SEASON_ID', os.getenv('OPTA_SEASON_ID', '2019')),
+        help='Season ID (default: from SEASON_ID env var or 2019)'
     )
 
     parser.add_argument(

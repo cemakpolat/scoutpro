@@ -3,6 +3,7 @@
  * Normalizes the service response to the unified frontend Match shape.
  */
 const express = require('express');
+const { Long } = require('mongodb');
 const router = express.Router();
 
 const {
@@ -18,6 +19,95 @@ const matchServiceUrl = (process.env.MATCH_SERVICE_URL || 'http://match-service:
 
 function escapeRegex(value = '') {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Build a MongoDB $or query that finds events for a given match ID.
+ * Supports:
+ *   - scoutpro_match_id (BSON Long) — canonical ScoutPro integer
+ *   - matchID / match_id (Opta numeric string) — pre-migration fallback
+ *
+ * IMPORTANT: JavaScript Number loses precision on 64-bit ScoutPro IDs.
+ * Always use Long.fromString() for the scoutpro_match_id comparison.
+ */
+function buildEventMatchQuery(id) {
+  const strId = String(id);
+  const variants = [];
+
+  // ScoutPro integer ID — use BSON Long to avoid JS float64 precision loss
+  try {
+    variants.push({ scoutpro_match_id: Long.fromString(strId) });
+  } catch (_) { /* not a valid integer string */ }
+
+  // Opta string fallbacks
+  variants.push({ matchID: strId }, { match_id: strId });
+
+  // Opta numeric fallback (for small IDs that fit in JS Number safely)
+  const num = Number(strId);
+  if (!isNaN(num) && num <= Number.MAX_SAFE_INTEGER) {
+    variants.push({ matchID: num }, { match_id: num });
+  }
+
+  return { $or: variants };
+}
+
+/**
+ * Build a MongoDB $or query to find a match document by its ID.
+ * Supports scoutpro_id (integer), uID with/without 'g' prefix, and legacy id hash.
+ */
+function buildMatchQuery(id) {
+  const strId = String(id);
+  const variants = [];
+  // BSON Long for 64-bit scoutpro_id / id fields (Number() loses precision)
+  try { variants.push({ scoutpro_id: Long.fromString(strId) }); } catch (_) {}
+  try { variants.push({ id: Long.fromString(strId) }); } catch (_) {}
+  variants.push({ uID: strId }, { uID: `g${strId}` }, { id: strId }, { scoutpro_id: strId });
+  const num = Number(strId);
+  if (!isNaN(num) && num <= Number.MAX_SAFE_INTEGER) {
+    variants.push({ uID: num }, { scoutpro_id: num });
+  }
+  return { $or: variants };
+}
+
+/** Strip leading 't' prefix from team IDs (DB stores numeric; frontend passes "t405") */
+function normalizeTeamIdQuery(team_id) {
+  if (!team_id) return undefined;
+  const stripped = String(team_id).replace(/^t/i, '');
+  const num = Number(stripped);
+  return isNaN(num) ? { $in: [team_id, stripped] } : { $in: [num, stripped, team_id] };
+}
+
+// ---------------------------------------------------------------------------
+// Visualization cache — match event data is immutable once seeded so TTL is 1hr
+// ---------------------------------------------------------------------------
+const _vizCache = new Map();
+const VIZ_CACHE_TTL_MS = Number(process.env.VIZ_CACHE_TTL_MS || 3600000); // 1 hour
+
+function _vizCacheGet(key) {
+  const entry = _vizCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) { _vizCache.delete(key); return null; }
+  return entry.data;
+}
+
+function _vizCacheSet(key, data) {
+  _vizCache.set(key, { data, expiresAt: Date.now() + VIZ_CACHE_TTL_MS });
+}
+
+// Pre-compute a 10×10 heatmap grid from a list of {x, y, intensity} points.
+function computeHeatmapGrid(points) {
+  const GRID = 10;
+  const grid = {};
+  const cellCounts = {};
+  for (const pt of points) {
+    const cx = Math.min(Math.floor((pt.x / 100) * GRID), GRID - 1);
+    const cy = Math.min(Math.floor((pt.y / 100) * GRID), GRID - 1);
+    const key = `${cx},${cy}`;
+    grid[key] = (grid[key] || 0) + (pt.intensity || 1);
+    cellCounts[key] = (cellCounts[key] || 0) + 1;
+  }
+  const maxIntensity = Math.max(...Object.values(grid), 1);
+  return { grid, cellCounts, maxIntensity, totalPoints: points.length };
 }
 
 /** Cache of teamId → teamName from the local MongoDB teams collection. */
@@ -36,8 +126,11 @@ async function getTeamNameMap(db) {
     .toArray();
   _teamNameCache.clear();
   for (const t of teams) {
-    const id = String(t.uID || t.id || '');
-    if (id) _teamNameCache.set(id, t.name || t.shortName || '');
+    const name = t.name || t.shortName || '';
+    const uid = String(t.uID || '');
+    const sid = String(t.id || t.scoutpro_id || '');
+    if (uid) _teamNameCache.set(uid, name);
+    if (sid && sid !== uid) _teamNameCache.set(sid, name);
   }
   _teamCacheBuiltAt = now;
   return _teamNameCache;
@@ -55,29 +148,58 @@ function resolveTeamLabel(rawName, rawId, teamMap) {
  * Map a match-service response object to the frontend Match interface.
  * The service returns snake_case (home_team_id, home_score, home_team_name …)
  * after going through _normalize_match_doc; the frontend expects camelCase.
+ *
+ * NOTE: MongoDB documents store m.date as the ingestion timestamp and m.status
+ * as "scheduled" for all records. The real match date, period (status), and
+ * scores live inside provider_data.opta.data — read those first.
  */
 function toFrontendMatch(m, teamMap = new Map()) {
   if (!m) return null;
 
+  // ── Pull the canonical Opta sub-document (may be absent for non-Opta records) ──
+  const optaData = m.provider_data?.opta?.data || {};
+
+  // ── Status: prefer Opta period, fall back to stored status field ──────────
   const status = (() => {
+    const optaPeriod = (optaData.period || '').toLowerCase();
+    if (optaPeriod === 'fulltime' || optaPeriod === 'postgame') return 'finished';
+    if (optaPeriod === 'firsthalf' || optaPeriod === 'secondhalf') return 'live';
     const s = (m.status || '').toLowerCase();
     if (s === 'played' || s === 'finished') return 'finished';
     if (s === 'fixture' || s === 'scheduled' || s === '') return 'scheduled';
     return s;
   })();
 
+  // ── Date: prefer Opta match date over ingestion timestamp ─────────────────
+  const date = (() => {
+    const raw = optaData.date;          // e.g. "2019-08-16 18:30:00" or a Date object
+    if (raw) {
+      // raw may be a JS Date (MongoDB ISODate) or a string
+      if (raw instanceof Date) return isNaN(raw.getTime()) ? (m.date || null) : raw.toISOString();
+      const str = String(raw);
+      const iso = str.includes('T') ? str : str.replace(' ', 'T') + (str.endsWith('Z') ? '' : 'Z');
+      const d = new Date(iso);
+      return isNaN(d.getTime()) ? (m.date || null) : d.toISOString();
+    }
+    return m.date || null;
+  })();
+
+  // ── Scores: prefer Opta scores over root-level fields ────────────────────
+  const homeScore = optaData.home_score ?? m.home_score ?? m.homeScore ?? 0;
+  const awayScore = optaData.away_score ?? m.away_score ?? m.awayScore ?? 0;
+
   const homeTeamId = String(m.home_team_id || m.homeTeamID || '');
   const awayTeamId = String(m.away_team_id || m.awayTeamID || '');
 
   return {
-    id: String(m.id || m.uID || ''),
+    id: m.scoutpro_id != null ? String(m.scoutpro_id) : String(m.uID || m.id || '').replace(/^g/, ''),
     homeTeam: resolveTeamLabel(m.home_team_name || m.homeTeamName, homeTeamId, teamMap),
     awayTeam: resolveTeamLabel(m.away_team_name || m.awayTeamName, awayTeamId, teamMap),
     homeTeamId,
     awayTeamId,
-    homeScore: m.home_score ?? m.homeScore ?? 0,
-    awayScore: m.away_score ?? m.awayScore ?? 0,
-    date: m.date || null,
+    homeScore,
+    awayScore,
+    date,
     venue: m.venue || null,
     attendance: m.attendance ? String(m.attendance) : null,
     status,
@@ -108,24 +230,55 @@ router.get('/', async (req, res) => {
     if (db) {
       const limit = Math.min(parseInt(req.query.limit, 10) || 400, 1000);
       const query = {};
-      if (req.query.status) query.status = new RegExp(`^${escapeRegex(req.query.status)}$`, 'i');
-      if (req.query.team_id) query.$or = [{ homeTeamId: req.query.team_id }, { awayTeamId: req.query.team_id }];
 
-      // Pull all matches, sort finished first then by date desc
+      // NOTE: All MongoDB match documents have status:"scheduled" regardless of
+      // their actual Opta state. The real status is encoded in
+      // provider_data.opta.data.period (FullTime / FirstHalf / etc.).
+      // Use that field for all status-based filtering and sorting.
+      if (req.query.status) {
+        const rawStatus = String(req.query.status).toLowerCase();
+        if (rawStatus === 'finished' || rawStatus === 'played') {
+          query['provider_data.opta.data.period'] = { $in: ['FullTime', 'PostGame'] };
+        } else if (rawStatus === 'live') {
+          query['provider_data.opta.data.period'] = { $in: ['FirstHalf', 'SecondHalf'] };
+        } else if (rawStatus === 'scheduled' || rawStatus === 'fixture') {
+          query['provider_data.opta.data.period'] = { $nin: ['FullTime', 'PostGame', 'FirstHalf', 'SecondHalf'] };
+        }
+        // For unknown status values fall through — return all documents
+      }
+      if (req.query.team_id) {
+        const teamNum = Number(req.query.team_id);
+        const tq = isNaN(teamNum) ? req.query.team_id : { $in: [teamNum, req.query.team_id] };
+        query.$or = [{ home_team_id: tq }, { away_team_id: tq }];
+      }
+
+      // Pull all matches, sort by derived status (opta period) then real match date
       const docs = await db.collection('matches').find(query).limit(limit * 3).toArray();
 
-      const statusRank = (s) => {
-        const n = String(s || '').toLowerCase();
-        if (n === 'finished' || n === 'played') return 0;
-        if (n === 'live' || n === 'in_progress') return 1;
+      const optaStatusRank = (doc) => {
+        const period = (doc.provider_data?.opta?.data?.period || '').toLowerCase();
+        const s = (doc.status || '').toLowerCase();
+        if (period === 'fulltime' || period === 'postgame' || s === 'finished' || s === 'played') return 0;
+        if (period === 'firsthalf' || period === 'secondhalf' || s === 'live') return 1;
         return 2;
       };
+      const optaDate = (doc) => {
+        const raw = doc.provider_data?.opta?.data?.date;
+        if (!raw) return 0;
+        // raw may be a JS Date (MongoDB ISODate) or a string like "2019-08-16 18:30:00"
+        if (raw instanceof Date) return raw.getTime();
+        const str = String(raw);
+        const iso = str.includes('T') ? str : str.replace(' ', 'T') + (str.endsWith('Z') ? '' : 'Z');
+        const t = Date.parse(iso);
+        return isNaN(t) ? 0 : t;
+      };
       docs.sort((a, b) =>
-        statusRank(a.status) - statusRank(b.status) ||
-        new Date(b.date || 0) - new Date(a.date || 0)
+        optaStatusRank(a) - optaStatusRank(b) ||
+        optaDate(b) - optaDate(a)
       );
 
-      return res.json(docs.slice(0, limit).map(toFrontendMatch).filter(Boolean));
+      const teamMap = await getTeamNameMap(db);
+      return res.json(docs.slice(0, limit).map((m) => toFrontendMatch(m, teamMap)).filter(Boolean));
     }
 
     // Fallback: proxy to match-service
@@ -195,26 +348,55 @@ router.get('/search', async (req, res) => {
     }
 
     if (status) {
-      query.status = new RegExp(`^${escapeRegex(status)}$`, 'i');
+      // Use Opta period field since all documents have status="scheduled"
+      const s = status.toLowerCase();
+      if (s === 'finished' || s === 'played') {
+        // Merge with existing $or using $and if needed
+        const periodCond = { 'provider_data.opta.data.period': { $in: ['FullTime', 'PostGame'] } };
+        if (query.$or) {
+          query.$and = [{ $or: query.$or }, periodCond];
+          delete query.$or;
+        } else {
+          Object.assign(query, periodCond);
+        }
+      } else if (s === 'scheduled' || s === 'fixture') {
+        const periodCond = { 'provider_data.opta.data.period': { $nin: ['FullTime', 'PostGame', 'FirstHalf', 'SecondHalf'] } };
+        if (query.$or) {
+          query.$and = [{ $or: query.$or }, periodCond];
+          delete query.$or;
+        } else {
+          Object.assign(query, periodCond);
+        }
+      }
     }
 
     const matches = await db
       .collection('matches')
       .find(query)
-      .sort({ status: 1, date: -1 })
+      .sort({ 'provider_data.opta.data.date': -1 })
       .limit(limit)
       .toArray();
 
-    // Put finished matches first so picker shows real scores before scheduled fixtures
-    const statusRank = (s) => {
-      const n = String(s || '').toLowerCase();
-      if (n === 'finished' || n === 'played') return 0;
-      if (n === 'live') return 1;
+    // Sort finished matches first using the opta period, then by real match date
+    const optaStatusRank = (doc) => {
+      const period = (doc.provider_data?.opta?.data?.period || '').toLowerCase();
+      if (period === 'fulltime' || period === 'postgame') return 0;
+      if (period === 'firsthalf' || period === 'secondhalf') return 1;
       return 2;
     };
-    matches.sort((a, b) => statusRank(a.status) - statusRank(b.status) || new Date(b.date || 0) - new Date(a.date || 0));
+    const optaDate = (doc) => {
+      const raw = doc.provider_data?.opta?.data?.date;
+      if (!raw) return 0;
+      if (raw instanceof Date) return raw.getTime();
+      const str = String(raw);
+      const iso = str.includes('T') ? str : str.replace(' ', 'T') + (str.endsWith('Z') ? '' : 'Z');
+      const t = Date.parse(iso);
+      return isNaN(t) ? 0 : t;
+    };
+    matches.sort((a, b) => optaStatusRank(a) - optaStatusRank(b) || optaDate(b) - optaDate(a));
 
-    res.json(matches.map(toFrontendMatch).filter(Boolean));
+    const teamMap = await getTeamNameMap(db);
+    res.json(matches.map((m) => toFrontendMatch(m, teamMap)).filter(Boolean));
   } catch (error) {
     console.error('Match search error:', error);
     sendGatewayError(res, error, 'Failed to search matches');
@@ -228,19 +410,13 @@ router.get('/:id/events', async (req, res) => {
       return res.json([]);
     }
 
-    const mIdNum = Number(req.params.id);
-    const mIdStr = req.params.id;
-
-    const events = await db.collection('match_events').find({
-      $or: [
-        { matchID: mIdNum }, { matchID: mIdStr },
-        { match_id: mIdNum }, { match_id: mIdStr },
-      ],
-    }).toArray();
+    const events = await db.collection('match_events')
+      .find(buildEventMatchQuery(req.params.id))
+      .toArray();
 
     const data = events.map(e => ({
       id: String(e._id),
-      match_id: String(e.match_id || e.matchID || req.params.id),
+      match_id: e.scoutpro_match_id != null ? String(e.scoutpro_match_id) : String(e.match_id || e.matchID || req.params.id),
       player_id: e.player_id != null ? String(e.player_id) : null,
       player_name: e.player_name || null,
       team_id: e.team_id != null ? String(e.team_id) : null,
@@ -275,19 +451,30 @@ router.get('/:id/shots-map', async (req, res) => {
       return res.status(503).json({ success: false, error: 'Database not available' });
     }
 
-    const mIdNum = Number(req.params.id);
-    const mIdStr = req.params.id;
+    const cacheKey = `shots:${req.params.id}`;
+    const cached = _vizCacheGet(cacheKey);
+    if (cached) return res.json(cached);
 
-    // Fetch all shots for this match
+    const shotLikeTypes = ['shot', 'goal', 'miss', 'attempt_saved', 'blocked_shot', 'chance_missed', 'post'];
+
     const events = await db.collection('match_events').find({
-      $or: [{ matchID: mIdNum }, { matchID: mIdStr }, { match_id: mIdNum }, { match_id: mIdStr }],
-      type_name: 'shot'
+      $and: [
+        buildEventMatchQuery(req.params.id),
+        {
+          $or: [
+            { type_name: { $in: shotLikeTypes } },
+            { analytical_xg: { $exists: true, $ne: null } },
+            { shot_distance: { $exists: true, $ne: null } },
+          ],
+        },
+        { 'location.x': { $exists: true } },
+        { 'location.y': { $exists: true } },
+      ],
     }).toArray();
 
     const data = events.map(e => {
       const x = e.location?.x ?? 0;
       const y = e.location?.y ?? 0;
-      // Heuristic xG: distance-based exp(-d/30), same as XGModel fallback in statistics-service
       const dist = Math.sqrt(Math.pow(x - 100, 2) + Math.pow(y - 50, 2));
       const xg = Math.round(Math.exp(-dist / 30) * 10000) / 10000;
 
@@ -308,14 +495,16 @@ router.get('/:id/shots-map', async (req, res) => {
       };
     });
 
-    res.json({ success: true, data });
+    const result = { success: true, data };
+    _vizCacheSet(cacheKey, result);
+    res.json(result);
   } catch (error) {
     console.error('Shots map error:', error);
     sendGatewayError(res, error, 'Failed to fetch shots map');
   }
 });
 
-// GET /api/matches/:id/heat-map
+// GET /api/matches/:id/heat-map — returns a pre-computed 10×10 grid (cached)
 router.get('/:id/heat-map', async (req, res) => {
   try {
     const db = req.app.locals.db;
@@ -324,30 +513,33 @@ router.get('/:id/heat-map', async (req, res) => {
     }
 
     const { team_id, player_id } = req.query;
-    const mIdNum = Number(req.params.id);
-    const mIdStr = req.params.id;
+    const cacheKey = `heatmap:${req.params.id}:${team_id || ''}:${player_id || ''}`;
+    const cached = _vizCacheGet(cacheKey);
+    if (cached) return res.json(cached);
 
     const query = {
-      $or: [{ matchID: mIdNum }, { matchID: mIdStr }, { match_id: mIdNum }, { match_id: mIdStr }],
+      ...buildEventMatchQuery(req.params.id),
       'location.x': { $exists: true },
       'location.y': { $exists: true }
     };
 
-    if (team_id) query.team_id = isNaN(Number(team_id)) ? team_id : { $in: [team_id, Number(team_id)] };
+    if (team_id) query.team_id = normalizeTeamIdQuery(team_id);
     if (player_id) query.player_id = isNaN(Number(player_id)) ? player_id : { $in: [player_id, Number(player_id)] };
 
     const events = await db.collection('match_events').find(query).toArray();
 
-    // Map any positional event to a HeatMapData point
-    const data = events.map(e => ({
+    const points = events.map(e => ({
       x: e.location.x,
       y: e.location.y,
       intensity: 1,
-      count: 1,
       player_name: e.player_name || `Player ${e.player_id || 'Unknown'}`
     }));
 
-    res.json({ success: true, data });
+    // Pre-compute grid on the backend so the frontend only renders
+    const gridData = computeHeatmapGrid(points);
+    const result = { success: true, data: gridData };
+    _vizCacheSet(cacheKey, result);
+    res.json(result);
   } catch (error) {
     console.error('Heat map error:', error);
     sendGatewayError(res, error, 'Failed to fetch heat map');
@@ -363,17 +555,18 @@ router.get('/:id/pass-map', async (req, res) => {
     }
 
     const { team_id } = req.query;
-    const mIdNum = Number(req.params.id);
-    const mIdStr = req.params.id;
+    const cacheKey = `passmap:${req.params.id}:${team_id || ''}`;
+    const cached = _vizCacheGet(cacheKey);
+    if (cached) return res.json(cached);
 
     const query = {
-      $or: [{ matchID: mIdNum }, { matchID: mIdStr }, { match_id: mIdNum }, { match_id: mIdStr }],
+      ...buildEventMatchQuery(req.params.id),
       type_name: 'pass',
       'location.x': { $exists: true },
       'location.y': { $exists: true }
     };
 
-    if (team_id) query.team_id = isNaN(Number(team_id)) ? team_id : { $in: [team_id, Number(team_id)] };
+    if (team_id) query.team_id = normalizeTeamIdQuery(team_id);
 
     const events = await db.collection('match_events').find(query).toArray();
 
@@ -438,7 +631,9 @@ router.get('/:id/pass-map', async (req, res) => {
       accuracy: conn.passes > 0 ? Math.round((conn.successful / conn.passes) * 100) : 0
     })).filter(c => c.passes > 2); // only show connections with > 2 passes
 
-    res.json({ success: true, data: { players, connections } });
+    const result = { success: true, data: { players, connections } };
+    _vizCacheSet(cacheKey, result);
+    res.json(result);
   } catch (error) {
     console.error('Pass map error:', error);
     sendGatewayError(res, error, 'Failed to fetch pass map');
@@ -452,17 +647,8 @@ router.get('/:id/events/filter', async (req, res) => {
     if (!db) return res.status(503).json({ success: false, error: 'Database not available' });
 
     const { type_name, team_id, player_id, period } = req.query;
-    const mId = req.params.id;
-    const mIdNum = Number(mId);
 
-    const query = {
-      $or: [
-        { matchID: mId },
-        ...(Number.isFinite(mIdNum) ? [{ matchID: mIdNum }] : []),
-        { match_id: mId },
-        ...(Number.isFinite(mIdNum) ? [{ match_id: mIdNum }] : []),
-      ],
-    };
+    const query = { ...buildEventMatchQuery(req.params.id) };
 
     if (type_name) query.type_name = type_name;
     if (period) query.period = Number(period);
@@ -516,6 +702,184 @@ router.get('/:id/players/:playerId/stats', async (req, res) => {
   }
 });
 
+// GET /api/matches/:id/viz?home_team_id=X&away_team_id=Y
+// Consolidated endpoint: returns shots + both heatmaps + both pass-networks in one call.
+// Eliminates 5 parallel round-trips from the match detail page.
+router.get('/:id/viz', async (req, res) => {
+  try {
+    const db = req.app.locals.db;
+    if (!db) {
+      return res.status(503).json({ success: false, error: 'Database not available' });
+    }
+
+    const matchId = req.params.id;
+    const { home_team_id, away_team_id } = req.query;
+
+    const cacheKey = `viz:${matchId}:${home_team_id || ''}:${away_team_id || ''}`;
+    const cached = _vizCacheGet(cacheKey);
+    if (cached) return res.json(cached);
+
+    const matchQuery = buildEventMatchQuery(matchId);
+    const hasLocation = { 'location.x': { $exists: true }, 'location.y': { $exists: true } };
+
+    // Resolve ScoutPro team IDs → Opta team ID strings (what match_events store as team_id)
+    // Events store Opta team IDs like '405', '208'. The teams collection has
+    // uID: 't405' and scoutpro_id (as Long) matching the frontend's ScoutPro ID.
+    async function resolveOptaTeamId(scoutproId) {
+      if (!scoutproId) return null;
+      let teamDoc = null;
+      try {
+        teamDoc = await db.collection('teams').findOne({
+          $or: [
+            { scoutpro_id: Long.fromString(String(scoutproId)) },
+            { id: Long.fromString(String(scoutproId)) },
+          ]
+        });
+      } catch (_) { /* invalid Long string */ }
+      if (!teamDoc) return null;
+      // uID is 't405' → strip the 't' to get the Opta event team_id '405'
+      const uid = String(teamDoc.uID || '');
+      return uid.replace(/^t/i, '') || null;
+    }
+
+    const [optaHomeId, optaAwayId] = await Promise.all([
+      resolveOptaTeamId(home_team_id),
+      resolveOptaTeamId(away_team_id),
+    ]);
+
+    // Build team_id filter for events using resolved Opta IDs
+    function teamFilter(optaId) {
+      if (!optaId) return null;
+      const num = Number(optaId);
+      const vals = [optaId];
+      if (!isNaN(num) && num <= Number.MAX_SAFE_INTEGER) vals.push(num);
+      return { $in: vals };
+    }
+
+    const homeTeamFilter = optaHomeId ? teamFilter(optaHomeId) : null;
+    const awayTeamFilter = optaAwayId ? teamFilter(optaAwayId) : null;
+
+    const [shotEvents, allLocationEvents, homePassEvents, awayPassEvents] = await Promise.all([
+      // shots
+      db.collection('match_events').find({
+        $and: [
+          matchQuery,
+          { $or: [
+            { type_name: { $in: ['shot', 'goal', 'miss', 'attempt_saved', 'blocked_shot', 'chance_missed', 'post'] } },
+            { analytical_xg: { $exists: true, $ne: null } },
+            { shot_distance: { $exists: true, $ne: null } },
+          ]},
+          hasLocation,
+        ],
+      }).toArray(),
+      // all events with location for heatmap filtering
+      db.collection('match_events').find({ ...matchQuery, ...hasLocation }).toArray(),
+      // home pass events
+      homeTeamFilter
+        ? db.collection('match_events').find({
+            ...matchQuery, type_name: 'pass', ...hasLocation, team_id: homeTeamFilter,
+          }).toArray()
+        : Promise.resolve([]),
+      // away pass events
+      awayTeamFilter
+        ? db.collection('match_events').find({
+            ...matchQuery, type_name: 'pass', ...hasLocation, team_id: awayTeamFilter,
+          }).toArray()
+        : Promise.resolve([]),
+    ]);
+
+    // --- shots ---
+    const shots = shotEvents.map(e => {
+      const x = e.location?.x ?? 0;
+      const y = e.location?.y ?? 0;
+      const dist = Math.sqrt(Math.pow(x - 100, 2) + Math.pow(y - 50, 2));
+      return {
+        id: String(e._id),
+        player_id: String(e.player_id || e.playerID || ''),
+        player_name: e.player_name || `Player ${e.player_id || 'Unknown'}`,
+        x, y,
+        is_goal: !!e.is_goal,
+        xg: Math.round(Math.exp(-dist / 30) * 10000) / 10000,
+        is_successful: !!e.is_goal,
+        body_part: e.raw_event?.body_part || 'foot',
+        shot_type: e.raw_event?.shot_type || 'regular',
+        minute: e.minute ?? null,
+        period: e.period ?? null,
+        timestamp: e.minute != null ? `${e.minute}'` : '',
+      };
+    });
+
+    // --- heatmaps: filter by Opta team_id from the already-fetched allLocationEvents ---
+    function filterByOptaTeam(events, optaId) {
+      if (!optaId) return events;
+      const num = Number(optaId);
+      return events.filter(e => String(e.team_id) === optaId || (Number.isFinite(num) && e.team_id === num));
+    }
+
+    const homePoints = filterByOptaTeam(allLocationEvents, optaHomeId)
+      .map(e => ({ x: e.location.x, y: e.location.y, intensity: 1 }));
+    const awayPoints = filterByOptaTeam(allLocationEvents, optaAwayId)
+      .map(e => ({ x: e.location.x, y: e.location.y, intensity: 1 }));
+
+    // If no team IDs provided or resolution failed, split by distinct team_ids
+    const fallbackPoints = (!optaHomeId && !optaAwayId)
+      ? allLocationEvents.map(e => ({ x: e.location.x, y: e.location.y, intensity: 1 }))
+      : null;
+
+    // --- pass networks ---
+    function buildPassNetwork(passEvents) {
+      const playersMap = {};
+      const connectionsMap = {};
+      passEvents.forEach((p, i) => {
+        const pid = String(p.player_id || 'unknown');
+        if (!playersMap[pid]) {
+          playersMap[pid] = { player_id: pid, player_name: p.player_name || `Player ${pid}`, totalX: 0, totalY: 0, touches: 0, passes: 0 };
+        }
+        playersMap[pid].touches++;
+        playersMap[pid].passes++;
+        playersMap[pid].totalX += p.location.x;
+        playersMap[pid].totalY += p.location.y;
+        const nextEv = passEvents[i + 1];
+        if (nextEv && nextEv.team_id === p.team_id && nextEv.player_id && nextEv.player_id !== p.player_id) {
+          const receiverId = String(nextEv.player_id);
+          const pair = [pid, receiverId].sort().join('-');
+          if (!connectionsMap[pair]) {
+            connectionsMap[pair] = { from_player_id: pid, to_player_id: receiverId, passes: 0, successful: 0 };
+          }
+          connectionsMap[pair].passes++;
+          connectionsMap[pair].successful += (p.raw_event?.outcome === 1 || p.qualifiers?.['140']) ? 1 : 0;
+        }
+      });
+      const players = Object.values(playersMap).map(pv => ({
+        player_id: pv.player_id, player_name: pv.player_name,
+        x: pv.totalX / pv.touches, y: pv.totalY / pv.touches,
+        touches: pv.touches, passes: pv.passes,
+      }));
+      const connections = Object.values(connectionsMap)
+        .filter(c => c.passes > 2)
+        .map(c => ({ from_player_id: c.from_player_id, to_player_id: c.to_player_id, passes: c.passes, accuracy: Math.round((c.successful / c.passes) * 100) }));
+      return { players, connections };
+    }
+
+    const result = {
+      success: true,
+      data: {
+        shots,
+        heatmap_home: computeHeatmapGrid(homePoints.length ? homePoints : (fallbackPoints || [])),
+        heatmap_away: computeHeatmapGrid(awayPoints),
+        pass_network_home: buildPassNetwork(homePassEvents),
+        pass_network_away: buildPassNetwork(awayPassEvents),
+      },
+    };
+
+    _vizCacheSet(cacheKey, result);
+    res.json(result);
+  } catch (error) {
+    console.error('Match viz error:', error);
+    sendGatewayError(res, error, 'Failed to fetch match visualization data');
+  }
+});
+
 router.get('/:id', async (req, res) => {
   try {
     const payload = ensureSuccess(
@@ -538,9 +902,8 @@ router.get('/:id/lineup', async (req, res) => {
     const db = req.app.locals.db;
     if (!db) return res.json({ teams: [], data_source: 'unavailable' });
 
-    const matchId = req.params.id;
     const match = await db.collection('matches').findOne(
-      { $or: [{ uID: matchId }, { uID: Number(matchId) }] },
+      buildMatchQuery(req.params.id),
       { projection: { f9_summary: 1, homeTeamName: 1, awayTeamName: 1,
                       homeTeamID: 1, awayTeamID: 1, homeScore: 1, awayScore: 1, uID: 1 } },
     );
@@ -709,7 +1072,7 @@ router.get('/enriched/list', async (req, res) => {
 
     // Convert to frontend format
     const formatted = matches.map(m => ({
-      id: String(m.uID || m._id || ''),
+      id: String(m.uID || m._id || '').replace(/^g/, ''),
       homeTeam: m.home_team || `Team ${m.homeTeamID || ''}`,
       awayTeam: m.away_team || `Team ${m.awayTeamID || ''}`,
       homeTeamId: String(m.homeTeamID || ''),

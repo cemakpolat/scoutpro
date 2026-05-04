@@ -275,19 +275,23 @@ class BaseMapper(ABC):
 
         return position_map.get(provider_position, 'MF')  # Default to MF
 
-    def generate_scoutpro_id(self, entity_type: str, external_id: str) -> str:
-        """
-        Generate ScoutPro canonical ID
+    def generate_scoutpro_id(self, entity_type: str, external_id: str) -> int:
+        """Return a deterministic numeric ScoutPro ID for the given entity.
 
         Args:
-            entity_type: 'player', 'team', 'match', 'event'
-            external_id: Provider's ID
+            entity_type: ``'player'``, ``'team'``, ``'match'``, ``'event'``,
+                         ``'competition'``, or ``'season'``.
+            external_id: Provider-specific identifier (letter prefix stripped
+                         automatically, e.g. ``'p101380'`` or ``'g2187923'``).
 
         Returns:
-            ScoutPro canonical ID
-
-        Example:
-            generate_scoutpro_id('player', 'p12345') → 'scoutpro_player_opta_p12345'
-            generate_scoutpro_id('event', 'evt123') → 'scoutpro_event_opta_evt123'
+            Integer ScoutPro canonical ID.
         """
-        return f"scoutpro_{entity_type}_{self.provider_name}_{external_id}"
+        from shared.utils.id_generator import generate as _gen
+        return _gen(entity_type, self.provider_name, external_id)
+
+    def provider_numeric_id(self, entity_type: str, raw_id: str) -> str:
+        """Return the numeric (prefix-stripped) provider ID for storage
+        in ``provider_ids``, e.g. ``'p101380'`` → ``'101380'``."""
+        from shared.utils.id_generator import ScoutProId
+        return ScoutProId.provider_numeric(entity_type, raw_id)

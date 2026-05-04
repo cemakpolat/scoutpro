@@ -29,36 +29,36 @@ interface PassNetworkProps {
   teamId?: string;
   width?: number;
   height?: number;
+  /** Optional pre-fetched data from a consolidated endpoint (e.g. /viz). */
+  precomputedData?: PassMapData | null;
 }
 
-/**
- * PassNetwork - Visualizes pass connections between players
- * - Node size = number of touches
- * - Line width = number of passes
- * - Line color = pass accuracy
- */
 export const PassNetwork: React.FC<PassNetworkProps> = ({
   matchId,
   teamId,
   width = 800,
   height = 600,
+  precomputedData,
 }) => {
-  const [passData, setPassData] = useState<PassMapData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [passData, setPassData] = useState<PassMapData | null>(precomputedData ?? null);
+  const [loading, setLoading] = useState(!precomputedData);
   const [error, setError] = useState<string | null>(null);
   const [hoveredPlayer, setHoveredPlayer] = useState<string | null>(null);
   const [hoveredConnection, setHoveredConnection] = useState<string | null>(null);
 
   useEffect(() => {
+    if (precomputedData !== undefined) {
+      setPassData(precomputedData);
+      setLoading(false);
+      return;
+    }
+
     const fetchPassMap = async () => {
       setLoading(true);
       setError(null);
       try {
         const response = await apiService.getMatchPassMap(matchId, teamId);
         if (response.success && response.data) {
-          // The API service wraps the gateway response, so response.data may be
-          // the full gateway JSON { success, data: { players, connections } }
-          // or already the unwrapped object — handle both shapes.
           const raw = (response.data as any)?.data ?? response.data;
           setPassData({
             players: Array.isArray(raw?.players) ? raw.players : [],
@@ -74,10 +74,8 @@ export const PassNetwork: React.FC<PassNetworkProps> = ({
       }
     };
 
-    if (matchId) {
-      fetchPassMap();
-    }
-  }, [matchId, teamId]);
+    if (matchId) fetchPassMap();
+  }, [matchId, teamId, precomputedData]);
 
   const maxTouches = useMemo(() => {
     if (!passData?.players?.length) return 1;

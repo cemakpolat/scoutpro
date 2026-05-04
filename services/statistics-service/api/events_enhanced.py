@@ -794,3 +794,33 @@ async def get_player_similarity(
     except Exception as e:
         logger.error(f"Error calculating similarity: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/player/{player_id}/analytics-bundle")
+async def get_player_analytics_bundle(
+    player_id: str,
+    team_id: Optional[str] = None,
+    competition_id: Optional[int] = None,
+    season_id: Optional[int] = None,
+    aggregator: EnhancedEventAggregator = Depends(get_event_aggregator_enhanced)
+) -> APIResponse:
+    """
+    Return all player analytics in a single pre-computed bundle.
+
+    Includes: pass stats, shot stats, duel stats, tackle stats, ball control,
+    spatial heatmap, composite index, expected metrics (xG/xA), match count.
+
+    Results are persisted to MongoDB player_analytics so subsequent calls are
+    instant regardless of Redis state.
+    """
+    try:
+        bundle = await aggregator.get_analytics_bundle(
+            player_id=player_id,
+            team_id=team_id,
+            competition_id=competition_id,
+            season_id=season_id,
+        )
+        return APIResponse(success=True, data=bundle, message="Analytics bundle retrieved")
+    except Exception as e:
+        logger.error(f"Error retrieving analytics bundle for {player_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

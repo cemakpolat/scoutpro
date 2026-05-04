@@ -778,6 +778,29 @@ router.post('/similarity/players', async (req, res) => {
 });
 
 
+const ENGINE_PREDICT_FALLBACKS = {
+  tactical_role_classifier: {
+    assigned_role_id: 1,
+    role_name: 'Progressive/Box-to-Box',
+    confidence_score: 0.0,
+    distance_to_centroid: 0.0,
+    _simulated: true,
+  },
+  performance_anomaly_detector: {
+    is_outlier: false,
+    anomaly_score: 0.0,
+    insight: 'Insufficient data to detect performance anomalies.',
+    _simulated: true,
+  },
+  fatigue_risk_predictor: {
+    fatigue_risk_percentage: 0.0,
+    is_high_risk: false,
+    recommendation: 'Optimal',
+    contributing_factor: 'insufficient_data',
+    _simulated: true,
+  },
+};
+
 // Engine predict — proxies to ml-service /api/v2/ml/engine/predict/:modelName
 router.post('/engine/predict/:modelName', async (req, res) => {
   const { modelName } = req.params;
@@ -789,9 +812,24 @@ router.post('/engine/predict/:modelName', async (req, res) => {
       }),
       `Failed to run ${modelName} prediction`
     );
-    res.json(unwrapPayload(payload) ?? payload);
+
+    const data = unwrapPayload(payload) ?? payload;
+
+    // ML service returned success=false (model not yet trainable) — serve fallback
+    if (payload && payload.success === false) {
+      const fallback = ENGINE_PREDICT_FALLBACKS[modelName];
+      if (fallback) {
+        return res.json({ algorithm: modelName, prediction: fallback });
+      }
+    }
+
+    res.json(data);
   } catch (error) {
     console.warn(`ML engine predict fallback (${modelName}):`, error.message);
+    const fallback = ENGINE_PREDICT_FALLBACKS[modelName];
+    if (fallback) {
+      return res.json({ algorithm: modelName, prediction: fallback });
+    }
     res.status(503).json({ error: `ml-service unavailable: ${error.message}`, algorithm: modelName });
   }
 });

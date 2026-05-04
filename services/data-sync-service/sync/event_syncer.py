@@ -5,12 +5,20 @@ Synchronizes event data from providers to canonical repository.
 Events are high-volume data, so this syncer includes optimizations for bulk operations.
 """
 
+import logging
+import os
+
 from typing import List, Optional, Dict, Any
+
+import httpx
 
 from shared.domain.models import ScoutProEvent
 from shared.repositories import EventRepository
 from shared.merger import EventMerger
 from sync.base_syncer import BaseSyncer
+
+
+logger = logging.getLogger(__name__)
 
 
 class EventSyncer(BaseSyncer[ScoutProEvent]):
@@ -54,6 +62,8 @@ class EventSyncer(BaseSyncer[ScoutProEvent]):
             merger=merger,
             config=config
         )
+        self._raw_events_for_projection: List[Dict[str, Any]] = []
+        self._provider_match_id_for_projection: str = ""
 
     def get_entity_type(self) -> str:
         return "event"
@@ -84,6 +94,8 @@ class EventSyncer(BaseSyncer[ScoutProEvent]):
             raise ValueError("match_id is required for event sync")
 
         raw_events = await connector.fetch_match_events(match_id)
+        self._raw_events_for_projection = raw_events
+        self._provider_match_id_for_projection = str(match_id)
 
         # Map to canonical format
         events = mapper.map_events(raw_events)
@@ -99,33 +111,10 @@ class EventSyncer(BaseSyncer[ScoutProEvent]):
 
         return events
 
-    def generate_canonical_match_id(self, provider_match_id: str) -> str:
-        """
-        Generate canonical match ID from provider-specific ID
-
-        This should match the ID used in MatchRepository.
-
-        Args:
-            provider_match_id: Provider-specific match ID
-
-        Returns:
-            Canonical match ID
-
-        Example:
-            canonical_id = self.generate_canonical_match_id('g2187923')
-            → 'match_opta_g2187923' or existing canonical ID
-        """
-        # Try to find existing canonical match
-        from shared.repositories import MatchRepository
-        match_repo = MatchRepository()
-
-        existing_match = match_repo.find_by_provider_id(self.provider, provider_match_id)
-
-        if existing_match:
-            return existing_match.id
-
-        # Generate new canonical ID
-        return f"match_{self.provider}_{provider_match_id}"
+    def generate_canonical_match_id(self, provider_match_id: str) -> int:
+        """Return the deterministic ScoutPro integer ID for this match."""
+        from shared.utils.id_generator import generate as gen_id
+        return gen_id("match", self.provider, provider_match_id)
 
     async def store_entities(self, entities: List[ScoutProEvent]) -> int:
         """
@@ -173,6 +162,9 @@ class EventSyncer(BaseSyncer[ScoutProEvent]):
                 count = self.repository.bulk_upsert(match_events)
                 total_stored += count
 
+            await self._project_match_read_models()
+            await self._enqueue_projection_rebuilds(list(events_by_match.keys()))
+
             return total_stored
 
         except Exception as e:
@@ -180,6 +172,50 @@ class EventSyncer(BaseSyncer[ScoutProEvent]):
             self.stats['errors'].append(error_msg)
             print(f"[{self.provider}] {error_msg}")
             return 0
+
+    async def _project_match_read_models(self):
+        if not self._provider_match_id_for_projection or not self._raw_events_for_projection:
+            return
+
+        from sync.read_model_projector import BatchEventReadModelProjector
+
+        projector = BatchEventReadModelProjector()
+        try:
+            await projector.project(
+                provider=self.provider,
+                match_id=self._provider_match_id_for_projection,
+                raw_events=self._raw_events_for_projection,
+            )
+        finally:
+            self._raw_events_for_projection = []
+            self._provider_match_id_for_projection = ""
+            await projector.close()
+
+    async def _enqueue_projection_rebuilds(self, match_ids: List[str]) -> None:
+        if not match_ids:
+            return
+
+        task_worker_url = os.getenv("TASK_WORKER_SERVICE_URL", "http://task-worker-service:8000").rstrip("/")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            for match_id in sorted(set(str(match_id) for match_id in match_ids if match_id)):
+                try:
+                    response = await client.post(
+                        f"{task_worker_url}/tasks",
+                        json={
+                            "task_type": "statistics_projection_rebuild",
+                            "payload": {
+                                "match_id": match_id,
+                            },
+                        },
+                    )
+                    response.raise_for_status()
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to enqueue statistics projection rebuild for match %s: %s",
+                        match_id,
+                        exc,
+                    )
 
     async def resolve_and_merge(self, entities: List[ScoutProEvent]) -> List[Optional[ScoutProEvent]]:
         """

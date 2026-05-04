@@ -1,14 +1,13 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AlertCircle, Flame } from 'lucide-react';
 import apiService from '../../services/api';
 import PitchOverlay from './PitchOverlay';
 
-interface HeatMapData {
-  x: number;
-  y: number;
-  intensity: number;
-  count?: number;
-  player_name?: string;
+interface PrecomputedGrid {
+  grid: Record<string, number>;
+  cellCounts: Record<string, number>;
+  maxIntensity: number;
+  totalPoints: number;
 }
 
 interface HeatMapProps {
@@ -18,13 +17,10 @@ interface HeatMapProps {
   width?: number;
   height?: number;
   title?: string;
+  /** Optional pre-fetched grid data from a consolidated endpoint (e.g. /viz). */
+  precomputedData?: PrecomputedGrid | null;
 }
 
-/**
- * HeatMap - Shows player/team activity density on the pitch
- * - Warmer colors = more activity
- * - Click to see details
- */
 export const HeatMap: React.FC<HeatMapProps> = ({
   matchId,
   teamId,
@@ -32,23 +28,46 @@ export const HeatMap: React.FC<HeatMapProps> = ({
   width = 800,
   height = 600,
   title = 'Activity Heatmap',
+  precomputedData,
 }) => {
-  const [heatData, setHeatData] = useState<HeatMapData[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [gridData, setGridData] = useState<PrecomputedGrid | null>(precomputedData ?? null);
+  const [loading, setLoading] = useState(!precomputedData);
   const [error, setError] = useState<string | null>(null);
   const [hoveredCell, setHoveredCell] = useState<string | null>(null);
 
   useEffect(() => {
+    if (precomputedData !== undefined) {
+      setGridData(precomputedData);
+      setLoading(false);
+      return;
+    }
+
     const fetchHeatMap = async () => {
       setLoading(true);
       setError(null);
       try {
         const response = await apiService.getMatchHeatMap(matchId, teamId, playerId);
         if (response.success && response.data) {
-          // Unwrap nested { success, data: [...] } wrapper if present
           const raw = (response.data as any)?.data ?? response.data;
-          const data = Array.isArray(raw) ? raw : raw?.heatmap || [];
-          setHeatData(data);
+          // Accept either a pre-computed grid { grid, cellCounts, maxIntensity } or a legacy point array
+          if (raw && typeof raw === 'object' && !Array.isArray(raw) && raw.grid) {
+            setGridData(raw as PrecomputedGrid);
+          } else {
+            // Legacy fallback: compute grid from raw points on the frontend
+            const points: { x: number; y: number; intensity?: number }[] = Array.isArray(raw) ? raw : raw?.heatmap || [];
+            const GRID = 10;
+            const grid: Record<string, number> = {};
+            const cellCounts: Record<string, number> = {};
+            for (const pt of points) {
+              const cx = Math.min(Math.floor((pt.x / 100) * GRID), GRID - 1);
+              const cy = Math.min(Math.floor((pt.y / 100) * GRID), GRID - 1);
+              const key = `${cx},${cy}`;
+              grid[key] = (grid[key] || 0) + (pt.intensity || 1);
+              cellCounts[key] = (cellCounts[key] || 0) + 1;
+            }
+            const maxIntensity = Math.max(...Object.values(grid), 1);
+            setGridData({ grid, cellCounts, maxIntensity, totalPoints: points.length });
+          }
         } else {
           throw new Error(response.error?.message || 'Failed to load heat map');
         }
@@ -59,41 +78,11 @@ export const HeatMap: React.FC<HeatMapProps> = ({
       }
     };
 
-    if (matchId) {
-      fetchHeatMap();
-    }
-  }, [matchId, teamId, playerId]);
+    if (matchId) fetchHeatMap();
+  }, [matchId, teamId, playerId, precomputedData]);
 
-  // Create grid-based heatmap from point data
-  const heatmapGrid = useMemo(() => {
-    const gridSize = 10; // 10x10 grid cells
-    const grid: Record<string, number> = {};
-    const cellCounts: Record<string, number> = {};
-
-    heatData.forEach(point => {
-      const cellX = Math.floor((point.x / 100) * gridSize);
-      const cellY = Math.floor((point.y / 100) * gridSize);
-      const key = `${cellX},${cellY}`;
-
-      grid[key] = (grid[key] || 0) + (point.intensity || 1);
-      cellCounts[key] = (cellCounts[key] || 0) + 1;
-    });
-
-    return { grid, cellCounts };
-  }, [heatData]);
-
-  const maxIntensity = Math.max(...Object.values(heatmapGrid.grid), 1);
-
-  if (heatData.length === 0) {
-    return (
-      <div className="flex items-center justify-center bg-slate-800 rounded-lg border border-slate-700" style={{ height: `${height / 2}px` }}>
-        <div className="text-center text-slate-400">
-          <Flame size={32} className="mx-auto mb-2 opacity-40" />
-          <p>No activity data available for this match</p>
-        </div>
-      </div>
-    );
-  }
+  const heatmapGrid = gridData ?? { grid: {}, cellCounts: {}, maxIntensity: 1, totalPoints: 0 };
+  const maxIntensity = heatmapGrid.maxIntensity;
 
   const getHeatColor = (intensity: number): string => {
     const normalized = intensity / maxIntensity;
@@ -129,6 +118,17 @@ export const HeatMap: React.FC<HeatMapProps> = ({
     );
   }
 
+  if (Object.keys(heatmapGrid.grid).length === 0) {
+    return (
+      <div className="flex items-center justify-center bg-slate-800 rounded-lg border border-slate-700" style={{ height: `${height / 2}px` }}>
+        <div className="text-center text-slate-400">
+          <Flame size={32} className="mx-auto mb-2 opacity-40" />
+          <p>No activity data available for this match</p>
+        </div>
+      </div>
+    );
+  }
+
   const config = { width, height, padding: 20 };
   const cellWidth = (config.width - config.padding * 2) / 10;
   const cellHeight = (config.height - config.padding * 2) / 10;
@@ -140,7 +140,7 @@ export const HeatMap: React.FC<HeatMapProps> = ({
           <Flame size={20} />
           {title}
         </h3>
-        <span className="text-sm text-slate-400">{heatData.length} events</span>
+        <span className="text-sm text-slate-400">{heatmapGrid.totalPoints} events</span>
       </div>
 
       <div className="overflow-x-auto">

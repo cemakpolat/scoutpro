@@ -82,9 +82,11 @@ class TeamRepository(BaseRepository[ScoutProTeam]):
         """
         doc = {
             '_id': team.id,
+            'uID': (team.provider_ids or {}).get('opta') or team.external_id,
             'external_id': team.external_id,
             'provider': team.provider,
             'name': team.name,
+            'shortName': team.short_name,
             'short_name': team.short_name,
             'code': team.code,
             'country': team.country,

@@ -18,7 +18,7 @@ class ScoutProPlayer:
     """
 
     # ====== IDENTITY ======
-    id: str                           # ScoutPro canonical ID (e.g., "scoutpro_player_12345")
+    id: int                           # ScoutPro canonical numeric ID
     external_id: str                  # Primary provider's ID
     provider: str                     # Primary data source ('opta', 'statsbomb', etc.)
 
@@ -42,7 +42,7 @@ class ScoutProPlayer:
     foot: Optional[str] = None        # 'left', 'right', 'both'
 
     # ====== CURRENT TEAM ======
-    current_team_id: Optional[str] = None  # Reference to canonical team
+    current_team_id: Optional[int] = None  # Reference to canonical team
     jersey_number: Optional[int] = None
     contract_until: Optional[date] = None
     market_value: Optional[int] = None  # In euros
@@ -114,6 +114,15 @@ class ScoutProPlayer:
     def get_display_name(self) -> str:
         """Get best display name"""
         return self.known_name or self.name
+
+    @property
+    def preferred_foot(self) -> Optional[str]:
+        """Backward-compatible alias for legacy code paths."""
+        return self.foot
+
+    @preferred_foot.setter
+    def preferred_foot(self, value: Optional[str]) -> None:
+        self.foot = value
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for MongoDB storage"""

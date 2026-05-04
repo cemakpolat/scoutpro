@@ -204,6 +204,8 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 7000 --reload
 ```
 
+> **Docker note:** when running via the full Docker Compose stack, the data-provider is accessible from the host at `http://localhost:17000` (mapped from internal port 7000). Other containers reach it at `http://data-provider:7000`.
+
 Or via Docker Compose with the data profile:
 
 ```bash
@@ -253,11 +255,49 @@ docker compose -f docker-compose.yml -f docker-compose.seed.yml run --rm data-se
 
 ```bash
 # Connect to MongoDB and check counts
-docker exec -it scoutpro-mongo mongosh -u root -p scoutpro123 \
-  --eval 'use scoutpro; printjson({players: db.players.countDocuments(), teams: db.teams.countDocuments(), matches: db.matches.countDocuments(), events: db.match_events.countDocuments()})'
+docker exec scoutpro-mongo mongosh -u root -p scoutpro123 --authenticationDatabase admin \
+  --eval 'db = db.getSiblingDB("scoutpro"); print(JSON.stringify({
+    players: db.players.countDocuments(),
+    teams: db.teams.countDocuments(),
+    matches: db.matches.countDocuments(),
+    match_events: db.match_events.countDocuments(),
+    player_statistics: db.player_statistics.countDocuments(),
+    events_with_player_names: db.match_events.countDocuments({"player_name": {"$ne": null}})
+  }))'
 
-# Expected output (Turkish Super Lig, 2019/2020 season, ~300 matches):
-# { players: ~500, teams: ~20, matches: ~300, events: ~50000 }
+# Expected output (Turkish Süper Lig, competition 115, season 2019/2020):
+# { players: 571, teams: 18, matches: 306, match_events: 96688,
+#   player_statistics: 376, events_with_player_names: ~85000 }
+```
+
+#### Post-Seeding: StatsBomb Enrichment
+
+After seeding, trigger the StatsBomb enrichment to add advanced metrics (xG, OBV) to players
+from the Samsunspor vs Beşiktaş match:
+
+```bash
+# Requires the full stack to be running (docker-compose up -d)
+curl -X POST http://localhost/api/players/enrich/statsbomb
+# Returns: {"matched": N, "updated": N, "unmatched": N, "errors": []}
+```
+
+#### If Enrichment Scripts Fail (Troubleshooting)
+
+If the seeder exits successfully but player statistics or player names are missing, run the
+enrichment scripts manually inside a running container:
+
+```bash
+# Copy scripts into data-sync-service container
+docker cp scripts/enrich_f40.py scoutpro-data-sync-service:/tmp/enrich_f40.py
+docker cp scripts/enrich_matches_and_events.py scoutpro-data-sync-service:/tmp/enrich_matches_and_events.py
+docker cp data/opta/2019/f40_115_2019 scoutpro-data-sync-service:/tmp/f40_115_2019
+
+# Run F40 biometric enrichment (preferred_foot, height, birth_date)
+docker exec -e F40_PATH=/tmp/f40_115_2019 scoutpro-data-sync-service python3 /tmp/enrich_f40.py
+
+# Run event and statistics enrichment (player names on events, goal/pass aggregation)
+docker exec -e MONGO_URI="mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin" \
+  scoutpro-data-sync-service python3 /tmp/enrich_matches_and_events.py
 ```
 
 ---

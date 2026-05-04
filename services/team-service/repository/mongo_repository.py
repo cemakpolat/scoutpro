@@ -23,12 +23,22 @@ class MongoTeamRepository(ITeamRepository):
     async def get_by_id(self, team_id: str) -> Optional[Team]:
         """Get team by ID from MongoDB"""
         try:
+            # Normalize: strip leading 't' prefix (e.g. "t2137" → "2137")
+            normalized = str(team_id).lstrip('tT')
+            query_values = [team_id]
+            try:
+                query_values.append(int(normalized))
+            except (ValueError, TypeError):
+                pass
+            if normalized != team_id:
+                query_values.append(normalized)
+
             # Try uID as int
-            doc = await self.teams_collection.find_one({"uID": int(team_id)})
+            doc = await self.teams_collection.find_one({"uID": int(normalized)}) if normalized.isdigit() else None
 
             if not doc:
-                # Try string uID
-                doc = await self.teams_collection.find_one({"uID": team_id})
+                # Try string uID variants
+                doc = await self.teams_collection.find_one({"uID": {"$in": query_values}})
 
             if not doc:
                 # Try _id field
@@ -109,8 +119,10 @@ class MongoTeamRepository(ITeamRepository):
     async def get_squad(self, team_id: str) -> List[Dict[str, Any]]:
         """Get team squad (list of players)"""
         try:
-            # Find all players for this team
-            cursor = self.players_collection.find({"teamID": int(team_id)})
+            normalized = str(team_id).lstrip('tT')
+            tid_int = int(normalized) if normalized.isdigit() else None
+            query = {"teamID": tid_int} if tid_int is not None else {"teamID": team_id}
+            cursor = self.players_collection.find(query)
             docs = await cursor.to_list(length=None)
 
             squad = []
@@ -136,8 +148,10 @@ class MongoTeamRepository(ITeamRepository):
     async def update(self, team_id: str, team: Team) -> bool:
         """Update team"""
         try:
+            normalized = str(team_id).lstrip('tT')
+            tid_int = int(normalized) if normalized.isdigit() else team_id
             result = await self.teams_collection.update_one(
-                {'uID': int(team_id)},
+                {'uID': tid_int},
                 {'$set': team.dict()}
             )
             return result.modified_count > 0

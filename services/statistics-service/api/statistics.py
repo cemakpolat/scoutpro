@@ -1,6 +1,7 @@
 """
 Statistics API Endpoints
 """
+from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import Optional, List
 import sys
@@ -10,6 +11,12 @@ from services.statistics_service import StatisticsService
 from dependencies import get_statistics_service
 
 router = APIRouter(prefix="/api/v2/statistics", tags=["statistics"])
+
+
+class ProjectionRebuildRequest(BaseModel):
+    match_id: Optional[str] = None
+    competition_id: Optional[str] = None
+    season_id: Optional[str] = None
 
 
 @router.get("/player/{player_id}", response_model=APIResponse)
@@ -152,4 +159,87 @@ async def aggregate_player_stats(
         success=True,
         data=aggregated,
         message=f"Aggregated statistics for player {player_id}"
+    )
+
+
+@router.get("/match/{match_id}/advanced-metrics", response_model=APIResponse)
+async def get_match_advanced_metrics(
+    match_id: str,
+    time_bucket: str = Query("5m"),
+    service: StatisticsService = Depends(get_statistics_service)
+):
+    payload = await service.get_match_advanced_metrics(match_id, time_bucket)
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"Advanced metrics not found for match {match_id}")
+
+    return APIResponse(
+        success=True,
+        data=payload,
+        message="Match advanced metrics retrieved successfully"
+    )
+
+
+@router.get("/match/{match_id}/tactical", response_model=APIResponse)
+async def get_match_tactical_snapshot(
+    match_id: str,
+    service: StatisticsService = Depends(get_statistics_service)
+):
+    payload = await service.get_match_tactical_snapshot(match_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"Tactical snapshot not found for match {match_id}")
+
+    return APIResponse(
+        success=True,
+        data=payload,
+        message="Match tactical snapshot retrieved successfully"
+    )
+
+
+@router.get("/match/{match_id}/pass-network", response_model=APIResponse)
+async def get_match_pass_network(
+    match_id: str,
+    service: StatisticsService = Depends(get_statistics_service)
+):
+    payload = await service.get_match_pass_network(match_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"Pass network not found for match {match_id}")
+
+    return APIResponse(
+        success=True,
+        data=payload,
+        message="Match pass network retrieved successfully"
+    )
+
+
+@router.get("/match/{match_id}/sequences", response_model=APIResponse)
+async def get_match_sequence_summary(
+    match_id: str,
+    service: StatisticsService = Depends(get_statistics_service)
+):
+    payload = await service.get_match_sequence_summary(match_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"Sequence summary not found for match {match_id}")
+
+    return APIResponse(
+        success=True,
+        data=payload,
+        message="Match sequence summary retrieved successfully"
+    )
+
+
+@router.post("/projections/rebuild", response_model=APIResponse)
+async def rebuild_match_projections(
+    request: ProjectionRebuildRequest,
+    service: StatisticsService = Depends(get_statistics_service)
+):
+    result = await service.rebuild_match_projections(
+        match_id=request.match_id,
+        competition_id=request.competition_id,
+        season_id=request.season_id,
+    )
+
+    return APIResponse(
+        success=True,
+        data=result,
+        message="Projection rebuild completed"
     )

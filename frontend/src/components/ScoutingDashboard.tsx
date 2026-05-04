@@ -4,6 +4,7 @@ import { useApi } from '../hooks/useApi';
 import apiService from '../services/api';
 import { Player, AIInsight } from '../types';
 import { deriveAge } from '../utils/dataTransformers';
+import PlayerDetail from './PlayerDetail';
 
 interface ScoutingDashboardProps {
   onPlayerSelect?: (player: Player) => void;
@@ -12,7 +13,8 @@ interface ScoutingDashboardProps {
 const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect }) => {
   const [searchTerm, setSearchTerm] = React.useState('');
   const [selectedPosition, setSelectedPosition] = React.useState<string>('all');
-  const [ageRange, setAgeRange] = React.useState({ min: 16, max: 35 });
+  const [ageRange, setAgeRange] = React.useState({ min: 16, max: 45 });
+  const [selectedPlayer, setSelectedPlayer] = React.useState<Player | null>(null);
 
   const { data: targetPlayers, loading: targetsLoading } = useApi(
     () => apiService.getPlayers({
@@ -52,8 +54,15 @@ const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect })
   const handlePlayerClick = (player: Player) => {
     if (onPlayerSelect) {
       onPlayerSelect(player);
+      return;
     }
+
+    setSelectedPlayer(player);
   };
+
+  if (selectedPlayer) {
+    return <PlayerDetail player={selectedPlayer} onBack={() => setSelectedPlayer(null)} />;
+  }
 
   return (
     <div className="space-y-6">
@@ -113,7 +122,7 @@ const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect })
               type="number"
               placeholder="Max age"
               value={ageRange.max}
-              onChange={(e) => setAgeRange(prev => ({ ...prev, max: parseInt(e.target.value) || 35 }))}
+              onChange={(e) => setAgeRange(prev => ({ ...prev, max: parseInt(e.target.value) || 45 }))}
               className="w-20 px-3 py-2 bg-slate-700 border border-slate-600 text-white rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-slate-400"
             />
           </div>

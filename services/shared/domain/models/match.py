@@ -29,17 +29,17 @@ class ScoutProMatch:
     """
 
     # ====== IDENTITY ======
-    id: str                           # ScoutPro canonical ID
+    id: int                           # ScoutPro canonical numeric ID
     external_id: str                  # Primary provider's ID
     provider: str                     # Primary data source
 
     # ====== TEAMS ======
-    home_team_id: str                 # Reference to canonical team
-    away_team_id: str                 # Reference to canonical team
+    home_team_id: int                 # Reference to canonical team
+    away_team_id: int                 # Reference to canonical team
 
     # ====== COMPETITION ======
-    competition_id: str               # Reference to canonical competition
-    season_id: str                    # Reference to canonical season
+    competition_id: int               # Reference to canonical competition
+    season_id: int                    # Reference to canonical season
 
     # ====== MATCH INFO ======
     date: datetime                    # Match date/time

@@ -148,15 +148,15 @@ class ScoutProEvent:
     """
 
     # ====== TIER 1: MINIMUM REQUIRED (ALL providers) ======
-    id: str                           # ScoutPro canonical ID
-    match_id: str                     # Reference to canonical match
+    id: int                           # ScoutPro canonical numeric ID
+    match_id: int                     # Reference to canonical match
     event_type: EventType             # Standardized event type
     minute: int                       # Match minute
     successful: bool                  # Event outcome (pass completed, shot scored, etc.)
 
     # ====== TIER 2: STANDARD (MOST providers) ======
-    player_id: Optional[str] = None   # Reference to canonical player
-    team_id: Optional[str] = None     # Reference to canonical team
+    player_id: Optional[int] = None   # Reference to canonical player
+    team_id: Optional[int] = None     # Reference to canonical team
     second: int = 0                   # Second within minute
     period: int = 1                   # Match period (1, 2, 3=ET, 4=penalties)
     timestamp_seconds: Optional[float] = None  # Absolute timestamp in match

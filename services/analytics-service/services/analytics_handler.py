@@ -2,7 +2,7 @@ import httpx
 import logging
 import asyncio
 from collections import Counter, defaultdict
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, Awaitable, Callable, List, Optional
 from datetime import datetime, timedelta
 
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -21,6 +21,13 @@ class CacheEntry:
         return (datetime.now() - self.created_at).total_seconds() > self.ttl_seconds
 
 class AnalyticsHandler:
+    _shared_player_dashboard_cache: Dict[str, CacheEntry] = {}
+    _shared_player_sequence_cache: Dict[str, CacheEntry] = {}
+    _shared_team_dashboard_cache: Dict[str, CacheEntry] = {}
+    _shared_overview_cache: Dict[str, CacheEntry] = {}
+    _shared_league_trends_cache: Dict[str, CacheEntry] = {}
+    _shared_inflight_requests: Dict[str, asyncio.Task] = {}
+
     def __init__(self):
         settings = get_settings()
         self.player_service_url = settings.player_service_url.rstrip('/')
@@ -28,22 +35,46 @@ class AnalyticsHandler:
         self.match_service_url = settings.match_service_url.rstrip('/')
         self.statistics_service_url = settings.statistics_service_url.rstrip('/')
         self.ml_service_url = settings.ml_service_url.rstrip('/')
-        self.client = httpx.AsyncClient(timeout=10.0)
+        self.client = httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=3.0, read=8.0, write=3.0, pool=3.0),
+            limits=httpx.Limits(max_connections=30, max_keepalive_connections=10, keepalive_expiry=10),
+        )
         
         # MongoDB client for direct event consumption
         self.mongo_client = AsyncIOMotorClient(settings.mongodb_url)
         self.db = self.mongo_client[settings.mongodb_database]
         
-        # Response caches with TTL (5 minutes)
-        self._player_dashboard_cache: Dict[str, CacheEntry] = {}
-        self._player_sequence_cache: Dict[str, CacheEntry] = {}
-        self._team_dashboard_cache: Dict[str, CacheEntry] = {}
+        # Response caches are shared across handler instances because FastAPI
+        # creates a fresh AnalyticsHandler per request.
+        self._player_dashboard_cache = self._shared_player_dashboard_cache
+        self._player_sequence_cache = self._shared_player_sequence_cache
+        self._team_dashboard_cache = self._shared_team_dashboard_cache
+        self._overview_cache = self._shared_overview_cache
+        self._league_trends_cache = self._shared_league_trends_cache
 
-    async def _get_json(self, url: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    async def _get_json(
+        self,
+        url: str,
+        params: Optional[Dict[str, Any]] = None,
+        suppress_statuses: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
         try:
             response = await self.client.get(url, params=params)
             if response.status_code >= 400:
-                logger.warning("Analytics upstream call failed: %s %s -> %s", response.request.method, url, response.status_code)
+                if suppress_statuses and response.status_code in suppress_statuses:
+                    logger.debug(
+                        "Analytics upstream probe miss: %s %s -> %s",
+                        response.request.method,
+                        url,
+                        response.status_code,
+                    )
+                else:
+                    logger.warning(
+                        "Analytics upstream call failed: %s %s -> %s",
+                        response.request.method,
+                        url,
+                        response.status_code,
+                    )
                 return {}
             payload = response.json()
             return payload if isinstance(payload, dict) else {"data": payload}
@@ -67,6 +98,33 @@ class AnalyticsHandler:
         cache[key] = CacheEntry(value, ttl)
         logger.debug(f"Cached {key} for {ttl}s")
 
+    async def _get_or_load_cached(
+        self,
+        cache: Dict[str, CacheEntry],
+        key: str,
+        loader: Callable[[], Awaitable[Any]],
+        ttl: int = 300,
+    ) -> Any:
+        cached = self._get_cached(cache, key)
+        if cached is not None:
+            return cached
+
+        inflight = self._shared_inflight_requests.get(key)
+        if inflight:
+            return await inflight
+
+        async def run_loader() -> Any:
+            try:
+                value = await loader()
+                self._set_cache(cache, key, value, ttl=ttl)
+                return value
+            finally:
+                self._shared_inflight_requests.pop(key, None)
+
+        task = asyncio.create_task(run_loader())
+        self._shared_inflight_requests[key] = task
+        return await task
+
     async def _get_events_from_mongodb(self, match_id: str) -> List[Dict[str, Any]]:
         """
         Query events directly from MongoDB match_events collection.
@@ -77,15 +135,18 @@ class AnalyticsHandler:
         try:
             collection = self.db['match_events']
             
-            # Support both numeric and string match IDs
-            query = {
-                '$or': [
+            # Primary lookup by ScoutPro integer ID; fallback to Opta matchID for pre-migration docs
+            int_id = int(match_id) if match_id.isdigit() else None
+            or_clauses: list = [{'matchID': match_id}]
+            if int_id is not None:
+                or_clauses = [
+                    {'scoutpro_match_id': int_id},
+                    {'matchID': int_id},
                     {'matchID': match_id},
-                    {'matchID': int(match_id)} if match_id.isdigit() else {'matchID': match_id}
                 ]
-            }
+            query = {'$or': or_clauses}
             
-            events = await collection.find(query).sort('timestamp', 1).to_list(length=None)
+            events = await collection.find(query).sort('timestamp', 1).batch_size(500).to_list(length=10000)
             
             # Clean up MongoDB internal fields
             for event in events:
@@ -96,6 +157,27 @@ class AnalyticsHandler:
         except Exception as e:
             logger.error(f"Error fetching events from MongoDB: {e}")
             return []
+
+    async def _get_match_from_db(self, match_id: str) -> Dict[str, Any]:
+        """Look up a match document directly from MongoDB by any known ID format."""
+        try:
+            collection = self.db['matches']
+            query = {
+                '$or': [
+                    {'id': match_id},
+                    {'scoutpro_id': match_id},
+                    {'uID': match_id},
+                    {'uID': f'g{match_id}'},
+                    {'provider_ids.opta': match_id},
+                ]
+            }
+            doc = await collection.find_one(query)
+            if doc:
+                doc.pop('_id', None)
+            return doc or {}
+        except Exception as exc:
+            logger.error('_get_match_from_db failed for %s: %s', match_id, exc)
+            return {}
 
     @staticmethod
     def _unwrap_data(payload: Dict[str, Any]) -> Any:
@@ -164,18 +246,16 @@ class AnalyticsHandler:
             if normalized and normalized not in candidates:
                 candidates.append(normalized)
 
-            if normalized.lower().startswith('p') and normalized[1:].isdigit() and normalized[1:] not in candidates:
-                candidates.append(normalized[1:])
-
-        add(player_id)
-        add(player.get('player_id'))
-        add(player.get('uID'))
-        add(player.get('opta_uid'))
-
         provider_ids = player.get('provider_ids') or {}
         if isinstance(provider_ids, dict):
             add(provider_ids.get('opta'))
-            add(provider_ids.get('statsbomb'))
+
+        add(player.get('opta_uid'))
+        add(player.get('uID'))
+        add(player.get('player_id'))
+
+        if not candidates:
+            add(player_id)
 
         return candidates
 
@@ -549,20 +629,30 @@ class AnalyticsHandler:
         home_team = match.get('homeTeam') if isinstance(match.get('homeTeam'), dict) else {}
         away_team = match.get('awayTeam') if isinstance(match.get('awayTeam'), dict) else {}
 
-        home_team_id = str(
+        def _normalize_team_id(raw_id: Any) -> str:
+            """Strip provider prefixes (e.g. 't' from Opta) so the ID matches the
+            numeric team_id stored in match_events documents."""
+            s = str(raw_id).strip()
+            if s and s[0].isalpha() and s[1:].isdigit():
+                return s[1:]
+            return s
+
+        raw_home_id = (
             match.get('home_team_id')
             or match.get('homeTeamID')
             or match.get('homeTeamId')
             or home_team.get('id')
             or 'home'
         )
-        away_team_id = str(
+        raw_away_id = (
             match.get('away_team_id')
             or match.get('awayTeamID')
             or match.get('awayTeamId')
             or away_team.get('id')
             or 'away'
         )
+        home_team_id = _normalize_team_id(raw_home_id) if raw_home_id not in (None, 'home') else 'home'
+        away_team_id = _normalize_team_id(raw_away_id) if raw_away_id not in (None, 'away') else 'away'
 
         home_team_name = match.get('home_team_name') or match.get('home_team') or match.get('homeTeamName')
         if not home_team_name and isinstance(match.get('homeTeam'), str):
@@ -586,7 +676,9 @@ class AnalyticsHandler:
     @classmethod
     def _create_sequence(cls, event: Dict[str, Any], match_context: Dict[str, Any]) -> Dict[str, Any]:
         start_location = cls._sequence_start_location(event) or cls._sequence_action_location(event)
-        team_id = str(event.get('team_id'))
+        # Prefer the unified ScoutPro team ID so sequences can be matched back
+        # to the match-level team context (which uses ScoutPro IDs).
+        team_id = str(event.get('scoutpro_team_id') or event.get('team_id') or '')
 
         return {
             'teamId': team_id,
@@ -657,7 +749,7 @@ class AnalyticsHandler:
         current_sequence: Optional[Dict[str, Any]] = None
 
         for event in actionable_events:
-            team_id = str(event.get('team_id'))
+            team_id = str(event.get('scoutpro_team_id') or event.get('team_id') or '')
             timestamp = cls._sequence_event_timestamp(event)
             event_period = cls._to_int(event.get('period'))
             action_location = cls._sequence_action_location(event) or cls._sequence_start_location(event)
@@ -741,8 +833,19 @@ class AnalyticsHandler:
             + (40 if sequence['endedWithGoal'] else 0)
 
     async def get_sequence_insights(self, match_id: str) -> Optional[Dict[str, Any]]:
-        match_payload = await self._get_json(f"{self.match_service_url}/api/v2/matches/{match_id}")
-        match = self._unwrap_data(match_payload) or {}
+        projection_payload = await self._get_json(
+            f"{self.statistics_service_url}/api/v2/statistics/match/{match_id}/sequences",
+            suppress_statuses=[404],
+        )
+        projection = self._unwrap_data(projection_payload)
+        if isinstance(projection, dict) and projection.get('topSequences') is not None:
+            return projection
+
+        # Try MongoDB directly first; fall back to match-service for live/external matches
+        match = await self._get_match_from_db(match_id)
+        if not match:
+            match_payload = await self._get_json(f"{self.match_service_url}/api/v2/matches/{match_id}")
+            match = self._unwrap_data(match_payload) or {}
 
         events = await self._get_events_from_mongodb(match_id)
         if not events:
@@ -1163,130 +1266,148 @@ class AnalyticsHandler:
         return enriched
 
     async def get_overview(self, season: Optional[str] = None) -> Dict[str, Any]:
-        started = datetime.now()
-        players_payload, matches_payload, teams_payload, top_players_payload, top_teams_payload = await asyncio.gather(
-            self._get_json(f"{self.player_service_url}/api/v2/players", params={"limit": 500}),
-            self._get_json(f"{self.match_service_url}/api/v2/matches", params={"limit": 500}),
-            self._get_json(f"{self.team_service_url}/api/v2/teams", params={"limit": 500}),
-            self._get_json(f"{self.statistics_service_url}/api/v2/statistics/rankings/players", params={"stat_name": "goals", "limit": 5}),
-            self._get_json(f"{self.statistics_service_url}/api/v2/statistics/rankings/teams", params={"stat_name": "goals", "limit": 5}),
-        )
+        cache_key = f"analytics:overview:{season or 'all'}"
 
-        players = self._extract_list(players_payload, 'players')
-        teams = self._extract_list(teams_payload, 'teams')
-        matches = self._extract_list(matches_payload, 'matches')
-        top_players = self._unwrap_data(top_players_payload) or []
-        top_teams = self._unwrap_data(top_teams_payload) or []
+        async def load() -> Dict[str, Any]:
+            started = datetime.now()
+            players_payload, matches_payload, teams_payload, top_players_payload, top_teams_payload = await asyncio.gather(
+                self._get_json(f"{self.player_service_url}/api/v2/players", params={"limit": 500}),
+                self._get_json(f"{self.match_service_url}/api/v2/matches", params={"limit": 500}),
+                self._get_json(f"{self.team_service_url}/api/v2/teams", params={"limit": 500}),
+                self._get_json(f"{self.statistics_service_url}/api/v2/statistics/rankings/players", params={"stat_name": "goals", "limit": 5}),
+                self._get_json(f"{self.statistics_service_url}/api/v2/statistics/rankings/teams", params={"stat_name": "goals", "limit": 5}),
+            )
 
-        if not isinstance(top_players, list):
-            top_players = []
-        if not isinstance(top_teams, list):
-            top_teams = []
+            players = self._extract_list(players_payload, 'players')
+            teams = self._extract_list(teams_payload, 'teams')
+            matches = self._extract_list(matches_payload, 'matches')
+            top_players = self._unwrap_data(top_players_payload) or []
+            top_teams = self._unwrap_data(top_teams_payload) or []
 
-        if not top_players:
-            top_players = [{"name": player.get("name"), "value": 0, "club": player.get("club")} for player in players[:5]]
-        if not top_teams:
-            top_teams = [{"name": team.get("name"), "value": 0} for team in teams[:5]]
+            if not isinstance(top_players, list):
+                top_players = []
+            if not isinstance(top_teams, list):
+                top_teams = []
 
-        # Enrich top players with detailed information
-        top_players = await self._enrich_players_with_details(top_players)
-        
-        # Sort and get recent matches, then enrich with team names
-        recent_matches_raw = self._sort_matches(matches)[:5]
-        recent_matches = await self._enrich_matches_with_team_names(recent_matches_raw)
-        
-        live_matches = [match for match in matches if str(match.get('status', '')).lower() == 'live']
-        complete_players = [player for player in players if player.get('name') and player.get('position') and player.get('club')]
-        model_accuracy = round((len(complete_players) / len(players)) * 100, 2) if players else 0.0
-        transfer_predictions = len(top_players)
-        response_time = int((datetime.now() - started).total_seconds() * 1000)
+            if not top_players:
+                top_players = [{"name": player.get("name"), "value": 0, "club": player.get("club")} for player in players[:5]]
+            if not top_teams:
+                top_teams = [{"name": team.get("name"), "value": 0} for team in teams[:5]]
 
-        summary = {
-            "totalPlayers": len(players),
-            "totalTeams": len(teams),
-            "totalMatches": len(matches),
-            "avgGoalsPerMatch": self._compute_average_goals(matches) or 0.0,
-            "liveMatches": len(live_matches),
-            "recentActivity": len(recent_matches),
-            "activeScouts": len(teams),
-            "scoutingReports": len(top_players) + len(top_teams),
-            "modelAccuracy": model_accuracy,
-            "transferPredictions": transfer_predictions,
-            "responseTime": response_time,
-            "season": season,
-        }
+            top_players = await self._enrich_players_with_details(top_players)
+            recent_matches_raw = self._sort_matches(matches)[:5]
+            recent_matches = await self._enrich_matches_with_team_names(recent_matches_raw)
 
-        return {
-            "title": "Overview Dashboard",
-            "summary": summary,
-            "data": summary,
-            "topPlayers": top_players,
-            "topTeams": top_teams,
-            "recentMatches": recent_matches,
-            "predictions": {
-                "total": transfer_predictions,
-                "accuracy": model_accuracy,
-            },
-            "modelAccuracy": model_accuracy,
-            "activeScouts": summary["activeScouts"],
-            "transferPredictions": transfer_predictions,
-            "responseTime": response_time,
-            "sources": {
-                "players": "player-service",
-                "teams": "team-service",
-                "matches": "match-service",
-            },
-            "last_updated": datetime.now().isoformat()
-        }
+            live_matches = [match for match in matches if str(match.get('status', '')).lower() == 'live']
+            complete_players = [player for player in players if player.get('name') and player.get('position') and player.get('club')]
+            model_accuracy = round((len(complete_players) / len(players)) * 100, 2) if players else 0.0
+            transfer_predictions = len(top_players)
+            response_time = int((datetime.now() - started).total_seconds() * 1000)
+
+            summary = {
+                "totalPlayers": len(players),
+                "totalTeams": len(teams),
+                "totalMatches": len(matches),
+                "avgGoalsPerMatch": self._compute_average_goals(matches) or 0.0,
+                "liveMatches": len(live_matches),
+                "recentActivity": len(recent_matches),
+                "activeScouts": len(teams),
+                "scoutingReports": len(top_players) + len(top_teams),
+                "modelAccuracy": model_accuracy,
+                "transferPredictions": transfer_predictions,
+                "responseTime": response_time,
+                "season": season,
+            }
+
+            return {
+                "title": "Overview Dashboard",
+                "summary": summary,
+                "data": summary,
+                "topPlayers": top_players,
+                "topTeams": top_teams,
+                "recentMatches": recent_matches,
+                "predictions": {
+                    "total": transfer_predictions,
+                    "accuracy": model_accuracy,
+                },
+                "modelAccuracy": model_accuracy,
+                "activeScouts": summary["activeScouts"],
+                "transferPredictions": transfer_predictions,
+                "responseTime": response_time,
+                "sources": {
+                    "players": "player-service",
+                    "teams": "team-service",
+                    "matches": "match-service",
+                },
+                "last_updated": datetime.now().isoformat()
+            }
+
+        return await self._get_or_load_cached(self._overview_cache, cache_key, load, ttl=60)
 
     async def get_team_dashboard(self, team_id: str, season: Optional[str] = None) -> Dict[str, Any]:
-        team_payload, stats_payload, matches_payload, squad_payload = await asyncio.gather(
-            self._get_json(f"{self.team_service_url}/api/v2/teams/{team_id}"),
-            self._get_json(f"{self.statistics_service_url}/api/v2/statistics/team/{team_id}"),
-            self._get_json(f"{self.match_service_url}/api/v2/matches/team/{team_id}", params={"limit": 20}),
-            self._get_json(f"{self.team_service_url}/api/v2/teams/{team_id}/squad"),
-        )
+        cache_key = f"analytics:team-dashboard:{team_id}:{season or 'current'}"
 
-        team = self._unwrap_data(team_payload) or {}
-        stats = self._stats_dict(stats_payload)
-        matches = self._extract_list(matches_payload, 'matches')
-        squad = self._unwrap_data(squad_payload)
-        squad = squad if isinstance(squad, list) else []
-        summary = self._team_metrics(team, stats, matches, team_id)
+        async def load() -> Dict[str, Any]:
+            team_payload, stats_payload, matches_payload, squad_payload = await asyncio.gather(
+                self._get_json(f"{self.team_service_url}/api/v2/teams/{team_id}"),
+                self._get_json(f"{self.statistics_service_url}/api/v2/statistics/team/{team_id}"),
+                self._get_json(f"{self.match_service_url}/api/v2/matches/team/{team_id}", params={"limit": 20}),
+                self._get_json(f"{self.team_service_url}/api/v2/teams/{team_id}/squad"),
+            )
 
-        return {
-            "team_id": team_id,
-            "season": season or "2023-2024",
-            "team": team,
-            "statistics": stats,
-            "recentMatches": self._sort_matches(matches)[:5],
-            "squad": squad,
-            "summary": {
-                **summary,
-                "squadSize": len(squad),
-            },
-            "last_updated": datetime.now().isoformat(),
-        }
+            team = self._unwrap_data(team_payload) or {}
+            stats = self._stats_dict(stats_payload)
+            matches = self._extract_list(matches_payload, 'matches')
+            squad = self._unwrap_data(squad_payload)
+            squad = squad if isinstance(squad, list) else []
+            summary = self._team_metrics(team, stats, matches, team_id)
+
+            return {
+                "team_id": team_id,
+                "season": season or "2023-2024",
+                "team": team,
+                "statistics": stats,
+                "recentMatches": self._sort_matches(matches)[:5],
+                "squad": squad,
+                "summary": {
+                    **summary,
+                    "squadSize": len(squad),
+                },
+                "last_updated": datetime.now().isoformat(),
+            }
+
+        return await self._get_or_load_cached(self._team_dashboard_cache, cache_key, load, ttl=120)
 
     async def get_player_dashboard(self, player_id: str, season: Optional[str] = None) -> Dict[str, Any]:
         cache_key = f"{player_id}#{season or 'current'}"
-        
-        # Check cache first
+
         cached = self._get_cached(self._player_dashboard_cache, cache_key)
         if cached:
             return cached
-        
+
         player_payload = await self._get_json(f"{self.player_service_url}/api/v2/players/{player_id}")
         player = self._unwrap_data(player_payload) or {}
 
         stats_payload: Dict[str, Any] = {}
         for stats_player_id in self._player_stats_candidates(player_id, player):
-            stats_payload = await self._get_json(f"{self.statistics_service_url}/api/v2/statistics/player/{stats_player_id}")
+            stats_payload = await self._get_json(
+                f"{self.statistics_service_url}/api/v2/statistics/player/{stats_player_id}",
+                suppress_statuses=[404],
+            )
             if self._stats_dict(stats_payload):
                 break
 
         stats = self._stats_dict(stats_payload)
         summary = self._player_metrics(player, stats)
+
+        # Resolve age from birth_date when not already set
+        if summary.get('age') is None:
+            summary['age'] = self._derive_age(
+                player.get('birth_date') or player.get('birthDate')
+            )
+
+        # Attach recent matches for richer profiles
+        recent_matches = await self._get_recent_player_matches(player_id, player, limit=5)
 
         result = {
             "player_id": player_id,
@@ -1294,50 +1415,55 @@ class AnalyticsHandler:
             "player": player,
             "statistics": stats,
             "summary": summary,
+            "recentMatches": self._sort_matches(recent_matches)[:5],
             "last_updated": datetime.now().isoformat(),
         }
-        
-        # Cache for 5 minutes
+
         self._set_cache(self._player_dashboard_cache, cache_key, result, ttl=300)
         return result
 
     async def get_league_trends(self, competition: str, metric: str, period: str) -> Dict[str, Any]:
-        matches_payload = await self._get_json(
-            f"{self.match_service_url}/api/v2/matches",
-            params={"limit": 500},
-        )
-        matches = self._filter_matches(self._extract_list(matches_payload, 'matches'), competition)
-        buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        cache_key = f"analytics:league-trends:{competition}:{metric}:{period}"
 
-        for match in matches:
-            buckets[self._trend_label(match, period)].append(match)
+        async def load() -> Dict[str, Any]:
+            matches_payload = await self._get_json(
+                f"{self.match_service_url}/api/v2/matches",
+                params={"limit": 500},
+            )
+            matches = self._filter_matches(self._extract_list(matches_payload, 'matches'), competition)
+            buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
-        trends = []
-        for label, bucket_matches in sorted(buckets.items()):
-            total_home = sum(self._to_int(match.get('homeScore', match.get('home_score'))) for match in bucket_matches)
-            total_away = sum(self._to_int(match.get('awayScore', match.get('away_score'))) for match in bucket_matches)
-            match_count = len(bucket_matches)
-            trends.append({
-                'name': label,
-                'league': competition,
+            for match in matches:
+                buckets[self._trend_label(match, period)].append(match)
+
+            trends = []
+            for label, bucket_matches in sorted(buckets.items()):
+                total_home = sum(self._to_int(match.get('homeScore', match.get('home_score'))) for match in bucket_matches)
+                total_away = sum(self._to_int(match.get('awayScore', match.get('away_score'))) for match in bucket_matches)
+                match_count = len(bucket_matches)
+                trends.append({
+                    'name': label,
+                    'league': competition,
+                    'metric': metric,
+                    'matchCount': match_count,
+                    'avgGoals': round((total_home + total_away) / match_count, 2) if match_count else 0.0,
+                    'avgHomeGoals': round(total_home / match_count, 2) if match_count else 0.0,
+                    'avgAwayGoals': round(total_away / match_count, 2) if match_count else 0.0,
+                })
+
+            return {
+                'competition': competition,
                 'metric': metric,
-                'matchCount': match_count,
-                'avgGoals': round((total_home + total_away) / match_count, 2) if match_count else 0.0,
-                'avgHomeGoals': round(total_home / match_count, 2) if match_count else 0.0,
-                'avgAwayGoals': round(total_away / match_count, 2) if match_count else 0.0,
-            })
+                'period': period,
+                'trends': trends,
+                'summary': {
+                    'matchCount': len(matches),
+                    'avgGoals': self._compute_average_goals(matches) or 0.0,
+                },
+                'last_updated': datetime.now().isoformat(),
+            }
 
-        return {
-            'competition': competition,
-            'metric': metric,
-            'period': period,
-            'trends': trends,
-            'summary': {
-                'matchCount': len(matches),
-                'avgGoals': self._compute_average_goals(matches) or 0.0,
-            },
-            'last_updated': datetime.now().isoformat(),
-        }
+        return await self._get_or_load_cached(self._league_trends_cache, cache_key, load, ttl=60)
             
     async def get_team_rankings(self, competition: str, metric: str, limit: int) -> Dict[str, Any]:
         params: Dict[str, Any] = {"stat_name": metric, "limit": limit}
@@ -1370,6 +1496,25 @@ class AnalyticsHandler:
         }
 
     async def get_advanced_metrics(self, match_id: str, time_bucket: str = "5m") -> Dict[str, Any]:
+        projection_payload = await self._get_json(
+            f"{self.statistics_service_url}/api/v2/statistics/match/{match_id}/advanced-metrics",
+            params={"time_bucket": time_bucket},
+            suppress_statuses=[404],
+        )
+        projection = self._unwrap_data(projection_payload)
+        if isinstance(projection, dict) and projection.get('metrics'):
+            metrics = dict(projection.get('metrics') or {})
+            metrics['timeline'] = projection.get('timeline') or metrics.get('timeline') or []
+            return {
+                'match_id': projection.get('match_id', match_id),
+                'time_bucket': projection.get('time_bucket', time_bucket),
+                'match': projection.get('match') or {},
+                'event_count': projection.get('event_count', 0),
+                'events_available': projection.get('events_available', False),
+                'metrics': metrics,
+                'last_updated': projection.get('last_updated') or datetime.now().isoformat(),
+            }
+
         # Get match data in parallel with events
         match_payload = await self._get_json(f"{self.match_service_url}/api/v2/matches/{match_id}")
         
@@ -1526,10 +1671,16 @@ class AnalyticsHandler:
 
     async def compare_players(self, player_ids: List[str], metrics: Optional[List[str]] = None) -> Dict[str, Any]:
         metrics = metrics or ['goals', 'assists', 'passAccuracy', 'rating']
-        profiles = []
 
-        for player_id in player_ids:
-            dashboard = await self.get_player_dashboard(player_id)
+        dashboards = await asyncio.gather(
+            *(self.get_player_dashboard(pid) for pid in player_ids),
+            return_exceptions=True,
+        )
+
+        profiles = []
+        for player_id, dashboard in zip(player_ids, dashboards):
+            if isinstance(dashboard, Exception):
+                dashboard = {}
             profiles.append({
                 'player_id': player_id,
                 'player': dashboard.get('player', {}),
@@ -1586,6 +1737,14 @@ class AnalyticsHandler:
         Queries events directly from MongoDB for better performance.
         Falls back to Match Service if MongoDB unavailable.
         """
+        projection_payload = await self._get_json(
+            f"{self.statistics_service_url}/api/v2/statistics/match/{match_id}/pass-network",
+            suppress_statuses=[404],
+        )
+        projection = self._unwrap_data(projection_payload)
+        if isinstance(projection, dict) and projection.get('nodes') is not None:
+            return projection
+
         # Try direct MongoDB access first for better performance
         events = await self._get_events_from_mongodb(match_id)
         
@@ -1695,10 +1854,20 @@ class AnalyticsHandler:
         - Possession zones: share of passes in each third of the pitch
         - Pressing intensity: pressure events per team
         """
-        events_payload = await self._get_json(
-            f"{self.match_service_url}/api/v2/matches/{match_id}/events"
+        projection_payload = await self._get_json(
+            f"{self.statistics_service_url}/api/v2/statistics/match/{match_id}/tactical",
+            suppress_statuses=[404],
         )
-        events = self._unwrap_data(events_payload)
+        projection = self._unwrap_data(projection_payload)
+        if isinstance(projection, dict) and projection.get('tactical_metrics') is not None:
+            return projection
+
+        events = await self._get_events_from_mongodb(match_id)
+        if not events:
+            events_payload = await self._get_json(
+                f"{self.match_service_url}/api/v2/matches/{match_id}/events"
+            )
+            events = self._unwrap_data(events_payload)
         if not isinstance(events, list):
             events = []
 
@@ -2071,6 +2240,140 @@ class AnalyticsHandler:
             'events_count': len(player_events),
             'stats': counts,
             'last_updated': datetime.now().isoformat(),
+        }
+
+    async def get_multi_match_analytics(self, match_ids: List[str]) -> Dict[str, Any]:
+        """Aggregate event-level analytics across multiple matches server-side."""
+        if not match_ids:
+            return {'match_ids': [], 'matches_with_data': 0, 'kpis': {}, 'patterns': [], 'key_insights': [], 'player_leaderboard': []}
+
+        results = await asyncio.gather(
+            *[self._get_events_from_mongodb(mid) for mid in match_ids],
+            return_exceptions=True,
+        )
+        all_events_by_match = {
+            mid: res for mid, res in zip(match_ids, results)
+            if isinstance(res, list)
+        }
+
+        player_stats: Dict[str, Dict[str, Any]] = {}
+        total_goals = total_shots = high_scoring = 0
+        total_xg = 0.0
+        progressive_pass_total = key_pass_total = box_entry_total = 0
+        final_third_entry_total = regain_total = 0
+        matches_with_data = 0
+
+        shot_like = {'shot', 'goal', 'miss', 'attempt_saved', 'blocked_shot', 'chance_missed', 'post'}
+
+        for match_id, events in all_events_by_match.items():
+            if not events:
+                continue
+            matches_with_data += 1
+            match_goals = 0
+
+            for e in events:
+                type_name = str(e.get('type_name') or e.get('type') or '')
+                player_id = str(e.get('player_id') or e.get('playerID') or '').strip()
+                team_id = str(e.get('team_id') or e.get('team') or '').strip()
+                player_name = e.get('player_name') or f'Player {player_id}'
+
+                if player_id and player_id not in player_stats:
+                    player_stats[player_id] = {
+                        'player_id': player_id, 'player_name': player_name, 'team_id': team_id,
+                        'goals': 0, 'assists': 0, 'key_passes': 0, 'shots': 0,
+                        'progressive_passes': 0, 'tackles': 0, 'interceptions': 0,
+                        'completed_passes': 0, 'xg': 0.0,
+                    }
+                ps = player_stats.get(player_id) if player_id else None
+
+                if e.get('is_goal'):
+                    match_goals += 1
+                    total_goals += 1
+                    if ps:
+                        ps['goals'] += 1
+
+                if type_name in shot_like or e.get('analytical_xg') is not None:
+                    total_shots += 1
+                    xg = float(e.get('analytical_xg') or 0.0)
+                    total_xg += xg
+                    if ps:
+                        ps['shots'] += 1
+                        ps['xg'] += xg
+
+                if e.get('is_assist') and ps:
+                    ps['assists'] += 1
+                if e.get('is_key_pass'):
+                    key_pass_total += 1
+                    if ps:
+                        ps['key_passes'] += 1
+                if e.get('progressive_pass'):
+                    progressive_pass_total += 1
+                    if ps:
+                        ps['progressive_passes'] += 1
+                if e.get('entered_box'):
+                    box_entry_total += 1
+                if e.get('entered_final_third'):
+                    final_third_entry_total += 1
+                if e.get('high_regain'):
+                    regain_total += 1
+                if type_name == 'tackle' and ps:
+                    ps['tackles'] += 1
+                if type_name == 'interception' and ps:
+                    ps['interceptions'] += 1
+                if type_name == 'pass' and e.get('is_successful') is not False and ps:
+                    ps['completed_passes'] += 1
+
+            if match_goals > 3:
+                high_scoring += 1
+
+        n = max(matches_with_data, 1)
+
+        def composite(p: Dict) -> float:
+            return (p['goals'] * 12 + p['assists'] * 9 + p['key_passes'] * 4
+                    + p['progressive_passes'] * 2 + p['tackles'] * 2 + p['interceptions'] * 2
+                    + p['shots'] + p['completed_passes'] * 0.03)
+
+        leaderboard = sorted(player_stats.values(), key=composite, reverse=True)[:10]
+        for entry in leaderboard:
+            entry['xg'] = round(entry['xg'], 2)
+
+        patterns = []
+        avg_prog = progressive_pass_total / n
+        if avg_prog > 10:
+            patterns.append({'name': 'Progressive Build-up', 'description': f'Teams averaged {round(avg_prog)} progressive passes per match', 'frequency': round(avg_prog)})
+        if key_pass_total > 0:
+            patterns.append({'name': 'Chance Creation', 'description': f'{key_pass_total} key passes and {box_entry_total} box entries across matches', 'frequency': key_pass_total})
+        avg_ft = final_third_entry_total / n
+        if avg_ft > 5:
+            patterns.append({'name': 'Final-Third Pressure', 'description': f'Teams made {round(avg_ft)} final-third entries per match on average', 'frequency': round(avg_ft)})
+        if regain_total > 0:
+            patterns.append({'name': 'High Defensive Regains', 'description': f'{regain_total} high regains across {n} match(es)', 'frequency': regain_total})
+
+        avg_goals = round(total_goals / n, 2)
+        avg_shots = round(total_shots / n, 1)
+        avg_xg = round(total_xg / n, 2)
+        key_insights = [
+            f'Avg {avg_goals} goals per match across {matches_with_data} analysed match(es)',
+            f'Avg {avg_shots} shots per match (xG: {avg_xg} per match)',
+            f'{key_pass_total} total key passes ({key_pass_total // n} per match avg)',
+        ]
+        if high_scoring:
+            key_insights.append(f'{high_scoring} high-scoring match(es) with more than 3 goals')
+
+        return {
+            'match_ids': match_ids,
+            'matches_with_data': matches_with_data,
+            'kpis': {
+                'total_matches': len(match_ids),
+                'matches_with_data': matches_with_data,
+                'avg_goals_per_match': avg_goals,
+                'avg_shots_per_match': avg_shots,
+                'avg_xg_per_match': avg_xg,
+                'high_scoring_pct': round(high_scoring / n * 100, 1),
+            },
+            'patterns': patterns,
+            'key_insights': key_insights,
+            'player_leaderboard': leaderboard,
         }
 
     async def close(self):

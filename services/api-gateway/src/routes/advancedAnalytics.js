@@ -88,17 +88,37 @@ router.get('/', (req, res) => {
   });
 });
 
-// POST /insights/players/sequences — bulk coverage check for multiple player IDs.
-// The analytics-service does not implement this endpoint; return a safe empty payload
-// so callers degrade gracefully instead of crashing the gateway connection.
-router.post('/insights/players/sequences', (req, res) => {
-  const playerIds = Array.isArray(req.body?.player_ids) ? req.body.player_ids : [];
-  res.json({
-    success: true,
-    data: {
-      items: playerIds.map(id => ({ player_id: String(id), hasCoverage: false })),
-    },
+// POST /insights/players/sequences — cache by sorted player_ids (25s computation)
+router.post('/insights/players/sequences', async (req, res, next) => {
+  const sortedIds = [...(req.body?.player_ids || [])].sort();
+  if (!sortedIds.length) return next();
+
+  const cacheKey = buildCacheKey('POST', '/insights/players/sequences', null, { player_ids: sortedIds });
+  const cached = getCachedResponse(cacheKey);
+  if (cached) return res.json(cached);
+
+  const inFlight = requestDeduplication.get(cacheKey);
+  if (inFlight) {
+    inFlight.then(() => {
+      const retried = getCachedResponse(cacheKey);
+      if (retried) return res.json(retried);
+      next();
+    }).catch(() => next());
+    return;
+  }
+
+  const promise = new Promise((resolve, reject) => {
+    const originalJson = res.json.bind(res);
+    res.json = function(data) {
+      if (data && !data.error) setCachedResponse(cacheKey, data, analyticsCacheTtlMs);
+      resolve(data);
+      return originalJson(data);
+    };
+    const originalSend0 = res.send.bind(res);
+    res.send = function(data) { reject(new Error('non-json')); return originalSend0(data); };
+    next();
   });
+  deduplicateRequest(cacheKey, promise);
 });
 
 // Cache-aware proxy middleware for expensive endpoints
@@ -199,14 +219,80 @@ router.post('/comparison/players', async (req, res, next) => {
   deduplicateRequest(cacheKey, promise);
 });
 
+// Cache-aware proxy for tactical match metrics — 1hr TTL (match data is immutable)
+const MATCH_CACHE_TTL_MS = Number(process.env.MATCH_VIZ_CACHE_TTL_MS || 3600000);
+
+router.get('/tactical/:matchId', async (req, res, next) => {
+  const cacheKey = buildCacheKey('GET', `/tactical/${req.params.matchId}`, req.query, null);
+  const cached = getCachedResponse(cacheKey);
+  if (cached) return res.json(cached);
+
+  const promise = new Promise((resolve, reject) => {
+    const originalJson = res.json.bind(res);
+    res.json = function(data) {
+      if (data && !data.error) setCachedResponse(cacheKey, data, MATCH_CACHE_TTL_MS);
+      resolve(data);
+      return originalJson(data);
+    };
+    const originalSend1 = res.send.bind(res);
+    res.send = function(data) { reject(new Error('non-json')); return originalSend1(data); };
+    next();
+  });
+  deduplicateRequest(cacheKey, promise);
+});
+
+// Cache-aware proxy for match sequence insights — 1hr TTL
+router.get('/sequences/:matchId', async (req, res, next) => {
+  const cacheKey = buildCacheKey('GET', `/sequences/${req.params.matchId}`, req.query, null);
+  const cached = getCachedResponse(cacheKey);
+  if (cached) return res.json(cached);
+
+  const promise = new Promise((resolve, reject) => {
+    const originalJson = res.json.bind(res);
+    res.json = function(data) {
+      if (data && !data.error) setCachedResponse(cacheKey, data, MATCH_CACHE_TTL_MS);
+      resolve(data);
+      return originalJson(data);
+    };
+    const originalSend2 = res.send.bind(res);
+    res.send = function(data) { reject(new Error('non-json')); return originalSend2(data); };
+    next();
+  });
+  deduplicateRequest(cacheKey, promise);
+});
+
+// POST /multi-match — cache by sorted match_ids (same set of matches = same result)
+router.post('/multi-match', async (req, res, next) => {
+  const sortedIds = [...(req.body?.match_ids || [])].sort();
+  const cacheKey = buildCacheKey('POST', '/multi-match', null, { match_ids: sortedIds });
+  const cached = getCachedResponse(cacheKey);
+  if (cached) return res.json(cached);
+
+  const promise = new Promise((resolve, reject) => {
+    const originalJson = res.json.bind(res);
+    res.json = function(data) {
+      if (data && !data.error) setCachedResponse(cacheKey, data, analyticsCacheTtlMs);
+      resolve(data);
+      return originalJson(data);
+    };
+    const originalSend3 = res.send.bind(res);
+    res.send = function(data) { reject(new Error('non-json')); return originalSend3(data); };
+    next();
+  });
+  deduplicateRequest(cacheKey, promise);
+});
+
 // Default proxy for all other analytics endpoints
+// http-proxy-middleware v2 inside an Express sub-router forwards req.url (the full path)
+// to the target, which already includes the /api/v2/analytics prefix because of how
+// Express mounts the router.  No pathRewrite is needed.
 router.use(
   '/',
   createProxyMiddleware({
     target: analyticsServiceUrl,
     changeOrigin: true,
-    proxyTimeout: 10000,
-    timeout: 10000,
+    proxyTimeout: 30000,
+    timeout: 30000,
     onProxyReq: writeProxyBody,
     onError: (error, req, res) => {
       res.status(502).json({

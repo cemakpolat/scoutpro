@@ -4,11 +4,25 @@ Welcome to the ScoutPro documentation! This guide will help you navigate all ava
 
 ---
 
-## 🚀 **Start Here**
+## 🚀 **Start Here (3 Steps)**
+
+### ✨ **Best for First-Time Users:** [**SIMPLE START GUIDE**](01-getting-started/QUICK_START_SIMPLE.md)
+
+Copy-paste ready commands:
+1. `./manage.sh start` — Start all services
+2. `./manage.sh seed` — Load all data + compute statistics
+3. Open http://localhost:80 → Done! ✅
+
+**Time required:** 10 minutes total
+
+---
+
+## 📚 **Additional Guides**
 
 | Document | Description | When to Use |
 |----------|-------------|-------------|
-| **[Quick Start](01-getting-started/QUICK_START.md)** | Get the system running in 5 minutes | First time setup |
+| **[Simple Start Guide](01-getting-started/QUICK_START_SIMPLE.md)** | Three commands to get running | First time setup ⭐ |
+| **[Quick Start](01-getting-started/QUICK_START.md)** | More detailed setup options | Need more flexibility |
 | **[Current Status](07-status/CURRENT_STATUS.md)** | Honest assessment of what works | Before starting development |
 | **[Architecture Overview](02-architecture/OVERVIEW.md)** | System architecture & design | Understanding the system |
 
@@ -16,19 +30,25 @@ Welcome to the ScoutPro documentation! This guide will help you navigate all ava
 
 ## 📁 **Documentation Structure**
 
-### **01 - Getting Started**
+### **01 - Getting Started** ⭐
 Get up and running quickly.
 
-- **[QUICK_START.md](01-getting-started/QUICK_START.md)** - Step-by-step setup guide
+- **[README.md](01-getting-started/README.md)** - Guide index (read this first)
+- **[QUICK_START_SIMPLE.md](01-getting-started/QUICK_START_SIMPLE.md)** - Three commands to get running
+- **[QUICK_START.md](01-getting-started/QUICK_START.md)** - Multiple startup options
+- **[GETTING_STARTED.md](01-getting-started/GETTING_STARTED.md)** - Complete setup guide
 
 ### **02 - Architecture**
 Understand how the system is designed.
 
 - **[OVERVIEW.md](02-architecture/OVERVIEW.md)** - System architecture, services, data flow
 
-### **03 - Development**
-Guides for building features.
+### **03 - Development & Operations**
+Guides for developers and operators.
 
+- **[MANAGE_COMMANDS.md](03-development/MANAGE_COMMANDS.md)** - Complete `manage.sh` command reference
+- **[STATISTICS_OPERATIONS.md](03-development/STATISTICS_OPERATIONS.md)** - Statistics aggregation guide
+- **[CICD_AUTOMATION.md](03-development/CICD_AUTOMATION.md)** - CI/CD pipeline setup (GitHub Actions, GitLab CI, Jenkins, etc.)
 - **[IMPLEMENTATION_GUIDE.md](03-development/IMPLEMENTATION_GUIDE.md)** - How to implement new services
 
 ### **04 - Integration**
@@ -40,7 +60,10 @@ Connecting frontend and backend.
 _Coming soon - Deployment guides for Docker, Kubernetes, and Cloud_
 
 ### **06 - Operations**
-_Coming soon - Monitoring, troubleshooting, and maintenance guides_
+System operations and monitoring.
+
+- See **[STATISTICS_OPERATIONS.md](03-development/STATISTICS_OPERATIONS.md)** - Data aggregation operations
+- See **[MANAGE_COMMANDS.md](03-development/MANAGE_COMMANDS.md)** - System management
 
 ### **07 - Status**
 Current state and roadmap.

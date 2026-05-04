@@ -3,6 +3,7 @@ Search client with Elasticsearch primary and MongoDB text-index fallback.
 Falls back automatically when Elasticsearch is unavailable.
 """
 import logging
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from elasticsearch import AsyncElasticsearch, ConnectionError as ESConnectionError, NotFoundError
@@ -53,6 +54,44 @@ class SearchClient:
         except Exception as e:
             logger.debug(f"Text index creation (may already exist): {e}")
 
+    @staticmethod
+    def _sanitize_document(doc: Dict[str, Any]) -> Dict[str, Any]:
+        """Strip None values, serialize dates, and remove unparseable nested objects."""
+        result = {}
+        for key, value in doc.items():
+            if value is None:
+                continue
+            if isinstance(value, (datetime, date)):
+                result[key] = value.isoformat()
+            elif isinstance(value, dict):
+                # Skip complex nested objects that can't be cleanly indexed
+                # (e.g. Opta XML-derived dicts with @value keys)
+                if any(str(k).startswith('@') for k in value):
+                    continue
+                cleaned = SearchClient._sanitize_document(value)
+                if cleaned:
+                    result[key] = cleaned
+            elif isinstance(value, list):
+                cleaned_list = []
+                for item in value:
+                    if item is None:
+                        continue
+                    if isinstance(item, (datetime, date)):
+                        cleaned_list.append(item.isoformat())
+                    elif isinstance(item, dict):
+                        if any(str(k).startswith('@') for k in item):
+                            continue
+                        cleaned_item = SearchClient._sanitize_document(item)
+                        if cleaned_item:
+                            cleaned_list.append(cleaned_item)
+                    else:
+                        cleaned_list.append(item)
+                if cleaned_list:
+                    result[key] = cleaned_list
+            else:
+                result[key] = value
+        return result
+
     async def _ensure_indices(self):
         """Create ES indices with proper mappings if they don't exist."""
         players_mapping = {
@@ -60,10 +99,13 @@ class SearchClient:
                 "properties": {
                     "player_id": {"type": "keyword"},
                     "name": {"type": "text", "analyzer": "standard", "fields": {"keyword": {"type": "keyword"}}},
+                    "club": {"type": "keyword"},
                     "position": {"type": "keyword"},
                     "nationality": {"type": "keyword"},
                     "team_id": {"type": "keyword"},
                     "age": {"type": "integer"},
+                    "indexed_at": {"type": "date", "ignore_malformed": True},
+                    "updated_at": {"type": "date", "ignore_malformed": True},
                 }
             }
         }
@@ -73,10 +115,32 @@ class SearchClient:
                     "team_id": {"type": "keyword"},
                     "name": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                     "country": {"type": "keyword"},
+                    "league": {"type": "keyword"},
+                    "stadium": {"type": "keyword"},
+                    "indexed_at": {"type": "date", "ignore_malformed": True},
+                    "updated_at": {"type": "date", "ignore_malformed": True},
                 }
             }
         }
-        for index, mapping in [("players", players_mapping), ("teams", teams_mapping)]:
+        matches_mapping = {
+            "mappings": {
+                "properties": {
+                    "match_id": {"type": "keyword"},
+                    "home_team_id": {"type": "keyword"},
+                    "away_team_id": {"type": "keyword"},
+                    "homeTeamName": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                    "awayTeamName": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                    "competition": {"type": "keyword"},
+                    "date": {"type": "date", "ignore_malformed": True},
+                    "status": {"type": "keyword"},
+                    "venue": {"type": "keyword"},
+                    "indexed_at": {"type": "date", "ignore_malformed": True},
+                    "updated_at": {"type": "date", "ignore_malformed": True},
+                    "completed_at": {"type": "date", "ignore_malformed": True},
+                }
+            }
+        }
+        for index, mapping in [("players", players_mapping), ("teams", teams_mapping), ("matches", matches_mapping)]:
             try:
                 if not await self.es.indices.exists(index=index):
                     await self.es.indices.create(index=index, body=mapping)
@@ -100,7 +164,7 @@ class SearchClient:
         if not self._es_available or not self.es:
             return False
         try:
-            await self.es.index(index="players", id=player_id, document=player_data)
+            await self.es.index(index="players", id=player_id, document=self._sanitize_document(player_data))
             return True
         except Exception as e:
             logger.error(f"ES index player error: {e}")
@@ -110,7 +174,7 @@ class SearchClient:
         if not self._es_available or not self.es:
             return False
         try:
-            await self.es.index(index="teams", id=team_id, document=team_data)
+            await self.es.index(index="teams", id=team_id, document=self._sanitize_document(team_data))
             return True
         except Exception as e:
             logger.error(f"ES index team error: {e}")
@@ -121,7 +185,7 @@ class SearchClient:
         if not self._es_available or not self.es:
             return
         try:
-            await self.es.index(index=index, id=document_id, document=document, refresh=True)
+            await self.es.index(index=index, id=document_id, document=self._sanitize_document(document), refresh=True)
             logger.debug(f"Indexed {index} document {document_id}")
         except Exception as e:
             logger.error(f"Error indexing {index} document {document_id}: {e}")
@@ -131,7 +195,7 @@ class SearchClient:
         if not self._es_available or not self.es:
             return
         try:
-            await self.es.update(index=index, id=document_id, doc=document, doc_as_upsert=True, refresh=True)
+            await self.es.update(index=index, id=document_id, doc=self._sanitize_document(document), doc_as_upsert=True, refresh=True)
             logger.debug(f"Updated {index} document {document_id}")
         except Exception as e:
             logger.error(f"Error updating {index} document {document_id}: {e}")
@@ -146,8 +210,8 @@ class SearchClient:
         db = self._get_db()
         
         for p in results:
-            name = p.get("name", "").strip().lower()
-            team = p.get("teamName", p.get("club", "")).strip().lower()
+            name = (p.get("name") or "").strip().lower()
+            team = (p.get("teamName") or p.get("club") or "").strip().lower()
             key = (name, team)
             
             if key not in seen:
@@ -170,12 +234,12 @@ class SearchClient:
                     
         return deduped
 
-    async def search_players(self, query: str, position: Optional[str] = None, nationality: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+    async def search_players(self, query: str, position: Optional[str] = None, nationality: Optional[str] = None, club: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
         get_limit = limit * 2
         if self._es_available and self.es:
-            results = await self._es_search_players(query, position, nationality, get_limit)
+            results = await self._es_search_players(query, position, nationality, club, get_limit)
         else:
-            results = await self._mongo_search_players(query, position, nationality, get_limit)
+            results = await self._mongo_search_players(query, position, nationality, club, get_limit)
         return await self._enrich_and_deduplicate_players(results, limit)
 
 
@@ -199,20 +263,22 @@ class SearchClient:
 
     # ---- Elasticsearch implementations ----
 
-    async def _es_search_players(self, query: str, position: Optional[str], nationality: Optional[str], limit: int) -> List[Dict[str, Any]]:
+    async def _es_search_players(self, query: str, position: Optional[str], nationality: Optional[str], club: Optional[str], limit: int) -> List[Dict[str, Any]]:
         try:
-            must = [{"multi_match": {"query": query, "fields": ["name^3", "position", "nationality"]}}]
+            must = [{"multi_match": {"query": query, "fields": ["name^3", "position", "nationality", "club"]}}]
             filter_clauses = []
             if position:
                 filter_clauses.append({"term": {"position": position}})
             if nationality:
                 filter_clauses.append({"term": {"nationality": nationality}})
+            if club:
+                filter_clauses.append({"term": {"club": club}})
             body = {"query": {"bool": {"must": must, "filter": filter_clauses}}, "size": limit}
             resp = await self.es.search(index="players", body=body)
             return [{"_score": h["_score"], **h["_source"]} for h in resp["hits"]["hits"]]
         except Exception as e:
             logger.error(f"ES player search error: {e}")
-            return await self._mongo_search_players(query, position, nationality, limit)
+            return await self._mongo_search_players(query, position, nationality, club, limit)
 
     async def _es_search_teams(self, query: str, country: Optional[str], limit: int) -> List[Dict[str, Any]]:
         try:
@@ -237,7 +303,7 @@ class SearchClient:
     def _get_db(self):
         return self._mongo_client[self.database]
 
-    async def _mongo_search_players(self, query: str, position: Optional[str], nationality: Optional[str], limit: int) -> List[Dict[str, Any]]:
+    async def _mongo_search_players(self, query: str, position: Optional[str], nationality: Optional[str], club: Optional[str], limit: int) -> List[Dict[str, Any]]:
         try:
             db = self._get_db()
             mongo_filter: Dict[str, Any] = {}
@@ -247,6 +313,12 @@ class SearchClient:
                 mongo_filter["position"] = {"$regex": position, "$options": "i"}
             if nationality:
                 mongo_filter["nationality"] = {"$regex": nationality, "$options": "i"}
+            if club:
+                mongo_filter["$or"] = [
+                    {"club": {"$regex": club, "$options": "i"}},
+                    {"team_name": {"$regex": club, "$options": "i"}},
+                    {"teamName": {"$regex": club, "$options": "i"}},
+                ]
             cursor = db.players.find(mongo_filter, {"_id": 0}).limit(limit)
             results = await cursor.to_list(length=limit)
             # Fallback to regex if text search returns nothing
@@ -257,6 +329,13 @@ class SearchClient:
                 ]}
                 if position:
                     regex_filter["position"] = {"$regex": position, "$options": "i"}
+                if nationality:
+                    regex_filter["nationality"] = {"$regex": nationality, "$options": "i"}
+                if club:
+                    regex_filter["$or"].extend([
+                        {"club": {"$regex": club, "$options": "i"}},
+                        {"team_name": {"$regex": club, "$options": "i"}},
+                    ])
                 cursor2 = db.players.find(regex_filter, {"_id": 0}).limit(limit)
                 results = await cursor2.to_list(length=limit)
             return results
@@ -303,19 +382,33 @@ class SearchClient:
             return {"skipped": 1, "reason": "elasticsearch_unavailable"}
         counts = {}
         db = self._get_db()
-        # Index players
+        # Index players — only the fields used for search
         count = 0
         async for doc in db.players.find({}, {"_id": 0}):
-            pid = str(doc.get("id") or doc.get("uID") or doc.get("player_id") or count)
-            await self.index_player(pid, doc)
+            pid = str(doc.get("scoutpro_id") or doc.get("id") or doc.get("uID") or doc.get("player_id") or count)
+            search_doc = {
+                "player_id": pid,
+                "name": doc.get("name"),
+                "club": doc.get("club") or doc.get("team_name") or doc.get("teamName"),
+                "position": doc.get("position"),
+                "nationality": doc.get("nationality"),
+                "age": doc.get("age"),
+            }
+            await self.index_player(pid, search_doc)
             count += 1
         counts["players"] = count
-        # Index teams
+        # Index teams — only the fields used for search
         count = 0
         async for doc in db.teams.find({}, {"_id": 0}):
-            tid = str(doc.get("uID") or doc.get("id") or count)
-            await self.index_team(tid, doc)
+            tid = str(doc.get("scoutpro_id") or doc.get("uID") or doc.get("id") or count)
+            search_doc = {
+                "team_id": tid,
+                "name": doc.get("name"),
+                "country": doc.get("country"),
+                "league": doc.get("current_league") or doc.get("league"),
+                "stadium": doc.get("stadium"),
+            }
+            await self.index_team(tid, search_doc)
             count += 1
         counts["teams"] = count
         return counts
-        self.es = AsyncElasticsearch([es_url])

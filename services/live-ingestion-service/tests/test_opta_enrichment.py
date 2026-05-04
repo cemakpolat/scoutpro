@@ -98,3 +98,39 @@ def test_opta_parser_enriches_pass_shot_and_clearance_events():
 
     assert clearance_event["type_name"] == "clearance"
     assert clearance_event["high_regain"] is True
+
+
+def test_opta_parser_accepts_normalized_qualifier_payloads():
+    parser = OptaParser()
+
+    parsed = parser.parse_events(
+        {
+            "match_id": "935592",
+            "events": [
+                {
+                    "id": "10",
+                    "event_id": "10",
+                    "type_id": 1,
+                    "period_id": 1,
+                    "min": 24,
+                    "sec": 8,
+                    "player_id": "100",
+                    "team_id": "200",
+                    "outcome": 1,
+                    "x": 45.0,
+                    "y": 33.0,
+                    "game_id": "935592",
+                    "qualifiers": [
+                        {"qualifier_id": 140, "value": "70"},
+                        {"qualifier_id": 141, "value": "44"},
+                        {"qualifier_id": 154, "value": None},
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert len(parsed) == 1
+    assert parsed[0]["type_name"] == "pass"
+    assert parsed[0]["entered_final_third"] is True
+    assert parsed[0]["is_key_pass"] is True

@@ -30,7 +30,6 @@ const VideoAnalysis = lazy(() => import('./components/VideoAnalysis'));
 const CollaborationHub = lazy(() => import('./components/CollaborationHub'));
 const CalendarScheduling = lazy(() => import('./components/CalendarScheduling'));
 const DataImporter = lazy(() => import('./components/DataImporter'));
-const TaskQueue = lazy(() => import('./components/TaskQueue'));
 const MatchDetailWithVisualizations = lazy(() => import('./components/MatchDetailWithVisualizations'));
 
 // Match Analysis page: select a real match then show visualizations
@@ -224,8 +223,6 @@ function AppContent() {
         return <CalendarScheduling />;
       case 'data-importer':
         return <DataImporter />;
-      case 'task-queue':
-        return <TaskQueue />;
       case 'match-analysis':
         return <MatchAnalysisPage />;
       case 'players':

@@ -8,6 +8,7 @@ Stores conflicts in MongoDB for later analysis and rule refinement.
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from enum import Enum
+import os
 import pymongo
 
 
@@ -50,8 +51,8 @@ class ConflictDetector:
 
     def __init__(
         self,
-        mongo_uri: str = 'mongodb://localhost:27017',
-        db_name: str = 'scoutpro',
+        mongo_uri: Optional[str] = None,
+        db_name: Optional[str] = None,
         collection_name: str = 'data_conflicts'
     ):
         """
@@ -62,8 +63,12 @@ class ConflictDetector:
             db_name: Database name
             collection_name: Collection name for storing conflicts
         """
-        self.mongo_uri = mongo_uri
-        self.db_name = db_name
+        default_mongo_uri = (
+            os.getenv('MONGODB_URL')
+            or f"mongodb://{os.getenv('MONGODB_HOST', 'localhost')}:{os.getenv('MONGODB_PORT', '27017')}"
+        )
+        self.mongo_uri = mongo_uri or default_mongo_uri
+        self.db_name = db_name or os.getenv('MONGODB_DATABASE', 'scoutpro')
         self.collection_name = collection_name
 
         # MongoDB connection (lazy loading)

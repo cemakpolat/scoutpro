@@ -1,8 +1,13 @@
 # ----------------------------------------------------------------
 # ScoutPro Data Seeder Image
 #
-# Builds on the same code as data-sync-service, adding the
-# enrichment scripts so everything runs in a single container.
+# Extends the data-sync-service image with the seed_all.sh
+# entrypoint that drives the three-phase seeding process:
+#   Phase 1 — full data-sync-service run (Opta F1/F9/F24/F40 +
+#             StatsBomb → Kafka → MongoDB via shared parsers)
+#   Phase 2 — F40 player profiles via OptaBatchSeeder
+#             (sync/batch_seeder.py, no separate scripts needed)
+#   Phase 3 — player/team statistics aggregation via BatchAggregator
 #
 # Build context must be the repository root (default when using
 # docker-compose.seed.yml from the project root).
@@ -29,10 +34,6 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 # --- Application code ---
 COPY services/data-sync-service/ /app/
-
-# --- Enrichment scripts ---
-COPY scripts/enrich_f40.py /scripts/enrich_f40.py
-COPY scripts/enrich_matches_and_events.py /scripts/enrich_matches_and_events.py
 
 # --- Entrypoint ---
 COPY seed_all.sh /seed_all.sh

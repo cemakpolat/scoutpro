@@ -40,7 +40,7 @@ class StatsBombConnector(BaseConnector):
         data_root = self.config.get("data_root") or os.environ.get("DATA_ROOT", "/app/data")
         self.root: Path = Path(data_root) / "statsbomb"
         self.online = bool(self.config.get("online", False))
-        self.base_url = (self.config.get("base_url") or os.environ.get("STATSBOMB_BASE_URL", "http://data-provider-mock:7000")).rstrip("/")
+        self.base_url = (self.config.get("base_url") or os.environ.get("STATSBOMB_BASE_URL", "http://data-provider:7000")).rstrip("/")
         self.api_key = self.config.get("api_key") or os.environ.get("STATSBOMB_API_KEY")
 
     # ------------------------------------------------------------------

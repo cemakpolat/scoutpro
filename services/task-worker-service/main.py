@@ -84,7 +84,7 @@ app.add_middleware(
 # ── Request / Response models ──────────────────────────────────────────────────
 
 class SubmitTaskRequest(BaseModel):
-    task_type: str      # ml_predict | ml_train | report_generate | data_export | data_sync | video_analysis
+    task_type: str      # ml_predict | ml_train | report_generate | data_export | data_sync | statistics_projection_rebuild | video_analysis
     payload: Dict[str, Any]
 
 

@@ -28,6 +28,13 @@ _ALLOWED_ORIGINS = [
 
 manager = ConnectionManager()
 
+app = FastAPI(
+    title="WebSocket Server",
+    description="ScoutPro Real-time WebSocket Server",
+    version="2.0.0",
+    docs_url="/docs",
+)
+
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
@@ -131,13 +138,7 @@ async def lifespan(app: FastAPI):
         logger.error(f"Error during shutdown: {e}")
 
 
-app = FastAPI(
-    title="WebSocket Server",
-    description="ScoutPro Real-time WebSocket Server",
-    version="2.0.0",
-    docs_url="/docs",
-    lifespan=lifespan,
-)
+app.router.lifespan_context = lifespan
 
 app.add_middleware(
     CORSMiddleware,

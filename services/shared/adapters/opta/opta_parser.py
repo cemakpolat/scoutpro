@@ -48,6 +48,8 @@ class OptaParser:
             normalized.update(attributes)
 
         qualifiers = normalized.pop("Q", None)
+        if qualifiers is None and "qualifiers" in normalized:
+            qualifiers = normalized.pop("qualifiers")
         if qualifiers is not None and "qualifier" not in normalized:
             normalized["qualifier"] = self._normalize_qualifiers(qualifiers)
 
@@ -75,11 +77,15 @@ class OptaParser:
                 continue
 
             attributes = qualifier.get("@attributes", {})
-            if not isinstance(attributes, dict):
+            if not isinstance(attributes, dict) or not attributes:
+                attributes = qualifier
+
+            qualifier_id = attributes.get("qualifier_id")
+            if qualifier_id in (None, ""):
                 continue
 
             normalized_qualifiers.append({
-                "qualifier_id": str(attributes.get("qualifier_id", "")),
+                "qualifier_id": str(qualifier_id),
                 "value": attributes.get("value") or qualifier.get("@value") or "",
             })
 

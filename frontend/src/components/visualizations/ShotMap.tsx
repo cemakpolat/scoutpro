@@ -22,33 +22,35 @@ interface ShotMapProps {
   width?: number;
   height?: number;
   onShotClick?: (shot: ShotEvent) => void;
+  /** Optional pre-fetched shots from a consolidated endpoint (e.g. /viz). */
+  precomputedShots?: ShotEvent[] | null;
 }
 
-/**
- * ShotMap - Visualizes shot locations and outcomes on a football pitch
- * - Color: Red for missed shots, Green for goals
- * - Size: Proportional to xG value
- * - Shows shot details on hover
- */
 export const ShotMap: React.FC<ShotMapProps> = ({
   matchId,
   width = 800,
   height = 600,
   onShotClick,
+  precomputedShots,
 }) => {
-  const [shots, setShots] = useState<ShotEvent[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [shots, setShots] = useState<ShotEvent[]>(precomputedShots ?? []);
+  const [loading, setLoading] = useState(!precomputedShots);
   const [error, setError] = useState<string | null>(null);
   const [hoveredShot, setHoveredShot] = useState<string | null>(null);
 
   useEffect(() => {
+    if (precomputedShots !== undefined) {
+      setShots(precomputedShots ?? []);
+      setLoading(false);
+      return;
+    }
+
     const fetchShotMap = async () => {
       setLoading(true);
       setError(null);
       try {
         const response = await apiService.getMatchShotMap(matchId);
         if (response.success && response.data) {
-          // Unwrap nested { success, data: [...] } wrapper if present
           const raw = (response.data as any)?.data ?? response.data;
           const shotData = Array.isArray(raw) ? raw : raw?.shots || [];
           setShots(shotData);
@@ -62,10 +64,8 @@ export const ShotMap: React.FC<ShotMapProps> = ({
       }
     };
 
-    if (matchId) {
-      fetchShotMap();
-    }
-  }, [matchId]);
+    if (matchId) fetchShotMap();
+  }, [matchId, precomputedShots]);
 
   const handleShotClick = (shot: ShotEvent) => {
     if (onShotClick) {

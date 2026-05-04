@@ -25,7 +25,7 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 7000 --reload
 ```
 
-Open **http://localhost:7000/docs** for the interactive Swagger UI.
+Open **http://localhost:17000/docs** for the interactive Swagger UI.
 
 ---
 
@@ -47,8 +47,8 @@ Override these environment variables when starting a service:
 
 | Variable | Value for mock |
 |----------|----------------|
-| `OPTA_BASE_URL` | `http://localhost:7000` |
-| `STATSBOMB_BASE_URL` | `http://localhost:7000` |
+| `OPTA_BASE_URL` | `http://localhost:17000` |
+| `STATSBOMB_BASE_URL` | `http://localhost:17000` |
 
 Inside Docker Compose use the service name instead of `localhost`:
 
@@ -85,16 +85,16 @@ Opta responses preserve the source format. JSON fixtures stay JSON and XML feeds
 
 ```bash
 # Match summary
-curl http://localhost:7000/api/football/f9/115/2019
+curl http://localhost:17000/api/football/f9/115/2019
 
 # Squad list
-curl http://localhost:7000/api/football/f40/115/2019
+curl http://localhost:17000/api/football/f40/115/2019
 
 # Events for match 1080974
-curl http://localhost:7000/api/football/f24/115/2019/1080974
+curl http://localhost:17000/api/football/f24/115/2019/1080974
 
 # Discover available match IDs
-curl http://localhost:7000/api/football/matches/115/2019
+curl http://localhost:17000/api/football/matches/115/2019
 ```
 
 ### StatsBomb Feeds
@@ -109,13 +109,13 @@ curl http://localhost:7000/api/football/matches/115/2019
 
 ```bash
 # List available matches
-curl http://localhost:7000/api/statsbomb/matches
+curl http://localhost:17000/api/statsbomb/matches
 
 # Events for Samsunspor vs Beşiktaş (match 3946949)
-curl http://localhost:7000/api/statsbomb/events/3946949
+curl http://localhost:17000/api/statsbomb/events/3946949
 
 # Raw CSV
-curl http://localhost:7000/api/statsbomb/events/3946949/csv -o match.csv
+curl http://localhost:17000/api/statsbomb/events/3946949/csv -o match.csv
 ```
 
 ---

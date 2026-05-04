@@ -83,13 +83,56 @@ async def train_with_engine(algorithm_name: str, body: Dict[str, Any]):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+_NOT_FITTED_PHRASES = ("not fitted", "is not fitted", "needs at least", "insufficient data")
+
+_ALGORITHM_COLLECTION_MAP = {
+    "tactical_role_classifier": "player_statistics",
+    "performance_anomaly_detector": "player_statistics",
+    "fatigue_risk_predictor": "player_statistics",
+}
+
+def _is_not_fitted_error(prediction: Dict[str, Any]) -> bool:
+    msg = str(prediction.get("error", "")).lower()
+    return any(phrase in msg for phrase in _NOT_FITTED_PHRASES)
+
 @router.post("/engine/predict/{algorithm_name}", response_model=APIResponse)
 async def predict_with_engine(algorithm_name: str, input_data: Dict[str, Any]):
     """Run inference using the AnalyticsEngine. Body: arbitrary feature dict."""
     try:
-        prediction = get_engine().predict(algorithm_name, input_data)
+        engine = get_engine()
+        prediction = engine.predict(algorithm_name, input_data)
+
         if isinstance(prediction, dict) and "error" in prediction:
-            raise HTTPException(status_code=400, detail=prediction["error"])
+            error_msg = str(prediction["error"])
+
+            if _is_not_fitted_error(prediction):
+                # Attempt auto-train from MongoDB before giving up
+                settings = _get_settings()
+                collection = _ALGORITHM_COLLECTION_MAP.get(algorithm_name, "player_statistics")
+                try:
+                    train_result = engine.train_from_mongo(
+                        algorithm_name, settings.mongodb_url, collection=collection
+                    )
+                    if "error" not in train_result:
+                        prediction = engine.predict(algorithm_name, input_data)
+                        if isinstance(prediction, dict) and "error" not in prediction:
+                            return APIResponse(
+                                success=True,
+                                data={"algorithm": algorithm_name, "prediction": prediction},
+                                message=f"Prediction successful for {algorithm_name}",
+                            )
+                except Exception as train_err:
+                    logger.warning(f"Auto-train failed for {algorithm_name}: {train_err}")
+
+                # Return graceful 200 — model not yet trainable (not enough data)
+                return APIResponse(
+                    success=False,
+                    data={"algorithm": algorithm_name, "available": False, "reason": error_msg},
+                    message=f"{algorithm_name} requires additional training data.",
+                )
+
+            raise HTTPException(status_code=400, detail=error_msg)
+
         return APIResponse(
             success=True,
             data={"algorithm": algorithm_name, "prediction": prediction},
