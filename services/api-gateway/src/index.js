@@ -35,6 +35,7 @@ const collaborationRouter = require('./routes/collaboration');
 const adminRouter = require('./routes/admin');
 const detailedStatsRouter = require('./routes/detailed-stats');
 const tasksRouter = require('./routes/tasks');
+const { buildGatewayOpenApiSpec, renderSwaggerUiHtml } = require('./openapi');
 
 const app = express();
 const server = http.createServer(app);
@@ -97,10 +98,23 @@ app.get('/health', (req, res) => {
   });
 });
 
+app.get('/openapi.json', (req, res) => {
+  const forwardedProto = req.get('x-forwarded-proto');
+  const protocol = forwardedProto ? forwardedProto.split(',')[0].trim() : req.protocol;
+  const serverUrl = `${protocol}://${req.get('host')}`;
+  res.json(buildGatewayOpenApiSpec(serverUrl));
+});
+
+app.get('/docs', (req, res) => {
+  res.type('html').send(renderSwaggerUiHtml('/openapi.json'));
+});
+
 app.get('/', (req, res) => {
   res.json({ 
     service: 'ScoutPro API Gateway', 
     version: '2.1.0',
+    docs: '/docs',
+    openapi: '/openapi.json',
     endpoints: {
       auth: '/api/auth',
       players: '/api/players',
@@ -190,7 +204,8 @@ async function start() {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n🚀 ScoutPro API Gateway running on port ${PORT}`);
     console.log(`   Health:    http://localhost:${PORT}/health`);
-    console.log(`   Docs:      http://localhost:${PORT}/`);
+    console.log(`   Docs:      http://localhost:${PORT}/docs`);
+    console.log(`   OpenAPI:   http://localhost:${PORT}/openapi.json`);
     console.log(`   WebSocket: ws://localhost:${PORT}/ws`);
     console.log('');
   });

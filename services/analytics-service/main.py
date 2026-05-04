@@ -16,6 +16,18 @@ from api.endpoints.analytics import router as analytics_router
 
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
+APP_VERSION = "1.0.0"
+
+OPENAPI_TAGS = [
+    {
+        "name": "analytics",
+        "description": "Dashboard, rankings, insights, and comparison endpoints served by analytics-service.",
+    },
+    {
+        "name": "system",
+        "description": "Service health and metadata endpoints.",
+    },
+]
 
 _ALLOWED_ORIGINS = [
     o.strip()
@@ -37,7 +49,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Analytics Service",
     description="ScoutPro Analytics and BI Service",
-    version="1.0.0",
+    version=APP_VERSION,
+    contact={
+        "name": "ScoutPro Platform",
+    },
+    license_info={
+        "name": "Proprietary",
+    },
+    openapi_tags=OPENAPI_TAGS,
+    openapi_url="/openapi.json",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -54,15 +74,20 @@ app.add_middleware(
 Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 app.include_router(analytics_router)
 
-@app.get("/health")
+@app.get("/health", tags=["system"], summary="Service health")
 async def health_check():
-    return {"status": "healthy", "service": settings.service_name, "version": "1.0.0"}
+    return {"status": "healthy", "service": settings.service_name, "version": APP_VERSION}
 
-@app.get("/")
+@app.get("/", tags=["system"], summary="Service metadata")
 async def root():
-    return {"service": settings.service_name, "version": "1.0.0", "docs": "/docs"}
+    return {
+        "service": settings.service_name,
+        "version": APP_VERSION,
+        "docs": "/docs",
+        "openapi": "/openapi.json",
+    }
 
-@app.get("/advanced-metrics/{match_id}")
+@app.get("/advanced-metrics/{match_id}", include_in_schema=False)
 async def get_advanced_metrics(match_id: str, time_bucket: str = "5m"):
     """
     Advanced Logic: Calls Statistics service to fetch TimescaleDB aggregations
@@ -73,14 +98,15 @@ async def get_advanced_metrics(match_id: str, time_bucket: str = "5m"):
     try:
         # Assuming we have a statistics endpoint for this
         response = await handler.client.get(
-            f"{handler.statistics_service_url}/api/v2/statistics/match/{match_id}/advanced",
+            f"{handler.statistics_service_url}/api/v2/statistics/match/{match_id}/advanced-metrics",
             params={"time_bucket": time_bucket}
         )
         return response.json() if response.status_code == 200 else {"match_id": match_id, "metrics": []}
     except Exception as e:
         return {"error": str(e), "match_id": match_id, "metrics": []}
     finally:
-        await handler.close(),
+        await handler.close()
+
 
 if __name__ == "__main__":
     import uvicorn

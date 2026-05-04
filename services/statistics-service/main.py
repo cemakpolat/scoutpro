@@ -26,6 +26,22 @@ settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
 stream_processor = None
 stream_processor_task = None
+APP_VERSION = "2.0.0"
+
+OPENAPI_TAGS = [
+    {
+        "name": "statistics",
+        "description": "Persistent player, team, and match projection endpoints owned by statistics-service.",
+    },
+    {
+        "name": "events",
+        "description": "Event-derived analytics endpoints built from normalized match_events.",
+    },
+    {
+        "name": "system",
+        "description": "Service health and metadata endpoints.",
+    },
+]
 
 _ALLOWED_ORIGINS = [
     o.strip()
@@ -100,7 +116,15 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Statistics Service",
     description="ScoutPro Statistics & Analytics Service",
-    version="2.0.0",
+    version=APP_VERSION,
+    contact={
+        "name": "ScoutPro Platform",
+    },
+    license_info={
+        "name": "Proprietary",
+    },
+    openapi_tags=OPENAPI_TAGS,
+    openapi_url="/openapi.json",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -121,21 +145,22 @@ app.include_router(events_router)
 app.include_router(events_enhanced_router)
 
 
-@app.get("/health")
+@app.get("/health", tags=["system"], summary="Service health")
 async def health_check():
     return {
         "status": "healthy",
         "service": settings.service_name,
-        "version": "2.0.0"
+        "version": APP_VERSION
     }
 
 
-@app.get("/")
+@app.get("/", tags=["system"], summary="Service metadata")
 async def root():
     return {
         "service": settings.service_name,
-        "version": "2.0.0",
-        "docs": "/docs"
+        "version": APP_VERSION,
+        "docs": "/docs",
+        "openapi": "/openapi.json"
     }
 
 
