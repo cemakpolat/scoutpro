@@ -65,7 +65,14 @@ if (!process.env.MONGODB_URL) {
 const MONGODB_URL = process.env.MONGODB_URL || 'mongodb://localhost:27017/scoutpro';
 
 let db;
+let _mongoRetryTimer = null;
+const MONGO_RETRY_INTERVAL_MS = Number(process.env.MONGO_RETRY_INTERVAL_MS || 10000);
+
 async function connectDB() {
+  if (_mongoRetryTimer) {
+    clearTimeout(_mongoRetryTimer);
+    _mongoRetryTimer = null;
+  }
   try {
     const client = new MongoClient(MONGODB_URL, {
       serverSelectionTimeoutMS: MONGO_SERVER_SELECTION_TIMEOUT_MS,
@@ -76,13 +83,22 @@ async function connectDB() {
     await client.connect();
     db = client.db('scoutpro');
     console.log('✅ Connected to MongoDB');
-    
+
+    // Handle unexpected disconnections — reconnect automatically
+    client.on('close', () => {
+      console.warn('⚠️  MongoDB connection closed — scheduling reconnect');
+      db = null;
+      app.locals.db = null;
+      _mongoRetryTimer = setTimeout(connectDB, MONGO_RETRY_INTERVAL_MS);
+    });
+
     // Make db available to routes
     app.locals.db = db;
     return db;
   } catch (error) {
     console.error('❌ MongoDB connection failed:', error.message);
-    console.log('⚠️  Gateway will serve mock/seed data fallbacks');
+    console.log(`⚠️  Will retry in ${MONGO_RETRY_INTERVAL_MS / 1000}s…`);
+    _mongoRetryTimer = setTimeout(connectDB, MONGO_RETRY_INTERVAL_MS);
     return null;
   }
 }

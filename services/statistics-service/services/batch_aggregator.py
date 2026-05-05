@@ -80,6 +80,77 @@ class BatchAggregator:
     def close(self) -> None:
         self.client.close()
 
+    @staticmethod
+    def _append_identifier_variants(
+        string_values: List[str],
+        numeric_values: List[int],
+        value: Any,
+        prefix: str = '',
+    ) -> None:
+        if value in (None, ''):
+            return
+
+        raw_value = str(value).strip()
+        if not raw_value:
+            return
+
+        if raw_value not in string_values:
+            string_values.append(raw_value)
+
+        stripped_value = raw_value
+        if prefix and raw_value.lower().startswith(prefix.lower()):
+            stripped_value = raw_value[1:]
+            if stripped_value and stripped_value not in string_values:
+                string_values.append(stripped_value)
+
+        if stripped_value.isdigit():
+            numeric_value = int(stripped_value)
+            if numeric_value not in numeric_values:
+                numeric_values.append(numeric_value)
+            if prefix:
+                prefixed_value = f'{prefix}{stripped_value}'
+                if prefixed_value not in string_values:
+                    string_values.append(prefixed_value)
+
+    def _find_match_doc(self, match_id: str) -> Dict[str, Any]:
+        string_values: List[str] = []
+        numeric_values: List[int] = []
+        self._append_identifier_variants(string_values, numeric_values, match_id, prefix='g')
+
+        or_clauses: List[Dict[str, Any]] = []
+        if string_values:
+            or_clauses.extend([
+                {'uID': {'$in': string_values}},
+                {'provider_ids.opta': {'$in': string_values}},
+                {'matchID': {'$in': string_values}},
+                {'id': {'$in': string_values}},
+                {'scoutpro_id': {'$in': string_values}},
+            ])
+        if numeric_values:
+            or_clauses.extend([
+                {'matchID': {'$in': numeric_values}},
+                {'id': {'$in': numeric_values}},
+                {'scoutpro_id': {'$in': numeric_values}},
+            ])
+
+        if not or_clauses:
+            return {}
+
+        return self.matches_collection.find_one({'$or': or_clauses}, {'_id': 0}) or {}
+
+    @staticmethod
+    def _resolve_scoutpro_match_id(match_doc: Dict[str, Any], events: List[Dict[str, Any]]) -> Optional[Any]:
+        for candidate in (match_doc.get('scoutpro_id'), match_doc.get('id')):
+            if candidate not in (None, ''):
+                return candidate
+
+        for event in events:
+            candidate = event.get('scoutpro_match_id')
+            if candidate not in (None, ''):
+                return candidate
+
+        return None
+
     # ------------------------------------------------------------------
     # Public entry-point
     # ------------------------------------------------------------------
@@ -405,12 +476,10 @@ class BatchAggregator:
         match_id: str,
         events: List[Dict[str, Any]],
     ) -> Dict[str, Dict[str, Any]]:
-        match_doc = self.matches_collection.find_one(
-            {"$or": [{"uID": match_id}, {"id": match_id}, {"matchID": match_id}]},
-            {"_id": 0},
-        ) or {}
+        match_doc = self._find_match_doc(match_id)
+        scoutpro_match_id = self._resolve_scoutpro_match_id(match_doc, events)
 
-        return {
+        projections = {
             "match_statistics": MatchProjectionBuilder.build_advanced_metrics(match_id, match_doc, events, time_bucket="5m"),
             "match_tactical_snapshot": MatchProjectionBuilder.build_tactical_snapshot(match_id, events),
             "match_pass_network": MatchProjectionBuilder.build_pass_network(match_id, events),
@@ -423,6 +492,12 @@ class BatchAggregator:
                 "last_updated": datetime.now(timezone.utc).isoformat(),
             },
         }
+
+        if scoutpro_match_id not in (None, ''):
+            for payload in projections.values():
+                payload.setdefault('scoutpro_match_id', scoutpro_match_id)
+
+        return projections
 
     def _upsert_match_projections(
         self,

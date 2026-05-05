@@ -38,6 +38,13 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from pymongo import MongoClient, UpdateOne
 
+# Position standardization utility
+try:
+    from shared.utilities.position_mapper import standardize_position
+except ImportError:
+    # Fallback for testing or alternative import paths
+    from utilities.position_mapper import standardize_position
+
 logger = logging.getLogger(__name__)
 
 # Opta F24 type_id → canonical name.
@@ -354,10 +361,13 @@ class OptaBatchSeeder:
 
                 birth_date = _parse_date(stats.get("birth_date") or pi_attrs.get("birthDate"))
                 preferred_foot = (stats.get("preferred_foot") or pi_attrs.get("preferredFoot") or "").lower()
-                real_position = stats.get("real_position") or stats.get("position", "")
+                raw_position = stats.get("real_position") or stats.get("position", "")
                 nationality = (stats.get("first_nationality")
                                or stats.get("country")
                                or pi_attrs.get("country", ""))
+
+                # Standardize position to canonical format
+                position_data = standardize_position(raw_position)
 
                 sp_player_id = ScoutProId.player("opta", p_uid)
                 prov_player_id = ScoutProId.provider_numeric("player", p_uid)
@@ -371,7 +381,9 @@ class OptaBatchSeeder:
                     "first_name": first_name,
                     "last_name": last_name,
                     "birth_date": birth_date,
-                    "position": real_position,
+                    "position": position_data.get("code"),  # Standard code (GK, DF, MF, FW)
+                    "detailed_position": position_data.get("detailed"),  # Detailed (CB, ST, CM, etc.)
+                    "raw_position": position_data.get("raw"),  # Original value from F40
                     "preferred_foot": preferred_foot,
                     "nationality": nationality,
                     "height_cm": _safe_int(stats.get("height")),
@@ -545,12 +557,44 @@ class OptaBatchSeeder:
             or ""
         )
 
+        # F24 game_attrs carry match-level team metadata — use them to keep
+        # match documents enriched even if F9/F40 enrichment hasn't run yet.
+        f24_home_team_id = game_attrs.get("home_team_id", "")
+        f24_away_team_id = game_attrs.get("away_team_id", "")
+        f24_home_team_name = game_attrs.get("home_team_name", "")
+        f24_away_team_name = game_attrs.get("away_team_name", "")
+
         events_raw = game.get("Event", []) if isinstance(game, dict) else []
         if isinstance(events_raw, dict):
             events_raw = [events_raw]
 
         sp_match_id = ScoutProId.match("opta", match_uid) if match_uid else None
         prov_match_id = ScoutProId.provider_numeric("match", match_uid) if match_uid else match_uid
+
+        # Upsert match-level team-name fields so sequence/tactical analytics
+        # can resolve names without needing F40 enrichment first.
+        if match_uid and (f24_home_team_name or f24_away_team_name):
+            name_patch: Dict[str, Any] = {}
+            if f24_home_team_name:
+                name_patch["home_team_name"] = f24_home_team_name
+            if f24_away_team_name:
+                name_patch["away_team_name"] = f24_away_team_name
+            # Also store the raw Opta team IDs as references for downstream ID resolution
+            if f24_home_team_id:
+                name_patch["home_opta_team_id"] = f24_home_team_id
+            if f24_away_team_id:
+                name_patch["away_opta_team_id"] = f24_away_team_id
+            self.db.matches.update_one(
+                {"uID": match_uid},
+                {"$set": name_patch},
+            )
+
+        # Build a lookup from Opta team_id → team name for event enrichment
+        _team_name_by_opta_id: Dict[str, str] = {}
+        if f24_home_team_id and f24_home_team_name:
+            _team_name_by_opta_id[str(f24_home_team_id)] = f24_home_team_name
+        if f24_away_team_id and f24_away_team_name:
+            _team_name_by_opta_id[str(f24_away_team_id)] = f24_away_team_name
 
         ops: List[UpdateOne] = []
         match_has_end = False
@@ -605,6 +649,7 @@ class OptaBatchSeeder:
                 "player_id": player_id,
                 "scoutpro_player_id": sp_player_id,
                 "team_id": team_id,
+                "team_name": _team_name_by_opta_id.get(str(team_id), ""),
                 "scoutpro_team_id": sp_team_id,
                 "qualifiers": qualifiers,
                 "event_source": "opta_f24_batch",

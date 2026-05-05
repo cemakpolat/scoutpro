@@ -26,11 +26,13 @@ const TransferHub = lazy(() => import('./components/TransferHub'));
 const PerformanceTracker = lazy(() => import('./components/PerformanceTracker'));
 const SearchPage = lazy(() => import('./components/SearchPage'));
 const PlayerComparison = lazy(() => import('./components/PlayerComparison'));
+const DataImporter = lazy(() => import('./components/DataImporter'));
+const MatchDetailWithVisualizations = lazy(() => import('./components/MatchDetailWithVisualizations'));
+// Hidden pages (not in navigation but available via direct tab access)
 const VideoAnalysis = lazy(() => import('./components/VideoAnalysis'));
 const CollaborationHub = lazy(() => import('./components/CollaborationHub'));
 const CalendarScheduling = lazy(() => import('./components/CalendarScheduling'));
-const DataImporter = lazy(() => import('./components/DataImporter'));
-const MatchDetailWithVisualizations = lazy(() => import('./components/MatchDetailWithVisualizations'));
+
 
 // Match Analysis page: select a real match then show visualizations
 function MatchAnalysisPage() {
@@ -39,10 +41,10 @@ function MatchAnalysisPage() {
   const [selectedYear, setSelectedYear] = React.useState('all');
   const [selectedLeague, setSelectedLeague] = React.useState('all');
 
-  // Only finished matches have event data (shots, heat maps, pass networks)
-  // Only show matches that can have F24 event data in analysis views.
+  // Show all matches (finished, live, and scheduled) for comprehensive analysis
+  // Note: Event data (F24) only available for finished/live matches, but scheduled matches can show team info
   const matchOptions = matches.filter(
-    (m: any) => Boolean(m?.id) && ['finished', 'live'].includes(String(m?.status || '').toLowerCase())
+    (m: any) => Boolean(m?.id)
   );
 
   const matchCatalog = React.useMemo(() => buildMatchCatalog(matchOptions), [matchOptions]);
@@ -215,12 +217,6 @@ function AppContent() {
         return <SearchPage />;
       case 'player-comparison':
         return <PlayerComparison />;
-      case 'video-analysis':
-        return <VideoAnalysis />;
-      case 'collaboration':
-        return <CollaborationHub />;
-      case 'calendar':
-        return <CalendarScheduling />;
       case 'data-importer':
         return <DataImporter />;
       case 'match-analysis':
@@ -249,6 +245,15 @@ function AppContent() {
         return <TransferHub />;
       case 'performance-tracker':
         return <PerformanceTracker />;
+      case 'video-analysis':
+        // Hidden from navigation but still accessible
+        return <VideoAnalysis />;
+      case 'collaboration':
+        // Hidden from navigation but still accessible
+        return <CollaborationHub />;
+      case 'calendar':
+        // Hidden from navigation but still accessible
+        return <CalendarScheduling />;
       default:
         return <Dashboard />;
     }

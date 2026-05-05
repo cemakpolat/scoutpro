@@ -96,7 +96,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* Market Intelligence */}
-      {!marketLoading && marketTrends && (
+      {!marketLoading && marketTrends && Array.isArray(marketTrends) && (
         <div className="bg-slate-800 rounded-xl p-6">
         <h3 className="text-xl font-semibold mb-6 flex items-center">
           <Globe className="h-6 w-6 mr-2 text-blue-400" />
@@ -106,10 +106,10 @@ const Dashboard: React.FC = () => {
           {marketTrends.slice(0, 3).map((trend, index) => (
             <div key={index} className="p-4 bg-slate-700 rounded-lg">
               <div className="flex justify-between items-center mb-3">
-                <h4 className="font-semibold">{trend.position}</h4>
-                <span className="text-green-400 font-bold">{trend.change}</span>
+                <h4 className="font-semibold">{trend?.position || 'N/A'}</h4>
+                <span className="text-green-400 font-bold">{trend?.change || '—'}</span>
               </div>
-              <div className="text-2xl font-bold text-white mb-2">{trend.averageValue}</div>
+              <div className="text-2xl font-bold text-white mb-2">{trend?.averageValue || '—'}</div>
               <div className="text-sm text-slate-400 mb-3">Average Market Value</div>
               <div className="text-xs text-slate-400">
                 Live market trend feed
@@ -121,39 +121,42 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* Tactical Intelligence */}
-      {!tacticalLoading && tacticalPatterns && (
+      {!tacticalLoading && tacticalPatterns && Array.isArray(tacticalPatterns) && (
         <div className="bg-slate-800 rounded-xl p-6">
         <h3 className="text-xl font-semibold mb-6 flex items-center">
           <Target className="h-6 w-6 mr-2 text-purple-400" />
           Tactical Intelligence & Trends
         </h3>
         <div className="space-y-4">
-          {tacticalPatterns.slice(0, 3).map((pattern, index) => (
-            <div key={index} className="p-4 bg-slate-700 rounded-lg">
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="font-semibold text-lg">{pattern.name}</h4>
-                <div className="flex items-center space-x-4">
-                  <div className="text-center">
-                    <div className="text-sm text-slate-400">Adoption</div>
-                    <div className="font-bold text-blue-400">{pattern.frequency}%</div>
+          {tacticalPatterns.slice(0, 3).map((pattern, index) => {
+            const zones = Array.isArray(pattern?.zones) ? pattern.zones : [];
+            return (
+              <div key={index} className="p-4 bg-slate-700 rounded-lg">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-semibold text-lg">{pattern?.name || 'Unknown Pattern'}</h4>
+                  <div className="flex items-center space-x-4">
+                    <div className="text-center">
+                      <div className="text-sm text-slate-400">Adoption</div>
+                      <div className="font-bold text-blue-400">{pattern?.frequency || 0}%</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-sm text-slate-400">Effectiveness</div>
+                      <div className="font-bold text-green-400">{pattern?.successRate || 0}%</div>
+                    </div>
                   </div>
-                  <div className="text-center">
-                    <div className="text-sm text-slate-400">Effectiveness</div>
-                    <div className="font-bold text-green-400">{pattern.successRate}%</div>
+                </div>
+                <p className="text-slate-300 text-sm mb-3">{pattern?.description || 'No description available'}</p>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs text-slate-400">
+                    Active Zones: {zones.length > 0 ? zones.join(', ') : 'N/A'}
+                  </div>
+                  <div className="text-xs text-purple-400 font-medium">
+                    Impact: {pattern?.impact || 'N/A'}
                   </div>
                 </div>
               </div>
-              <p className="text-slate-300 text-sm mb-3">{pattern.description}</p>
-              <div className="flex items-center justify-between">
-                <div className="text-xs text-slate-400">
-                  Active Zones: {Array.isArray(pattern.zones) ? pattern.zones.join(', ') : 'N/A'}
-                </div>
-                <div className="text-xs text-purple-400 font-medium">
-                  Impact: {pattern.impact}
-                </div>
-              </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
       )}

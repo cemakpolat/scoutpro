@@ -290,6 +290,22 @@ class StatisticsService:
             logger.error(f"Error in get_match_sequence_summary: {e}")
             raise
 
+    async def get_match_statistics(self, match_id: str) -> Optional[Dict[str, Any]]:
+        """Get aggregated match-level statistics (box score + EventMinutes timeline)."""
+        try:
+            cache_key = f"stats:match:summary:{match_id}"
+            cached = await self.redis.get(cache_key)
+            if cached:
+                return json.loads(cached)
+
+            payload = await self.repository.get_match_statistics(match_id)
+            if payload:
+                await self.redis.setex(cache_key, self.cache_ttl, json.dumps(payload))
+            return payload
+        except Exception as e:
+            logger.error(f"Error in get_match_statistics: {e}")
+            raise
+
     async def rebuild_match_projections(
         self,
         match_id: Optional[str] = None,

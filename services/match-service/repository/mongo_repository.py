@@ -120,6 +120,117 @@ class MongoMatchRepository(IMatchRepository):
         self._team_name_cache: Dict[str, Optional[str]] = {}
 
     @staticmethod
+    def _collect_identifier_variants(value: Any, prefix: str = '') -> tuple[list[str], list[int]]:
+        string_values: list[str] = []
+        numeric_values: list[int] = []
+
+        if value in (None, '', 0, '0'):
+            return string_values, numeric_values
+
+        raw_value = str(value).strip()
+        if not raw_value:
+            return string_values, numeric_values
+
+        def add_string(candidate: str) -> None:
+            if candidate and candidate not in string_values:
+                string_values.append(candidate)
+
+        def add_number(candidate: int) -> None:
+            if candidate not in numeric_values:
+                numeric_values.append(candidate)
+
+        add_string(raw_value)
+
+        stripped_value = raw_value
+        if prefix and raw_value.lower().startswith(prefix.lower()):
+            stripped_value = raw_value[1:]
+            add_string(stripped_value)
+
+        if stripped_value.isdigit():
+            add_number(int(stripped_value))
+            if prefix:
+                add_string(f'{prefix}{stripped_value}')
+
+        return string_values, numeric_values
+
+    @classmethod
+    def _build_team_lookup_query(cls, team_id: Any) -> Dict[str, Any]:
+        string_values, numeric_values = cls._collect_identifier_variants(team_id, prefix='t')
+        or_clauses: List[Dict[str, Any]] = []
+
+        if string_values:
+            or_clauses.extend([
+                {'uID': {'$in': string_values}},
+                {'provider_ids.opta': {'$in': string_values}},
+                {'id': {'$in': string_values}},
+                {'scoutpro_id': {'$in': string_values}},
+            ])
+        if numeric_values:
+            or_clauses.extend([
+                {'id': {'$in': numeric_values}},
+                {'scoutpro_id': {'$in': numeric_values}},
+            ])
+
+        return {'$or': or_clauses} if or_clauses else {'uID': str(team_id)}
+
+    @classmethod
+    def _build_match_lookup_query(cls, match_id: str) -> Dict[str, Any]:
+        string_values, numeric_values = cls._collect_identifier_variants(match_id, prefix='g')
+        or_clauses: List[Dict[str, Any]] = []
+
+        if string_values:
+            or_clauses.extend([
+                {'uID': {'$in': string_values}},
+                {'provider_ids.opta': {'$in': string_values}},
+                {'matchID': {'$in': string_values}},
+                {'id': {'$in': string_values}},
+                {'scoutpro_id': {'$in': string_values}},
+            ])
+        if numeric_values:
+            or_clauses.extend([
+                {'matchID': {'$in': numeric_values}},
+                {'id': {'$in': numeric_values}},
+                {'scoutpro_id': {'$in': numeric_values}},
+            ])
+
+        return {'$or': or_clauses} if or_clauses else {'uID': str(match_id)}
+
+    @classmethod
+    def _build_match_team_query(cls, team_id: str) -> Dict[str, Any]:
+        string_values, numeric_values = cls._collect_identifier_variants(team_id, prefix='t')
+        or_clauses: List[Dict[str, Any]] = []
+
+        for field in (
+            'homeTeamID',
+            'awayTeamID',
+            'home_team_id',
+            'away_team_id',
+            'home_team_ref',
+            'away_team_ref',
+            'home_opta_team_id',
+            'away_opta_team_id',
+        ):
+            if string_values:
+                or_clauses.append({field: {'$in': string_values}})
+            if numeric_values:
+                or_clauses.append({field: {'$in': numeric_values}})
+
+        return {'$or': or_clauses} if or_clauses else {'homeTeamID': str(team_id)}
+
+    @classmethod
+    def _build_event_match_query(cls, match_id: str) -> Dict[str, Any]:
+        string_values, numeric_values = cls._collect_identifier_variants(match_id, prefix='g')
+        or_clauses: List[Dict[str, Any]] = []
+
+        for field in ('matchID', 'match_id', 'scoutpro_match_id'):
+            if string_values:
+                or_clauses.append({field: {'$in': string_values}})
+            if numeric_values:
+                or_clauses.append({field: {'$in': numeric_values}})
+
+        return {'$or': or_clauses} if or_clauses else {'matchID': str(match_id)}
+
+    @staticmethod
     def _normalize_team_id(value: Any) -> Optional[str]:
         if value in (None, '', 0, '0'):
             return None
@@ -147,13 +258,9 @@ class MongoMatchRepository(IMatchRepository):
         if normalized_team_id in self._team_name_cache:
             return self._team_name_cache[normalized_team_id]
 
-        query_values: List[Any] = [normalized_team_id]
-        if normalized_team_id.isdigit():
-            query_values.append(int(normalized_team_id))
-
         team_doc = await self.teams_collection.find_one(
-            {'uID': {'$in': query_values}},
-            {'_id': 0, 'name': 1, 'shortName': 1},
+            self._build_team_lookup_query(normalized_team_id),
+            {'_id': 0, 'name': 1, 'shortName': 1, 'uID': 1, 'id': 1, 'scoutpro_id': 1, 'provider_ids': 1},
         )
         team_name = self._first_non_empty_text(
             team_doc.get('name') if team_doc else None,
@@ -161,19 +268,49 @@ class MongoMatchRepository(IMatchRepository):
         )
 
         if not team_name:
+            team_string_values, team_numeric_values = self._collect_identifier_variants(normalized_team_id, prefix='t')
+            if team_doc:
+                for candidate in (
+                    team_doc.get('uID'),
+                    team_doc.get('id'),
+                    team_doc.get('scoutpro_id'),
+                    (team_doc.get('provider_ids') or {}).get('opta'),
+                ):
+                    strings, numbers = self._collect_identifier_variants(candidate, prefix='t')
+                    for value in strings:
+                        if value not in team_string_values:
+                            team_string_values.append(value)
+                    for value in numbers:
+                        if value not in team_numeric_values:
+                            team_numeric_values.append(value)
+
+            def side_matches(match_doc: Dict[str, Any], fields: List[str]) -> bool:
+                for field in fields:
+                    field_value = match_doc.get(field)
+                    if field_value in (None, ''):
+                        continue
+
+                    text_value = str(field_value).strip()
+                    if text_value in team_string_values:
+                        return True
+
+                    if text_value.isdigit() and int(text_value) in team_numeric_values:
+                        return True
+
+                return False
+
             named_docs = await self.matches_collection.find(
-                {
-                    '$or': [
-                        {'homeTeamID': {'$in': query_values}, 'homeTeamName': {'$nin': [None, '']}},
-                        {'awayTeamID': {'$in': query_values}, 'awayTeamName': {'$nin': [None, '']}},
-                        {'homeTeamID': {'$in': query_values}, 'home_team': {'$nin': [None, '']}},
-                        {'awayTeamID': {'$in': query_values}, 'away_team': {'$nin': [None, '']}},
-                    ]
-                },
+                self._build_match_team_query(normalized_team_id),
                 {
                     '_id': 0,
                     'homeTeamID': 1,
                     'awayTeamID': 1,
+                    'home_team_id': 1,
+                    'away_team_id': 1,
+                    'home_team_ref': 1,
+                    'away_team_ref': 1,
+                    'home_opta_team_id': 1,
+                    'away_opta_team_id': 1,
                     'homeTeamName': 1,
                     'awayTeamName': 1,
                     'home_team': 1,
@@ -183,12 +320,12 @@ class MongoMatchRepository(IMatchRepository):
             ).sort('date', -1).to_list(length=5)
 
             for match_doc in named_docs:
-                if self._normalize_team_id(match_doc.get('homeTeamID')) == normalized_team_id:
+                if side_matches(match_doc, ['homeTeamID', 'home_team_id', 'home_team_ref', 'home_opta_team_id']):
                     team_name = self._first_non_empty_text(
                         match_doc.get('homeTeamName'),
                         match_doc.get('home_team'),
                     )
-                elif self._normalize_team_id(match_doc.get('awayTeamID')) == normalized_team_id:
+                elif side_matches(match_doc, ['awayTeamID', 'away_team_id', 'away_team_ref', 'away_opta_team_id']):
                     team_name = self._first_non_empty_text(
                         match_doc.get('awayTeamName'),
                         match_doc.get('away_team'),
@@ -218,11 +355,7 @@ class MongoMatchRepository(IMatchRepository):
     async def get_by_id(self, match_id: str) -> Optional[Match]:
         """Get match by ID from MongoDB"""
         try:
-            query_values: List[Any] = [match_id]
-            if match_id.isdigit():
-                query_values.append(int(match_id))
-
-            docs = await self.matches_collection.find({"uID": {"$in": query_values}}).to_list(length=10)
+            docs = await self.matches_collection.find(self._build_match_lookup_query(match_id)).to_list(length=10)
             selected_docs = self._select_best_docs(docs)
             doc = selected_docs[0] if selected_docs else None
 
@@ -264,19 +397,7 @@ class MongoMatchRepository(IMatchRepository):
                 query['status'] = filters['status']
 
             if 'team_id' in filters and filters['team_id']:
-                try:
-                    team_id_int = int(filters['team_id'])
-                    query['$or'] = [
-                        {'homeTeamID': filters['team_id']},
-                        {'awayTeamID': filters['team_id']},
-                        {'homeTeamID': team_id_int},
-                        {'awayTeamID': team_id_int},
-                    ]
-                except (ValueError, TypeError):
-                    query['$or'] = [
-                        {'homeTeamID': filters['team_id']},
-                        {'awayTeamID': filters['team_id']},
-                    ]
+                query['$or'] = self._build_match_team_query(filters['team_id'])['$or']
 
             cursor = self.matches_collection.find(query).limit(limit).sort('date', -1)
             docs = await cursor.to_list(length=limit)
@@ -298,19 +419,7 @@ class MongoMatchRepository(IMatchRepository):
     async def get_by_team(self, team_id: str, limit: int = 20) -> List[Match]:
         """Get matches for a team"""
         try:
-            query = {
-                '$or': [
-                    {'homeTeamID': team_id},
-                    {'awayTeamID': team_id},
-                ]
-            }
-
-            if team_id.isdigit():
-                team_id_int = int(team_id)
-                query['$or'].extend([
-                    {'homeTeamID': team_id_int},
-                    {'awayTeamID': team_id_int},
-                ])
+            query = self._build_match_team_query(team_id)
 
             cursor = self.matches_collection.find(query).limit(limit).sort('date', -1)
             docs = await cursor.to_list(length=limit)
@@ -444,10 +553,7 @@ class MongoMatchRepository(IMatchRepository):
     async def get_match_events(self, match_id: str) -> List[Dict[str, Any]]:
         """Get all events for a match"""
         try:
-            query_values = [match_id]
-            if match_id.isdigit():
-                query_values.append(int(match_id))
-            query = {'matchID': {'$in': query_values}}
+            query = self._build_event_match_query(match_id)
 
             cursor = self.events_collection.find(query).sort('timestamp', 1)
             docs = await cursor.to_list(length=None)
@@ -476,7 +582,7 @@ class MongoMatchRepository(IMatchRepository):
         """Update match"""
         try:
             result = await self.matches_collection.update_one(
-                {'uID': {'$in': [match_id, int(match_id)] if match_id.isdigit() else [match_id]}},
+                self._build_match_lookup_query(match_id),
                 {'$set': match.dict()}
             )
             return result.modified_count > 0
@@ -488,7 +594,7 @@ class MongoMatchRepository(IMatchRepository):
         """Update live match data"""
         try:
             result = await self.matches_collection.update_one(
-                {'uID': {'$in': [match_id, int(match_id)] if match_id.isdigit() else [match_id]}},
+                self._build_match_lookup_query(match_id),
                 {'$set': live_data}
             )
             return result.modified_count > 0

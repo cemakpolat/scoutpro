@@ -34,13 +34,16 @@ const GameAnalysis: React.FC = () => {
     });
   }, [filterDate, matches]);
 
+  // Use the most recent month in the dataset (not the current calendar month)
   const gamesThisMonth = useMemo(() => {
-    const now = new Date();
-
+    if (matches.length === 0) return 0;
+    const dates = matches.map(m => parseDate(m.date)).filter(Boolean) as Date[];
+    if (dates.length === 0) return matches.length;
+    const latest = new Date(Math.max(...dates.map(d => d.getTime())));
     return matches.filter((match) => {
       const parsed = parseDate(match.date);
       return parsed
-        ? parsed.getMonth() === now.getMonth() && parsed.getFullYear() === now.getFullYear()
+        ? parsed.getMonth() === latest.getMonth() && parsed.getFullYear() === latest.getFullYear()
         : false;
     }).length;
   }, [matches]);
@@ -58,7 +61,12 @@ const GameAnalysis: React.FC = () => {
     return totalGoals / matches.length;
   }, [matches]);
 
-  const liveMatches = matches.filter((match) => ['live', 'in_progress'].includes(String(match.status || '').toLowerCase())).length;
+  // Count matches that have scores recorded (completed matches in the dataset)
+  const liveMatches = matches.filter((match) => {
+    const status = String(match.status || '').toLowerCase();
+    if (['live', 'in_progress'].includes(status)) return true;
+    return toNumber(match.homeScore) > 0 || toNumber(match.awayScore) > 0;
+  }).length;
 
   const trackedTeams = useMemo(() => {
     const identifiers = matches.flatMap((match) => [
@@ -73,8 +81,8 @@ const GameAnalysis: React.FC = () => {
 
   const secondaryStatValue = players.length > 0 ? players.length : trackedTeams;
   const secondaryStatLabel = players.length > 0 ? 'Players Tracked' : 'Teams In Feed';
-  const activityValue = filterDate ? filteredMatches.length : liveMatches;
-  const activityLabel = filterDate ? 'Matches On Date' : 'Live / Active Matches';
+  const activityValue = filteredMatches.length;
+  const activityLabel = filterDate ? 'Matches On Date' : 'Total Matches';
 
   if (selectedGame) {
     return <GameDetail game={selectedGame} onBack={() => setSelectedGame(null)} />;

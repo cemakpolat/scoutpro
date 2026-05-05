@@ -42,7 +42,9 @@ class Player(BaseModel):
     birth_date: Optional[str] = Field(None, alias="birthDate")
     team_name: Optional[str] = Field(None, alias="teamName")
     team_id: Optional[str] = Field(None, alias="teamID")
+    position: Optional[str] = None
     detailed_position: Optional[str] = Field(None, alias="detailedPosition")
+    raw_position: Optional[str] = Field(None, alias="rawPosition")
 
     # StatsBomb enrichment — populated by the StatsBomb enrichment pipeline
     # Contains: total_xg, total_obv, passes, shots, goals, avg_pass_success_prob, match_id

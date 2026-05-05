@@ -2,13 +2,17 @@
 Statistics API Endpoints
 """
 from pydantic import BaseModel
-from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi import APIRouter, HTTPException, Depends, Query, BackgroundTasks
 from typing import Optional, List
+import asyncio
+import logging
 import sys
 sys.path.append('/app')
 from shared.models.base import APIResponse
 from services.statistics_service import StatisticsService
 from dependencies import get_statistics_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v2/statistics", tags=["statistics"])
 
@@ -162,6 +166,25 @@ async def aggregate_player_stats(
     )
 
 
+@router.get("/match/{match_id}", response_model=APIResponse)
+async def get_match_statistics(
+    match_id: str,
+    service: StatisticsService = Depends(get_statistics_service)
+):
+    """Get aggregated match statistics: box score, passing, discipline, and EventMinutes timeline."""
+    stats = await service.get_match_statistics(match_id)
+    if not stats:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Statistics not found for match {match_id}"
+        )
+    return APIResponse(
+        success=True,
+        data=stats,
+        message="Match statistics retrieved successfully"
+    )
+
+
 @router.get("/match/{match_id}/advanced-metrics", response_model=APIResponse)
 async def get_match_advanced_metrics(
     match_id: str,
@@ -242,4 +265,77 @@ async def rebuild_match_projections(
         success=True,
         data=result,
         message="Projection rebuild completed"
+    )
+
+
+class AggregateRunRequest(BaseModel):
+    match_id: Optional[str] = None
+    competition_id: Optional[str] = None
+    season_id: Optional[str] = None
+    background: bool = False  # if True, run asynchronously and return immediately
+
+
+def _run_pipeline_sync(match_id, competition_id, season_id):
+    """Run EventStatsPipeline in a thread (it uses sync pymongo)."""
+    from services.event_stats_pipeline import EventStatsPipeline
+    pipeline = EventStatsPipeline()
+    try:
+        return pipeline.run(
+            match_id=match_id,
+            competition_id=competition_id,
+            season_id=season_id,
+        )
+    finally:
+        pipeline.close()
+
+
+async def _run_pipeline_background(match_id, competition_id, season_id):
+    """Async wrapper that runs the sync pipeline in a thread pool."""
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _run_pipeline_sync, match_id, competition_id, season_id)
+    logger.info("Background EventStatsPipeline finished: %s", result)
+
+
+@router.post("/aggregate/run", response_model=APIResponse, tags=["statistics"])
+async def run_aggregate_pipeline(
+    request: AggregateRunRequest,
+    background_tasks: BackgroundTasks,
+):
+    """Trigger the event-statistics aggregation pipeline.
+
+    Reads all ``match_events`` (optionally filtered by match/competition/season),
+    applies the shared F24 event classes (PassEvent, ShotandGoalEvents, TouchEvents,
+    AerialDuelEvents, FoulEvents, CardEvents, TakeOnEvents) to compute per-player
+    and per-team statistics, and upserts them into ``player_statistics`` and
+    ``team_statistics`` with ScoutPro IDs.
+
+    Use ``background=true`` for large full-dataset runs (returns immediately).
+    """
+    if request.background:
+        background_tasks.add_task(
+            _run_pipeline_background,
+            request.match_id,
+            request.competition_id,
+            request.season_id,
+        )
+        return APIResponse(
+            success=True,
+            data={"status": "started"},
+            message="Aggregation pipeline started in background"
+        )
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        None,
+        _run_pipeline_sync,
+        request.match_id,
+        request.competition_id,
+        request.season_id,
+    )
+
+    return APIResponse(
+        success=True,
+        data=result,
+        message=f"Aggregation complete: {result.get('player_docs', 0)} player docs, "
+                f"{result.get('team_docs', 0)} team docs written"
     )

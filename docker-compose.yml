@@ -14,6 +14,7 @@ services:
       - NODE_ENV=development
       - TASK_WORKER_URL=http://task-worker-service:8013
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - REPORT_SERVICE_URL=http://report-service:8009
     depends_on:
       mongo:
         condition: service_started
@@ -273,33 +274,33 @@ services:
       - scoutpro-network
     restart: unless-stopped
 
-  live-ingestion-service:
-    build:
-      context: .
-      dockerfile: services/live-ingestion-service/Dockerfile
-    container_name: scoutpro-live-ingestion
-    ports:
-      - "28006:8000"
-    environment:
-      - OPTA_API_KEY=${OPTA_API_KEY}
-      - OPTA_WEBSOCKET_URL=${OPTA_WEBSOCKET_URL}
-      - STATSBOMB_API_KEY=${STATSBOMB_API_KEY}
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
-      - SERVICE_NAME=live-ingestion-service
-      - DATA_ROOT=/app/data
-    depends_on:
-      kafka:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    volumes:
-      - ./services/live-ingestion-service:/app
-      - ./services/shared:/app/shared
-      - ./data:/app/data:ro
-    networks:
-      - scoutpro-network
-    restart: unless-stopped
+  # live-ingestion-service:
+  #   build:
+  #     context: .
+  #     dockerfile: services/live-ingestion-service/Dockerfile
+  #   container_name: scoutpro-live-ingestion
+  #   ports:
+  #     - "28006:8000"
+  #   environment:
+  #     - OPTA_API_KEY=${OPTA_API_KEY}
+  #     - OPTA_WEBSOCKET_URL=${OPTA_WEBSOCKET_URL}
+  #     - STATSBOMB_API_KEY=${STATSBOMB_API_KEY}
+  #     - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+  #     - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
+  #     - SERVICE_NAME=live-ingestion-service
+  #     - DATA_ROOT=/app/data
+  #   depends_on:
+  #     kafka:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_started
+  #   volumes:
+  #     - ./services/live-ingestion-service:/app
+  #     - ./services/shared:/app/shared
+  #     - ./data:/app/data:ro
+  #   networks:
+  #     - scoutpro-network
+  #   restart: unless-stopped
 
   # search-service:
   #   build:
@@ -325,30 +326,30 @@ services:
   #     - scoutpro-network
   #   restart: unless-stopped
 
-  notification-service:
-    build:
-      context: ./services
-      dockerfile: notification-service/Dockerfile
-    container_name: scoutpro-notification-service
-    ports:
-      - "28008:8000"
-    environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
-      - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
-      - SENDGRID_API_KEY=${SENDGRID_API_KEY}
-      - SERVICE_NAME=notification-service
-    depends_on:
-      kafka:
-        condition: service_healthy
-      redis:
-        condition: service_started
-    volumes:
-      - ./services/notification-service:/app
-      - ./services/shared:/app/shared
-    networks:
-      - scoutpro-network
-    restart: unless-stopped
+  # notification-service:
+  #   build:
+  #     context: ./services
+  #     dockerfile: notification-service/Dockerfile
+  #   container_name: scoutpro-notification-service
+  #   ports:
+  #     - "28008:8000"
+  #   environment:
+  #     - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+  #     - REDIS_URL=redis://:${REDIS_PASSWORD:-scoutpro123}@redis:6379/0
+  #     - FIREBASE_CREDENTIALS=${FIREBASE_CREDENTIALS}
+  #     - SENDGRID_API_KEY=${SENDGRID_API_KEY}
+  #     - SERVICE_NAME=notification-service
+  #   depends_on:
+  #     kafka:
+  #       condition: service_healthy
+  #     redis:
+  #       condition: service_started
+  #   volumes:
+  #     - ./services/notification-service:/app
+  #     - ./services/shared:/app/shared
+  #   networks:
+  #     - scoutpro-network
+  #   restart: unless-stopped
 
   websocket-server:
     build:
@@ -382,12 +383,19 @@ services:
       - "28009:8009"
     environment:
       - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
+      - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
       - SERVICE_NAME=report-service
+      - PLAYER_SERVICE_URL=http://player-service:8000
+      - TEAM_SERVICE_URL=http://team-service:8000
+      - MATCH_SERVICE_URL=http://match-service:8000
+      - STATISTICS_SERVICE_URL=http://statistics-service:8000
     depends_on:
       mongo:
+        condition: service_started
+      redis:
         condition: service_started
       minio:
         condition: service_started
@@ -398,25 +406,26 @@ services:
       - scoutpro-network
     restart: unless-stopped
 
-  export-service:
-    build:
-      context: ./services
-      dockerfile: export-service/Dockerfile
-    container_name: scoutpro-export-service
-    ports:
-      - "28010:8010"
-    environment:
-      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
-      - SERVICE_NAME=export-service
-    depends_on:
-      mongo:
-        condition: service_started
-    volumes:
-      - ./services/export-service:/app
-      - ./services/shared:/app/shared
-    networks:
-      - scoutpro-network
-    restart: unless-stopped
+
+  # export-service:
+  #   build:
+  #     context: ./services
+  #     dockerfile: export-service/Dockerfile
+  #   container_name: scoutpro-export-service
+  #   ports:
+  #     - "28010:8010"
+  #   environment:
+  #     - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
+  #     - SERVICE_NAME=export-service
+  #   depends_on:
+  #     mongo:
+  #       condition: service_started
+  #   volumes:
+  #     - ./services/export-service:/app
+  #     - ./services/shared:/app/shared
+  #   networks:
+  #     - scoutpro-network
+  #   restart: unless-stopped
 
   # ============ DISABLED FOR FUTURE IMPLEMENTATION ============
   # video-service:

@@ -22,6 +22,55 @@ from dependencies import (
 )
 from services.stream_handler import StatisticsStreamProcessor
 
+# ---------------------------------------------------------------------------
+# Periodic aggregation scheduler
+# ---------------------------------------------------------------------------
+_scheduler = None
+
+
+def _scheduler_run_pipeline():
+    """Called by APScheduler in a background thread to run the stats pipeline."""
+    from services.event_stats_pipeline import EventStatsPipeline
+    logger_s = logging.getLogger("scheduler.pipeline")
+    logger_s.info("Periodic EventStatsPipeline run started")
+    pipeline = EventStatsPipeline()
+    try:
+        result = pipeline.run()
+        logger_s.info("Periodic pipeline complete: %s", result)
+    except Exception as exc:
+        logger_s.error("Periodic pipeline failed: %s", exc, exc_info=True)
+    finally:
+        pipeline.close()
+
+
+def _start_scheduler():
+    """Start APScheduler with a configurable interval."""
+    global _scheduler
+    try:
+        from apscheduler.schedulers.background import BackgroundScheduler
+        interval_hours = int(os.getenv("STATS_AGGREGATE_INTERVAL_HOURS", "24"))
+        _scheduler = BackgroundScheduler(daemon=True)
+        _scheduler.add_job(
+            _scheduler_run_pipeline,
+            "interval",
+            hours=interval_hours,
+            id="event_stats_pipeline",
+            replace_existing=True,
+        )
+        _scheduler.start()
+        logger.info(
+            "APScheduler started: EventStatsPipeline will run every %d hour(s)",
+            interval_hours,
+        )
+    except ImportError:
+        logger.warning(
+            "apscheduler not installed — periodic stats aggregation disabled. "
+            "Install with: pip install apscheduler"
+        )
+    except Exception as exc:
+        logger.error("Failed to start scheduler: %s", exc)
+
+
 settings = get_settings()
 logger = setup_logger(settings.service_name, settings.log_level)
 stream_processor = None
@@ -87,6 +136,40 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.error(f"Failed to start stream processor: {e}")
 
+        # Start periodic scheduler
+        _start_scheduler()
+
+        # On startup, run pipeline once in background if player_statistics is empty
+        # or has fewer docs than match_events to catch up from seeding
+        async def _bootstrap_pipeline():
+            try:
+                from motor.motor_asyncio import AsyncIOMotorClient
+                mongo_url = settings.mongodb_url
+                db_name = settings.mongodb_database
+                client = AsyncIOMotorClient(mongo_url, serverSelectionTimeoutMS=3000)
+                db = client[db_name]
+                ps_count = await db.player_statistics.count_documents({})
+                events_count = await db.match_events.count_documents({})
+                client.close()
+
+                if events_count > 0 and ps_count == 0:
+                    logger.info(
+                        "player_statistics is empty but %d match_events exist — "
+                        "running initial EventStatsPipeline bootstrap in background",
+                        events_count,
+                    )
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(None, _scheduler_run_pipeline)
+                else:
+                    logger.info(
+                        "player_statistics has %d docs — skipping bootstrap run",
+                        ps_count,
+                    )
+            except Exception as exc:
+                logger.warning("Bootstrap pipeline check failed: %s", exc)
+
+        asyncio.create_task(_bootstrap_pipeline())
+
         logger.info(f"{settings.service_name} started successfully")
 
     except Exception as e:
@@ -96,6 +179,8 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"Shutting down {settings.service_name}")
     try:
+        if _scheduler and _scheduler.running:
+            _scheduler.shutdown(wait=False)
         if stream_processor:
             await stream_processor.stop()
         if stream_processor_task:

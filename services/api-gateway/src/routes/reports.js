@@ -1,8 +1,12 @@
 /**
  * Reports Routes - Real PDF/Excel report generation using pdfkit
+ * Proxies to Python report-service (ReportLab) when available for
+ * professional scouting-style output; falls back to pdfkit locally.
  */
 const express = require('express');
 const router = express.Router();
+const http = require('http');
+const https = require('https');
 const { ObjectId } = require('mongodb');
 
 const { requestJson, unwrapPayload } = require('../utils/serviceClient');
@@ -10,7 +14,37 @@ const { requestJson, unwrapPayload } = require('../utils/serviceClient');
 const analyticsServiceUrl = (process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8012').replace(/\/$/, '');
 const matchServiceUrl = (process.env.MATCH_SERVICE_URL || 'http://match-service:8000').replace(/\/$/, '');
 const teamServiceUrl = (process.env.TEAM_SERVICE_URL || 'http://team-service:8000').replace(/\/$/, '');
+const reportServiceUrl = (process.env.REPORT_SERVICE_URL || 'http://report-service:8009').replace(/\/$/, '');
 const analyticsRequestTimeoutMs = Number(process.env.ANALYTICS_SERVICE_TIMEOUT_MS || 2500);
+
+/**
+ * Proxy a GET request to the Python report-service and pipe the binary
+ * response (PDF) back to the Express `res`.  Returns true on success,
+ * false when the service is unreachable or returns a non-200 status.
+ */
+function proxyReportService(path, res) {
+  return new Promise((resolve) => {
+    const url = `${reportServiceUrl}${path}`;
+    const parsed = new URL(url);
+    const lib = parsed.protocol === 'https:' ? https : http;
+
+    const req = lib.get(url, { timeout: 30000 }, (upstream) => {
+      if (upstream.statusCode !== 200) {
+        upstream.resume();          // drain
+        return resolve(false);
+      }
+      res.setHeader('Content-Type', upstream.headers['content-type'] || 'application/pdf');
+      const disposition = upstream.headers['content-disposition'];
+      if (disposition) res.setHeader('Content-Disposition', disposition);
+      upstream.pipe(res);
+      upstream.on('end', () => resolve(true));
+      upstream.on('error', () => resolve(false));
+    });
+
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+    req.on('error', () => resolve(false));
+  });
+}
 
 let PDFDocument;
 try {
@@ -324,12 +358,20 @@ router.get('/:reportId/download', async (req, res) => {
 
 // GET /api/v2/reports/player/:playerId
 router.get('/player/:playerId', async (req, res) => {
-  const db = req.app.locals.db;
-  const p = await resolvePlayerReportData(db, req.params.playerId);
   const format = req.query.format || 'pdf';
 
+  // Try the Python report-service first (rich scouting report)
+  if (format === 'pdf') {
+    res.setHeader('Content-Disposition', `attachment; filename="scouting_player_${req.params.playerId}.pdf"`);
+    const proxied = await proxyReportService(`/api/v2/reports/scouting/player/${req.params.playerId}`, res);
+    if (proxied) return;
+  }
+
+  // Fallback: pdfkit-based report via MongoDB
+  const db = req.app.locals.db;
+  const p = await resolvePlayerReportData(db, req.params.playerId);
+
   if (format === 'excel') {
-    // Simple CSV-as-Excel fallback
     const csv = [
       ['Field', 'Value'],
       ['Name', p.name], ['Position', p.position], ['Age', p.age], ['Club', p.club],
@@ -367,9 +409,18 @@ router.get('/player/:playerId', async (req, res) => {
 
 // GET /api/v2/reports/team/:teamId
 router.get('/team/:teamId', async (req, res) => {
+  const format = req.query.format || 'pdf';
+
+  // Try the Python report-service first (rich tactical report)
+  if (format === 'pdf') {
+    res.setHeader('Content-Disposition', `attachment; filename="tactical_team_${req.params.teamId}.pdf"`);
+    const proxied = await proxyReportService(`/api/v2/reports/scouting/team/${req.params.teamId}`, res);
+    if (proxied) return;
+  }
+
+  // Fallback: pdfkit-based report via MongoDB
   const db = req.app.locals.db;
   const { team: t, players } = await resolveTeamReportData(db, req.params.teamId);
-  const format = req.query.format || 'pdf';
 
   if (format === 'excel') {
     const header = 'Name,Position,Age,Rating,Goals,Assists';
@@ -396,9 +447,18 @@ router.get('/team/:teamId', async (req, res) => {
 
 // GET /api/v2/reports/match/:matchId
 router.get('/match/:matchId', async (req, res) => {
+  const format = req.query.format || 'pdf';
+
+  // Try the Python report-service first (rich match analysis report)
+  if (format === 'pdf') {
+    res.setHeader('Content-Disposition', `attachment; filename="match_analysis_${req.params.matchId}.pdf"`);
+    const proxied = await proxyReportService(`/api/v2/reports/scouting/match/${req.params.matchId}`, res);
+    if (proxied) return;
+  }
+
+  // Fallback: pdfkit-based report via MongoDB
   const db = req.app.locals.db;
   const m = await resolveMatchReportData(db, req.params.matchId);
-  const format = req.query.format || 'pdf';
 
   if (format === 'excel') {
     const csv = [

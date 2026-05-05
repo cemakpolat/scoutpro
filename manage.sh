@@ -38,6 +38,16 @@ MONGO_URL="${MONGO_URL:-mongodb://root:scoutpro123@localhost:27017/scoutpro?auth
 COMPETITION_ID="${COMPETITION_ID:-115}"
 SEASON_ID="${SEASON_ID:-2019}"
 
+# Minimal startup footprint for day-to-day development.
+MINIMAL_SERVICES=(
+  mongo
+  redis
+  data-provider
+  data-sync-service
+  api-gateway
+  nginx
+)
+
 _banner() {
   echo -e "${C_BLUE}${C_BOLD}"
   echo "╔═══════════════════════════════════════════════════════════╗"
@@ -110,13 +120,42 @@ cmd_build() {
 cmd_start() {
   _banner
   _require_docker
-  _log "Starting the full ScoutPro stack ..."
+
+  local mode="minimal"
+  case "${1:-}" in
+    --full|full|all)
+      mode="full"
+      ;;
+    --minimal|minimal|"")
+      mode="minimal"
+      ;;
+    *)
+      _err "Unknown start option: ${1}"
+      echo "Usage: ./manage.sh start [--minimal|--full]"
+      exit 1
+      ;;
+  esac
+
+  if [[ "$mode" == "full" ]]; then
+    _log "Starting FULL ScoutPro stack ..."
+  else
+    _log "Starting MINIMAL ScoutPro stack (essential services only) ..."
+  fi
   echo ""
 
-  docker-compose -f "$COMPOSE_FILE" up -d
+  if [[ "$mode" == "full" ]]; then
+    docker-compose -f "$COMPOSE_FILE" up -d
+  else
+    docker-compose -f "$COMPOSE_FILE" up -d "${MINIMAL_SERVICES[@]}"
+  fi
 
   echo ""
-  _ok "All containers launched."
+  if [[ "$mode" == "full" ]]; then
+    _ok "Full stack launched."
+  else
+    _ok "Minimal stack launched."
+    _log "Started services: ${MINIMAL_SERVICES[*]}"
+  fi
   echo ""
   _log "Key service URLs:"
   echo "  Frontend            http://localhost:80"
@@ -127,6 +166,9 @@ cmd_start() {
   echo ""
   _log "Run '${C_BOLD}./manage.sh status${C_OFF}' to verify health."
   _log "Run '${C_BOLD}./manage.sh seed${C_OFF}' to load all data through the pipeline."
+  if [[ "$mode" == "minimal" ]]; then
+    _log "Need all services? Run '${C_BOLD}./manage.sh start --full${C_OFF}'."
+  fi
 }
 
 # =============================================================================
@@ -502,7 +544,7 @@ cmd_logs() {
 cmd_restart() {
   cmd_stop
   sleep 2
-  cmd_start
+  cmd_start "$@"
 }
 
 # =============================================================================
@@ -513,24 +555,25 @@ shift || true
 
 case "$CMD" in
   build)    cmd_build "$@" ;;
-  start)    cmd_start    ;;
+  start)    cmd_start "$@" ;;
   stop)     cmd_stop     ;;
   clean)    cmd_clean    ;;
   seed)     cmd_seed     ;;
   status)   cmd_status   ;;
   validate) cmd_validate ;;
   logs)     cmd_logs "$@" ;;
-  restart)  cmd_restart  ;;
+  restart)  cmd_restart "$@" ;;
   help|--help|-h)
     _banner
     echo "Usage: ./manage.sh <command> [options]"
     echo ""
     echo "  build [svc] Rebuild images from scratch (--no-cache --pull)"
     echo "              Omit [svc] to rebuild everything"
-    echo "  start       Start all containers (infrastructure + services)"
+    echo "  start [mode] Start containers"
+    echo "              modes: --minimal (default), --full"
     echo "  stop        Stop all containers (data preserved)"
     echo "  clean       Stop + wipe all volumes (destructive)"
-    echo "  restart     stop then start"
+    echo "  restart [mode] stop then start (same modes as start)"
     echo ""
     echo "  seed        Trigger full data pipeline:"
     echo "              data-provider → data-sync → Kafka → MongoDB"

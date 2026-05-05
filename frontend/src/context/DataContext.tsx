@@ -150,19 +150,40 @@ export function DataProvider({ children }: DataProviderProps) {
   );
 
   useEffect(() => {
-    if (playersData) dispatch({ type: 'SET_PLAYERS', payload: playersData });
+    if (playersData) {
+      const payload = Array.isArray(playersData)
+        ? playersData
+        : // support wrapped responses: { players: [...] } or { data: [...] }
+          playersData.players ?? playersData.data ?? [];
+      dispatch({ type: 'SET_PLAYERS', payload });
+    }
   }, [playersData]);
 
   useEffect(() => {
-    if (matchesData) dispatch({ type: 'SET_MATCHES', payload: matchesData });
+    if (matchesData) {
+      const payload = Array.isArray(matchesData)
+        ? matchesData
+        : matchesData.matches ?? matchesData.data ?? [];
+      dispatch({ type: 'SET_MATCHES', payload });
+    }
   }, [matchesData]);
 
   useEffect(() => {
-    if (teamsData) dispatch({ type: 'SET_TEAMS', payload: teamsData });
+    if (teamsData) {
+      const payload = Array.isArray(teamsData)
+        ? teamsData
+        : teamsData.teams ?? teamsData.data ?? [];
+      dispatch({ type: 'SET_TEAMS', payload });
+    }
   }, [teamsData]);
 
   useEffect(() => {
-    if (notificationsData) dispatch({ type: 'SET_NOTIFICATIONS', payload: notificationsData });
+    if (notificationsData) {
+      const payload = Array.isArray(notificationsData)
+        ? notificationsData
+        : notificationsData.notifications ?? notificationsData.data ?? [];
+      dispatch({ type: 'SET_NOTIFICATIONS', payload });
+    }
   }, [notificationsData]);
 
   useEffect(() => {
@@ -227,14 +248,6 @@ export function useData() {
   const context = useContext(DataContext);
   if (context === undefined) {
     throw new Error('useData must be used within a DataProvider');
-  }
-  return context;
-}
-
-export function useDataContext() {
-  const context = useContext(DataContext);
-  if (context === undefined) {
-    throw new Error('useDataContext must be used within a DataProvider');
   }
   return context;
 }

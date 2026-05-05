@@ -103,3 +103,11 @@ class IStatisticsRepository(ABC):
     ) -> Optional[Dict[str, Any]]:
         """Get persisted sequence summary for a match"""
         pass
+
+    @abstractmethod
+    async def get_match_statistics(
+        self,
+        match_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Get aggregated match-level statistics (box score + timeline)"""
+        pass

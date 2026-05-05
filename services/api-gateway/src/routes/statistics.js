@@ -240,4 +240,19 @@ router.get('/aggregate/player/:playerId', async (req, res) => {
   }
 });
 
+// GET /api/statistics/match/:matchId — match-level box score + EventMinutes timeline
+router.get('/match/:matchId', async (req, res) => {
+  try {
+    const payload = ensureSuccess(
+      await requestJson(statisticsServiceUrl, `/api/v2/statistics/match/${req.params.matchId}`, {}),
+      'Failed to fetch match statistics'
+    );
+
+    res.json(unwrapPayload(payload));
+  } catch (error) {
+    console.error('Match statistics error:', error);
+    sendGatewayError(res, error, 'Failed to fetch match statistics');
+  }
+});
+
 module.exports = router;

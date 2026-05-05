@@ -20,25 +20,95 @@ class MongoTeamRepository(ITeamRepository):
         self.teams_collection = db['teams']
         self.players_collection = db['players']
 
+    @staticmethod
+    def _collect_identifier_variants(value: Any, prefix: str = 't') -> tuple[list[str], list[int]]:
+        string_values: list[str] = []
+        numeric_values: list[int] = []
+
+        if value in (None, ''):
+            return string_values, numeric_values
+
+        raw_value = str(value).strip()
+        if not raw_value:
+            return string_values, numeric_values
+
+        def add_string(candidate: str) -> None:
+            if candidate and candidate not in string_values:
+                string_values.append(candidate)
+
+        def add_number(candidate: int) -> None:
+            if candidate not in numeric_values:
+                numeric_values.append(candidate)
+
+        add_string(raw_value)
+
+        stripped_value = raw_value
+        if prefix and raw_value.lower().startswith(prefix.lower()):
+            stripped_value = raw_value[1:]
+            add_string(stripped_value)
+
+        if stripped_value.isdigit():
+            add_number(int(stripped_value))
+            if prefix:
+                add_string(f'{prefix}{stripped_value}')
+
+        return string_values, numeric_values
+
+    @classmethod
+    def _build_team_lookup_query(cls, team_id: str) -> Dict[str, Any]:
+        string_values, numeric_values = cls._collect_identifier_variants(team_id)
+        or_clauses: List[Dict[str, Any]] = []
+
+        if string_values:
+            or_clauses.extend([
+                {'uID': {'$in': string_values}},
+                {'provider_ids.opta': {'$in': string_values}},
+                {'id': {'$in': string_values}},
+                {'scoutpro_id': {'$in': string_values}},
+            ])
+
+        if numeric_values:
+            or_clauses.extend([
+                {'id': {'$in': numeric_values}},
+                {'scoutpro_id': {'$in': numeric_values}},
+            ])
+
+        return {'$or': or_clauses} if or_clauses else {'uID': str(team_id)}
+
+    async def _resolve_team_doc(self, team_id: str) -> Optional[Dict[str, Any]]:
+        return await self.teams_collection.find_one(self._build_team_lookup_query(team_id))
+
+    @classmethod
+    def _expand_team_variants_from_doc(
+        cls,
+        team_id: str,
+        team_doc: Optional[Dict[str, Any]],
+    ) -> tuple[list[str], list[int]]:
+        string_values: list[str] = []
+        numeric_values: list[int] = []
+
+        def extend(candidate: Any) -> None:
+            strings, numbers = cls._collect_identifier_variants(candidate)
+            for value in strings:
+                if value not in string_values:
+                    string_values.append(value)
+            for value in numbers:
+                if value not in numeric_values:
+                    numeric_values.append(value)
+
+        extend(team_id)
+        if team_doc:
+            extend(team_doc.get('uID'))
+            extend(team_doc.get('id'))
+            extend(team_doc.get('scoutpro_id'))
+            extend((team_doc.get('provider_ids') or {}).get('opta'))
+
+        return string_values, numeric_values
+
     async def get_by_id(self, team_id: str) -> Optional[Team]:
         """Get team by ID from MongoDB"""
         try:
-            # Normalize: strip leading 't' prefix (e.g. "t2137" → "2137")
-            normalized = str(team_id).lstrip('tT')
-            query_values = [team_id]
-            try:
-                query_values.append(int(normalized))
-            except (ValueError, TypeError):
-                pass
-            if normalized != team_id:
-                query_values.append(normalized)
-
-            # Try uID as int
-            doc = await self.teams_collection.find_one({"uID": int(normalized)}) if normalized.isdigit() else None
-
-            if not doc:
-                # Try string uID variants
-                doc = await self.teams_collection.find_one({"uID": {"$in": query_values}})
+            doc = await self._resolve_team_doc(team_id)
 
             if not doc:
                 # Try _id field
@@ -119,9 +189,17 @@ class MongoTeamRepository(ITeamRepository):
     async def get_squad(self, team_id: str) -> List[Dict[str, Any]]:
         """Get team squad (list of players)"""
         try:
-            normalized = str(team_id).lstrip('tT')
-            tid_int = int(normalized) if normalized.isdigit() else None
-            query = {"teamID": tid_int} if tid_int is not None else {"teamID": team_id}
+            team_doc = await self._resolve_team_doc(team_id)
+            string_values, numeric_values = self._expand_team_variants_from_doc(team_id, team_doc)
+
+            or_clauses: List[Dict[str, Any]] = []
+            for field in ('team_id', 'current_team_id', 'teamID'):
+                if string_values:
+                    or_clauses.append({field: {'$in': string_values}})
+                if numeric_values:
+                    or_clauses.append({field: {'$in': numeric_values}})
+
+            query = {'$or': or_clauses} if or_clauses else {'teamID': team_id}
             cursor = self.players_collection.find(query)
             docs = await cursor.to_list(length=None)
 
@@ -148,10 +226,12 @@ class MongoTeamRepository(ITeamRepository):
     async def update(self, team_id: str, team: Team) -> bool:
         """Update team"""
         try:
-            normalized = str(team_id).lstrip('tT')
-            tid_int = int(normalized) if normalized.isdigit() else team_id
+            team_doc = await self._resolve_team_doc(team_id)
+            if not team_doc or '_id' not in team_doc:
+                return False
+
             result = await self.teams_collection.update_one(
-                {'uID': tid_int},
+                {'_id': team_doc['_id']},
                 {'$set': team.dict()}
             )
             return result.modified_count > 0

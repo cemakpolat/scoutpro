@@ -84,49 +84,22 @@ const PerformanceTracker: React.FC = () => {
   const [loading, setLoading] = useState(false);
 
   const { players: contextPlayers } = useData();
+  // Aggregate match-level stats keyed by Opta player_id for enriching metrics
   const { data: playerStatsData } = useApi(
-    () => apiService.getPlayerStatisticsRealtime(50, 0, 'goals'),
+    () => apiService.getPlayerStatisticsRealtime(500, 0, 'goals'),
     [],
   );
 
-  // Build lookup map from contextPlayers for name/position enrichment
-  const contextPlayerMap = React.useMemo(() => {
-    const map: Record<string, any> = {};
-    (contextPlayers || []).forEach((p: any) => {
-      if (p.id) map[String(p.id)] = p;
-      if (p.opta_uid) map[String(p.opta_uid).replace(/^p/, '')] = p;
-    });
-    return map;
-  }, [contextPlayers]);
-
-  // Prefer stats-derived list (deduplicated by player_id, enriched with names from contextPlayers)
-  // Fall back to contextPlayers when stats haven't loaded or are empty
+  // Always use contextPlayers for the dropdown — they have proper scoutpro UUIDs and display names
   const players = React.useMemo(() => {
-    const statsEntries = playerStatsData?.data || [];
-    if (statsEntries.length > 0) {
-      const seen = new Set<string>();
-      const result: any[] = [];
-      for (const p of statsEntries) {
-        const pid = String(p.player_id || '');
-        if (!pid || seen.has(pid)) continue;
-        seen.add(pid);
-        const ctx = contextPlayerMap[pid] || contextPlayerMap[pid.replace(/^p/, '')] || {};
-        result.push({
-          id: pid,
-          name: p.player_name || ctx.name || `Player ${pid}`,
-          position: p.player_position || ctx.position || 'Unknown',
-          club: ctx.club || ctx.current_team_name || 'N/A',
-        });
-      }
-      return result;
-    }
     return (contextPlayers || []).map((p: any) => ({
       id: String(p.id || ''),
       name: p.name || 'Unknown',
       position: p.position || 'Unknown',
       club: p.club || p.current_team_name || 'Unknown',
+      optaId: p.opta_uid ? String(p.opta_uid).replace(/^p/, '') : null,
     })).filter(p => p.id);
-  }, [playerStatsData, contextPlayers, contextPlayerMap]);
+  }, [contextPlayers]);
 
   useEffect(() => {
     if (players.length > 0 && !selectedPlayer) {
@@ -142,6 +115,56 @@ const PerformanceTracker: React.FC = () => {
 
     setLoading(true);
 
+    // Find the selected player in contextPlayers to get their Opta ID
+    const ctxPlayer = (contextPlayers || []).find((p: any) => String(p.id) === String(selectedPlayer));
+    const optaId = ctxPlayer?.opta_uid ? String(ctxPlayer.opta_uid).replace(/^p/, '') : null;
+
+    // Aggregate match-level stats from the stats feed for this player's Opta ID
+    const matchEntries: any[] = optaId
+      ? ((playerStatsData?.data || []).filter((e: any) => String(e.player_id) === optaId))
+      : [];
+
+    if (matchEntries.length > 0) {
+      const agg = matchEntries.reduce((acc: any, e: any) => ({
+        goals: acc.goals + (Number(e.goals) || 0),
+        assists: acc.assists + (Number(e.assists) || 0),
+        passes: acc.passes + (Number(e.passes) || 0),
+        passes_successful: acc.passes_successful + (Number(e.passes_successful) || 0),
+        shots: acc.shots + (Number(e.shots) || 0),
+        tackles: acc.tackles + (Number(e.tackles) || 0),
+        aerials: acc.aerials + (Number(e.aerials) || 0),
+        aerials_won: acc.aerials_won + (Number(e.aerials_won) || 0),
+      }), { goals: 0, assists: 0, passes: 0, passes_successful: 0, shots: 0, tackles: 0, aerials: 0, aerials_won: 0 });
+
+      const passAccuracy = agg.passes > 0 ? Math.round((agg.passes_successful / agg.passes) * 100) : 0;
+      const overall = Math.min(10, Math.max(5, passAccuracy / 10 + (agg.goals + agg.assists) * 0.5));
+      const formHistory = buildFormSeries(overall, agg.goals, agg.assists);
+
+      setPlayerMetrics({
+        overall,
+        goals: agg.goals,
+        assists: agg.assists,
+        xG: Math.max(0, agg.goals - 0.2),
+        xA: agg.assists,
+        passAccuracy,
+        dribbleSuccess: agg.shots > 0 ? Math.min(90, (agg.goals / agg.shots) * 100) : 50,
+        sprintSpeed: 0,
+        distanceCovered: 0,
+        tackles: agg.tackles,
+        aerialDuels: agg.aerials,
+        aerialWins: agg.aerials_won,
+        aerialAccuracy: agg.aerials > 0 ? Math.round((agg.aerials_won / agg.aerials) * 100) : 0,
+        form: formHistory,
+        trend: inferTrend(formHistory),
+        injuryRisk: 0,
+        workload: 0,
+        recoveryScore: 0,
+      });
+      setLoading(false);
+      return;
+    }
+
+    // Fall back to analytics API endpoints (may return empty for most players)
     Promise.all([
       apiService.getPlayerDetailedStats(selectedPlayer).catch(() => null),
       apiService.getPlayerStatisticsById(String(selectedPlayer)).catch(() => null),
@@ -153,11 +176,9 @@ const PerformanceTracker: React.FC = () => {
       const insightsData = (insightsResponse as any)?.data || {};
       const playerData = (playerResponse as any)?.data || {};
 
-      // Extract event source information
       const sourceInfo = (detailedStatsResponse as any)?.data?.event_source || {};
       setEventSource(sourceInfo);
 
-      // Prefer detailed statistics computed from event handlers
       const goals = Number(detailedStats.statistics?.shooting?.goals ?? statsData.goals ?? playerData.goals ?? 0);
       const assists = Number(statsData.assists ?? playerData.assists ?? 0);
       const shots = Number(detailedStats.statistics?.shooting?.total ?? statsData.shots ?? 0);
@@ -167,7 +188,7 @@ const PerformanceTracker: React.FC = () => {
       const aerialDuels = Number(detailedStats.statistics?.aerials?.duels ?? 0);
       const aerialWins = Number(detailedStats.statistics?.aerials?.won ?? 0);
       const aerialAccuracy = Number(detailedStats.statistics?.aerials?.accuracy ?? 0);
-      
+
       const overall = Math.min(10, Math.max(5, passAccuracy / 10 + (goals + assists) * 0.5));
       const formHistory = buildFormSeries(overall, goals, assists);
 
@@ -192,7 +213,7 @@ const PerformanceTracker: React.FC = () => {
         recoveryScore: Number(insightsData.recoveryScore ?? insightsData.recovery ?? 0),
       });
     }).finally(() => setLoading(false));
-  }, [contextPlayers, selectedPlayer]);
+  }, [contextPlayers, selectedPlayer, playerStatsData]);
 
   const performanceMetrics = playerMetrics || {
     overall: 0,

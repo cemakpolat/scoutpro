@@ -4,6 +4,11 @@ import { ShotMap, HeatMap, PassNetwork } from './visualizations';
 import ErrorBoundary from './ErrorBoundary';
 import apiService from '../services/api';
 
+function unwrapApiPayload<T>(payload: any): T | null {
+  if (!payload) return null;
+  return (payload?.data ?? payload) as T;
+}
+
 interface MatchDetailWithVisualizationsProps {
   matchId: string;
   homeTeam?: string;
@@ -21,7 +26,7 @@ function TacticalMetricsPanel({ matchId }: { matchId: string }) {
 
   useEffect(() => {
     apiService.getMatchTacticalMetrics(matchId)
-      .then(r => setData(r.success ? r.data : null))
+      .then(r => setData(r.success ? unwrapApiPayload(r.data) : null))
       .catch(() => setData(null))
       .finally(() => setLoading(false));
   }, [matchId]);
@@ -95,7 +100,7 @@ function SequenceInsightsPanel({ matchId }: { matchId: string }) {
 
   useEffect(() => {
     apiService.getMatchSequenceInsights(matchId)
-      .then(r => setData(r.success ? r.data : null))
+      .then(r => setData(r.success ? unwrapApiPayload(r.data) : null))
       .catch(() => setData(null))
       .finally(() => setLoading(false));
   }, [matchId]);
@@ -165,7 +170,7 @@ export const MatchDetailWithVisualizations: React.FC<MatchDetailWithVisualizatio
   const [expandedSections, setExpandedSections] = useState({
     shotMap: true,
     heatMap: true,
-    passNetwork: false,
+    passNetwork: true,
     tactical: true,
     sequences: true,
   });
@@ -177,7 +182,7 @@ export const MatchDetailWithVisualizations: React.FC<MatchDetailWithVisualizatio
   useEffect(() => {
     setVizLoading(true);
     apiService.getMatchViz(matchId, homeTeamId, awayTeamId)
-      .then(r => setVizData(r.success ? r.data : null))
+      .then(r => setVizData(r.success ? unwrapApiPayload(r.data) : null))
       .catch(() => setVizData(null))
       .finally(() => setVizLoading(false));
   }, [matchId, homeTeamId, awayTeamId]);

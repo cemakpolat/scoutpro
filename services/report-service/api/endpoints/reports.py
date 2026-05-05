@@ -284,6 +284,80 @@ async def generate_match_report(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ============ Scouting-Style Report Endpoints ============
+
+@router.get("/scouting/player/{player_id}", summary="Generate professional player scouting report")
+async def generate_scouting_player_report(
+    player_id: str = Path(..., description="Player ID"),
+    include_stats: bool = Query(True, description="Include full statistics"),
+):
+    """
+    Generate a professional scouting report for a player, mirroring the style
+    used by human scouts (profile, season performance, statistical breakdown,
+    advanced metrics, and analytical narrative).
+    """
+    try:
+        from services.pdf_generator import PDFGenerator
+        generator = PDFGenerator()
+        content = await generator.generate_player_report(player_id, include_stats=include_stats)
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=scouting_player_{player_id}.pdf"}
+        )
+    except Exception as e:
+        logger.error(f"Error generating player scouting report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scouting/team/{team_id}", summary="Generate professional team tactical report")
+async def generate_scouting_team_report(
+    team_id: str = Path(..., description="Team ID"),
+    include_players: bool = Query(True, description="Include squad list"),
+    include_stats: bool = Query(True, description="Include team statistics"),
+):
+    """
+    Generate a professional tactical report for a team, covering club profile,
+    squad overview, statistical analysis, and playing-style narrative.
+    """
+    try:
+        from services.pdf_generator import PDFGenerator
+        generator = PDFGenerator()
+        content = await generator.generate_team_report(team_id, include_players=include_players, include_stats=include_stats)
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=tactical_team_{team_id}.pdf"}
+        )
+    except Exception as e:
+        logger.error(f"Error generating team tactical report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scouting/match/{match_id}", summary="Generate professional match analysis report")
+async def generate_scouting_match_report(
+    match_id: str = Path(..., description="Match ID"),
+    include_events: bool = Query(True, description="Include event-level analysis"),
+    include_stats: bool = Query(True, description="Include team statistics comparison"),
+):
+    """
+    Generate a detailed match analysis report covering the scoreline, event timeline,
+    team statistics comparison, disciplinary records, and narrative summary.
+    """
+    try:
+        from services.pdf_generator import PDFGenerator
+        generator = PDFGenerator()
+        content = await generator.generate_match_report(match_id, include_events=include_events, include_stats=include_stats)
+        return StreamingResponse(
+            io.BytesIO(content),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=match_analysis_{match_id}.pdf"}
+        )
+    except Exception as e:
+        logger.error(f"Error generating match analysis report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ============ Report Management Endpoints ============
 
 @router.get("/list", summary="List all reports")

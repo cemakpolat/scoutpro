@@ -135,7 +135,10 @@ _ENTITY_SYNCERS = {
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    scheduler = _get_scheduler()
+    # Allow disabling the scheduler in development to keep the HTTP API up
+    # when dependent services (Kafka, Redis, large provider feeds) aren't available.
+    start_scheduler = os.getenv('START_SCHEDULER', 'true').lower() in ('1', 'true', 'yes')
+    scheduler = _get_scheduler() if start_scheduler else None
     bg_task = None
     if scheduler:
         # Run the scheduler loop in the background so the HTTP server stays up.

@@ -77,6 +77,33 @@ function normalizeTeamIdQuery(team_id) {
   return isNaN(num) ? { $in: [team_id, stripped] } : { $in: [num, stripped, team_id] };
 }
 
+function normalizeTeamIdValue(teamId) {
+  if (teamId == null) return '';
+  const raw = String(teamId).trim();
+  if (!raw) return '';
+  if (/^[a-zA-Z]\d+$/.test(raw)) return raw.slice(1);
+  return raw;
+}
+
+function collectTeamIdVariants(teamId) {
+  const raw = String(teamId || '').trim();
+  if (!raw) return [];
+
+  const normalized = normalizeTeamIdValue(raw);
+  const variants = new Set([raw, normalized]);
+  if (/^\d+$/.test(normalized)) {
+    variants.add(`t${normalized}`);
+    const numeric = Number(normalized);
+    if (Number.isSafeInteger(numeric)) variants.add(numeric);
+  }
+
+  return Array.from(variants).filter(Boolean);
+}
+
+function extractEventTeamId(event) {
+  return normalizeTeamIdValue(event?.team_id);
+}
+
 // ---------------------------------------------------------------------------
 // Visualization cache — match event data is immutable once seeded so TTL is 1hr
 // ---------------------------------------------------------------------------
@@ -325,7 +352,7 @@ router.get('/search', async (req, res) => {
   try {
     const db = req.app.locals.db;
     if (!db) {
-      return res.status(503).json({ success: false, error: 'Database not available' });
+      return res.json([]);
     }
 
     const q = String(req.query.q || '').trim();
@@ -448,7 +475,7 @@ router.get('/:id/shots-map', async (req, res) => {
   try {
     const db = req.app.locals.db;
     if (!db) {
-      return res.status(503).json({ success: false, error: 'Database not available' });
+      return res.json({ success: true, data: [] });
     }
 
     const cacheKey = `shots:${req.params.id}`;
@@ -509,7 +536,7 @@ router.get('/:id/heat-map', async (req, res) => {
   try {
     const db = req.app.locals.db;
     if (!db) {
-      return res.status(503).json({ success: false, error: 'Database not available' });
+      return res.json({ success: true, data: { grid: {}, cellCounts: {}, maxIntensity: 1, totalPoints: 0 } });
     }
 
     const { team_id, player_id } = req.query;
@@ -551,7 +578,7 @@ router.get('/:id/pass-map', async (req, res) => {
   try {
     const db = req.app.locals.db;
     if (!db) {
-      return res.status(503).json({ success: false, error: 'Database not available' });
+      return res.json({ success: true, data: { players: [], connections: [] } });
     }
 
     const { team_id } = req.query;
@@ -644,7 +671,7 @@ router.get('/:id/pass-map', async (req, res) => {
 router.get('/:id/events/filter', async (req, res) => {
   try {
     const db = req.app.locals.db;
-    if (!db) return res.status(503).json({ success: false, error: 'Database not available' });
+    if (!db) return res.json({ success: true, data: [], count: 0 });
 
     const { type_name, team_id, player_id, period } = req.query;
 
@@ -709,7 +736,8 @@ router.get('/:id/viz', async (req, res) => {
   try {
     const db = req.app.locals.db;
     if (!db) {
-      return res.status(503).json({ success: false, error: 'Database not available' });
+      console.info(`[match-viz] match=${req.params.id} db=missing`);
+      return res.json({ success: true, data: { shots: [], heatmap_home: null, heatmap_away: null, home_passes: { players: [], connections: [] }, away_passes: { players: [], connections: [] } } });
     }
 
     const matchId = req.params.id;
@@ -717,29 +745,56 @@ router.get('/:id/viz', async (req, res) => {
 
     const cacheKey = `viz:${matchId}:${home_team_id || ''}:${away_team_id || ''}`;
     const cached = _vizCacheGet(cacheKey);
-    if (cached) return res.json(cached);
+    if (cached) {
+      console.info(`[match-viz] match=${matchId} cache=hit home=${home_team_id || '-'} away=${away_team_id || '-'} shots=${cached?.data?.shots?.length || 0} homeHeat=${cached?.data?.heatmap_home?.totalPoints || 0} awayHeat=${cached?.data?.heatmap_away?.totalPoints || 0} homePassPlayers=${cached?.data?.pass_network_home?.players?.length || 0} awayPassPlayers=${cached?.data?.pass_network_away?.players?.length || 0}`);
+      return res.json(cached);
+    }
 
     const matchQuery = buildEventMatchQuery(matchId);
     const hasLocation = { 'location.x': { $exists: true }, 'location.y': { $exists: true } };
 
-    // Resolve ScoutPro team IDs → Opta team ID strings (what match_events store as team_id)
-    // Events store Opta team IDs like '405', '208'. The teams collection has
-    // uID: 't405' and scoutpro_id (as Long) matching the frontend's ScoutPro ID.
+    // Resolve ScoutPro IDs, raw Opta numeric IDs, and t-prefixed Opta IDs to the
+    // raw Opta team_id strings stored on match_events documents.
     async function resolveOptaTeamId(scoutproId) {
       if (!scoutproId) return null;
+      const rawId = String(scoutproId).trim();
+      const normalizedId = normalizeTeamIdValue(rawId);
+
+      if (/^t\d+$/i.test(rawId)) return normalizedId;
+      if (/^\d+$/.test(rawId) && rawId.length <= 10) return rawId;
+
       let teamDoc = null;
+      const lookupClauses = [];
+      for (const variant of collectTeamIdVariants(rawId)) {
+        lookupClauses.push({ uID: variant });
+        lookupClauses.push({ id: variant });
+        lookupClauses.push({ scoutpro_id: variant });
+        lookupClauses.push({ 'provider_ids.opta': variant });
+      }
+
       try {
-        teamDoc = await db.collection('teams').findOne({
-          $or: [
-            { scoutpro_id: Long.fromString(String(scoutproId)) },
-            { id: Long.fromString(String(scoutproId)) },
-          ]
-        });
+        lookupClauses.push({ scoutpro_id: Long.fromString(rawId) });
+        lookupClauses.push({ id: Long.fromString(rawId) });
       } catch (_) { /* invalid Long string */ }
+      try {
+        if (normalizedId !== rawId) {
+          lookupClauses.push({ scoutpro_id: Long.fromString(normalizedId) });
+          lookupClauses.push({ id: Long.fromString(normalizedId) });
+        }
+      } catch (_) { /* invalid Long string */ }
+
+      teamDoc = await db.collection('teams').findOne(
+        { $or: lookupClauses },
+        { projection: { uID: 1, provider_ids: 1 } }
+      );
+
       if (!teamDoc) return null;
-      // uID is 't405' → strip the 't' to get the Opta event team_id '405'
-      const uid = String(teamDoc.uID || '');
-      return uid.replace(/^t/i, '') || null;
+
+      const providerOpta = teamDoc.provider_ids?.opta;
+      if (providerOpta != null) return normalizeTeamIdValue(providerOpta);
+
+      const uid = normalizeTeamIdValue(teamDoc.uID || '');
+      return uid || null;
     }
 
     const [optaHomeId, optaAwayId] = await Promise.all([
@@ -759,8 +814,29 @@ router.get('/:id/viz', async (req, res) => {
     const homeTeamFilter = optaHomeId ? teamFilter(optaHomeId) : null;
     const awayTeamFilter = optaAwayId ? teamFilter(optaAwayId) : null;
 
-    const [shotEvents, allLocationEvents, homePassEvents, awayPassEvents] = await Promise.all([
-      // shots
+    // If ScoutPro ID resolution failed, try the raw Opta team IDs stored on the match doc
+    async function getMatchDoc() {
+      try {
+        return await db.collection('matches').findOne(buildMatchQuery(matchId),
+          { projection: { home_opta_team_id: 1, away_opta_team_id: 1, home_team_name: 1, away_team_name: 1 } });
+      } catch (_) { return null; }
+    }
+    let effectiveHomeFilter = homeTeamFilter;
+    let effectiveAwayFilter = awayTeamFilter;
+    if (!effectiveHomeFilter || !effectiveAwayFilter) {
+      const matchDoc = await getMatchDoc();
+      if (matchDoc) {
+        if (!effectiveHomeFilter && matchDoc.home_opta_team_id) {
+          effectiveHomeFilter = teamFilter(String(matchDoc.home_opta_team_id));
+        }
+        if (!effectiveAwayFilter && matchDoc.away_opta_team_id) {
+          effectiveAwayFilter = teamFilter(String(matchDoc.away_opta_team_id));
+        }
+      }
+    }
+
+    const [shotEvents, allLocationEvents, allPassEvents] = await Promise.all([
+      // shots — include all shot-like events regardless of team
       db.collection('match_events').find({
         $and: [
           matchQuery,
@@ -774,18 +850,12 @@ router.get('/:id/viz', async (req, res) => {
       }).toArray(),
       // all events with location for heatmap filtering
       db.collection('match_events').find({ ...matchQuery, ...hasLocation }).toArray(),
-      // home pass events
-      homeTeamFilter
-        ? db.collection('match_events').find({
-            ...matchQuery, type_name: 'pass', ...hasLocation, team_id: homeTeamFilter,
-          }).toArray()
-        : Promise.resolve([]),
-      // away pass events
-      awayTeamFilter
-        ? db.collection('match_events').find({
-            ...matchQuery, type_name: 'pass', ...hasLocation, team_id: awayTeamFilter,
-          }).toArray()
-        : Promise.resolve([]),
+      // pass events are fetched once and split by inferred team IDs below.
+      db.collection('match_events').find({
+        ...matchQuery,
+        type_name: 'pass',
+        ...hasLocation,
+      }).toArray(),
     ]);
 
     // --- shots ---
@@ -797,6 +867,7 @@ router.get('/:id/viz', async (req, res) => {
         id: String(e._id),
         player_id: String(e.player_id || e.playerID || ''),
         player_name: e.player_name || `Player ${e.player_id || 'Unknown'}`,
+        opta_id: e.player_id || e.playerID,
         x, y,
         is_goal: !!e.is_goal,
         xg: Math.round(Math.exp(-dist / 30) * 10000) / 10000,
@@ -809,6 +880,20 @@ router.get('/:id/viz', async (req, res) => {
       };
     });
 
+    // Enrich shots with real player names and ScoutPro IDs
+    async function enrichShotsWithRealNames(shotList) {
+      return Promise.all(
+        shotList.map(async (shot) => {
+          const playerInfo = await getPlayerInfo(shot.opta_id);
+          return {
+            ...shot,
+            scoutpro_player_id: playerInfo.scoutproId,
+            player_name: playerInfo.name,
+          };
+        })
+      );
+    }
+
     // --- heatmaps: filter by Opta team_id from the already-fetched allLocationEvents ---
     function filterByOptaTeam(events, optaId) {
       if (!optaId) return events;
@@ -816,15 +901,80 @@ router.get('/:id/viz', async (req, res) => {
       return events.filter(e => String(e.team_id) === optaId || (Number.isFinite(num) && e.team_id === num));
     }
 
-    const homePoints = filterByOptaTeam(allLocationEvents, optaHomeId)
+    // Extract the raw Opta team ID string from the effective filter (if it was resolved)
+    function extractOptaIdFromFilter(filter) {
+      if (!filter || !filter.$in) return null;
+      const strVals = filter.$in.filter(v => typeof v === 'string');
+      return strVals[0] || null;
+    }
+
+    let effectiveHomeOptaId = optaHomeId || extractOptaIdFromFilter(effectiveHomeFilter);
+    let effectiveAwayOptaId = optaAwayId || extractOptaIdFromFilter(effectiveAwayFilter);
+
+    function inferTeamIds(events) {
+      const counts = new Map();
+      for (const event of events) {
+        const teamId = extractEventTeamId(event);
+        if (!teamId) continue;
+        counts.set(teamId, (counts.get(teamId) || 0) + 1);
+      }
+      return Array.from(counts.entries())
+        .sort((left, right) => right[1] - left[1])
+        .map(([teamId]) => teamId);
+    }
+
+    const inferredTeamIds = inferTeamIds(allPassEvents.length ? allPassEvents : allLocationEvents);
+    if (!effectiveHomeOptaId) {
+      effectiveHomeOptaId = inferredTeamIds[0] || null;
+    }
+    if (!effectiveAwayOptaId) {
+      effectiveAwayOptaId = inferredTeamIds.find(teamId => teamId !== effectiveHomeOptaId) || null;
+    }
+
+    const homePoints = filterByOptaTeam(allLocationEvents, effectiveHomeOptaId)
       .map(e => ({ x: e.location.x, y: e.location.y, intensity: 1 }));
-    const awayPoints = filterByOptaTeam(allLocationEvents, optaAwayId)
+    const awayPoints = filterByOptaTeam(allLocationEvents, effectiveAwayOptaId)
       .map(e => ({ x: e.location.x, y: e.location.y, intensity: 1 }));
 
     // If no team IDs provided or resolution failed, split by distinct team_ids
-    const fallbackPoints = (!optaHomeId && !optaAwayId)
+    const fallbackPoints = (!effectiveHomeOptaId && !effectiveAwayOptaId)
       ? allLocationEvents.map(e => ({ x: e.location.x, y: e.location.y, intensity: 1 }))
       : null;
+
+    const homePassEvents = filterByOptaTeam(allPassEvents, effectiveHomeOptaId);
+    const awayPassEvents = filterByOptaTeam(allPassEvents, effectiveAwayOptaId);
+
+    // Cache for player lookup (Opta ID → { scoutproId, name })
+    const playerLookupCache = new Map();
+    async function getPlayerInfo(optaPlayerId) {
+      const optaIdStr = String(optaPlayerId || '');
+      if (!optaIdStr) return { scoutproId: null, name: 'Unknown' };
+
+      if (playerLookupCache.has(optaIdStr)) {
+        return playerLookupCache.get(optaIdStr);
+      }
+
+      try {
+        const playerDoc = await db.collection('players').findOne(
+          { $or: [{ 'provider_ids.opta': optaIdStr }, { uID: `p${optaIdStr}` }] },
+          { projection: { scoutpro_id: 1, id: 1, name: 1, first_name: 1, last_name: 1 } }
+        );
+        
+        if (playerDoc) {
+          const scoutproId = playerDoc.scoutpro_id ?? playerDoc.id;
+          const name = playerDoc.name || [playerDoc.first_name, playerDoc.last_name].filter(Boolean).join(' ') || `Player ${optaIdStr}`;
+          const result = { scoutproId: String(scoutproId), name };
+          playerLookupCache.set(optaIdStr, result);
+          return result;
+        }
+      } catch (err) {
+        console.warn(`Player lookup failed for Opta ID ${optaIdStr}:`, err.message);
+      }
+
+      const notFound = { scoutproId: null, name: `Player ${optaIdStr}` };
+      playerLookupCache.set(optaIdStr, notFound);
+      return notFound;
+    }
 
     // --- pass networks ---
     function buildPassNetwork(passEvents) {
@@ -833,7 +983,7 @@ router.get('/:id/viz', async (req, res) => {
       passEvents.forEach((p, i) => {
         const pid = String(p.player_id || 'unknown');
         if (!playersMap[pid]) {
-          playersMap[pid] = { player_id: pid, player_name: p.player_name || `Player ${pid}`, totalX: 0, totalY: 0, touches: 0, passes: 0 };
+          playersMap[pid] = { player_id: pid, player_name: p.player_name || `Player ${pid}`, totalX: 0, totalY: 0, touches: 0, passes: 0, opta_id: p.player_id };
         }
         playersMap[pid].touches++;
         playersMap[pid].passes++;
@@ -851,7 +1001,7 @@ router.get('/:id/viz', async (req, res) => {
         }
       });
       const players = Object.values(playersMap).map(pv => ({
-        player_id: pv.player_id, player_name: pv.player_name,
+        player_id: pv.player_id, player_name: pv.player_name, opta_id: pv.opta_id,
         x: pv.totalX / pv.touches, y: pv.totalY / pv.touches,
         touches: pv.touches, passes: pv.passes,
       }));
@@ -861,16 +1011,48 @@ router.get('/:id/viz', async (req, res) => {
       return { players, connections };
     }
 
+    // Build visualizations with player info
+    const homePassNet = buildPassNetwork(homePassEvents);
+    const awayPassNet = buildPassNetwork(awayPassEvents);
+
+    // Resolve ScoutPro IDs and real names for pass network players
+    async function enrichPassNetworkWithRealNames(passNet) {
+      if (!passNet || !passNet.players) return passNet;
+      
+      const enrichedPlayers = await Promise.all(
+        passNet.players.map(async (player) => {
+          const playerInfo = await getPlayerInfo(player.opta_id);
+          return {
+            ...player,
+            scoutpro_id: playerInfo.scoutproId,
+            player_name: playerInfo.name,
+          };
+        })
+      );
+
+      return {
+        ...passNet,
+        players: enrichedPlayers,
+      };
+    }
+
+    // Enrich with real player names and ScoutPro IDs
+    const enrichedShots = await enrichShotsWithRealNames(shots);
+    const enrichedHomePassNet = await enrichPassNetworkWithRealNames(homePassNet);
+    const enrichedAwayPassNet = await enrichPassNetworkWithRealNames(awayPassNet);
+
     const result = {
       success: true,
       data: {
-        shots,
+        shots: enrichedShots,
         heatmap_home: computeHeatmapGrid(homePoints.length ? homePoints : (fallbackPoints || [])),
         heatmap_away: computeHeatmapGrid(awayPoints),
-        pass_network_home: buildPassNetwork(homePassEvents),
-        pass_network_away: buildPassNetwork(awayPassEvents),
+        pass_network_home: enrichedHomePassNet,
+        pass_network_away: enrichedAwayPassNet,
       },
     };
+
+    console.info(`[match-viz] match=${matchId} cache=miss resolvedHome=${effectiveHomeOptaId || '-'} resolvedAway=${effectiveAwayOptaId || '-'} shots=${enrichedShots.length} homeHeat=${result.data.heatmap_home?.totalPoints || 0} awayHeat=${result.data.heatmap_away?.totalPoints || 0} homePassPlayers=${enrichedHomePassNet?.players?.length || 0} awayPassPlayers=${enrichedAwayPassNet?.players?.length || 0}`);
 
     _vizCacheSet(cacheKey, result);
     res.json(result);
@@ -1054,7 +1236,7 @@ router.get('/enriched/list', async (req, res) => {
   try {
     const db = req.app.locals.db;
     if (!db) {
-      return res.status(503).json({ success: false, error: 'Database not available' });
+      return res.json({ success: true, data: [], total: 0, limit: 50, skip: 0 });
     }
 
     const limit = Math.min(parseInt(req.query.limit) || 50, 500);

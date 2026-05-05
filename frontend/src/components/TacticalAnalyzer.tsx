@@ -98,7 +98,7 @@ const hasConcreteTeamContext = (match: any): boolean => {
 };
 
 const createLocalResponse = <T,>(data: T) => ({
-  success: true,
+  success: true as const,
   data,
   meta: { timestamp: new Date().toISOString(), source: 'client' },
 });
@@ -111,7 +111,7 @@ const TacticalAnalyzer: React.FC = () => {
   const [selectedYear, setSelectedYear] = useState('all');
   const [selectedLeague, setSelectedLeague] = useState('all');
   
-  const { data: enrichedMatches } = useApi(() => apiService.getMatchesEnriched(10, 0), []);
+  const { data: enrichedMatches } = useApi(() => apiService.getMatches({ limit: 100 }), []);
   const {
     data: matchEventsData,
     loading: eventsLoading,
@@ -129,7 +129,7 @@ const TacticalAnalyzer: React.FC = () => {
     [selectedFormation, selectedPhase, selectedMatchId]
   );
 
-  const matchOptions = enrichedMatches?.data || [];
+  const matchOptions = Array.isArray(enrichedMatches) ? enrichedMatches : [];
   const matchCatalog = useMemo(() => buildMatchCatalog(matchOptions), [matchOptions]);
   const availableYears = useMemo(() => getAvailableYears(matchCatalog), [matchCatalog]);
   const availableLeagues = useMemo(
@@ -519,7 +519,7 @@ const TacticalAnalyzer: React.FC = () => {
                   </div>
                 </div>
                 <div className="text-xs text-slate-400">
-                  Active in: {pattern.zones.join(', ')}
+                  Active in: {Array.isArray(pattern.zones) ? pattern.zones.join(', ') : 'N/A'}
                 </div>
               </div>
             )) : (

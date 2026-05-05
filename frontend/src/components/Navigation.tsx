@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import {
   Home, Users, Activity, Search, FileText, BarChart3, Settings,
-  Target, Bell, ChevronDown, Zap, TrendingUp, Shield, Menu, X, LogOut, User as UserIcon, Film,
-  Calendar as CalendarIcon, Upload, Cpu
+  Target, Bell, ChevronDown, Zap, TrendingUp, Shield, Menu, X, LogOut, User as UserIcon,
+  Upload, Cpu
 } from 'lucide-react';
 import { Database, Layers, LineChart } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
@@ -23,9 +23,6 @@ const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab, notifi
     { id: 'dashboard', label: 'Dashboard', icon: Home },
     { id: 'search', label: 'Advanced Search', icon: Search },
     { id: 'player-comparison', label: 'Player Comparison', icon: Users },
-    { id: 'video-analysis', label: 'Video Analysis', icon: Film },
-    { id: 'collaboration', label: 'Collaboration Hub', icon: Users },
-    { id: 'calendar', label: 'Calendar & Schedule', icon: CalendarIcon },
     { id: 'match-centre', label: 'Match Centre', icon: Activity },
     { id: 'match-analysis', label: 'Match Analysis', icon: Target },
     { id: 'multi-match', label: 'Multi-Match Analysis', icon: BarChart3 },

@@ -71,6 +71,7 @@ const {
 
 const playerServiceUrl = (process.env.PLAYER_SERVICE_URL || 'http://player-service:8000').replace(/\/$/, '');
 const analyticsServiceUrl = (process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8012').replace(/\/$/, '');
+const statisticsServiceUrl = (process.env.STATISTICS_SERVICE_URL || 'http://statistics-service:8000').replace(/\/$/, '');
 const playerRequestTimeoutMs = Number(process.env.PLAYER_SERVICE_TIMEOUT_MS || 2500);
 const analyticsRequestTimeoutMs = Number(process.env.ANALYTICS_SERVICE_TIMEOUT_MS || 2500);
 
@@ -319,11 +320,39 @@ async function findPlayerSnapshot(db, playerId) {
   });
 }
 
-function mergePlayerReadModel(basePlayer = {}, analyticsPayload = null) {
+function mergePlayerReadModel(basePlayer = {}, analyticsPayload = null, statsPayload = null) {
   const analyticsPlayer = normalizeEntity(analyticsPayload?.player || {});
   const summary = analyticsPayload?.summary || {};
   const merged = normalizeEntity({ ...basePlayer, ...analyticsPlayer });
   const resolvedName = merged.name || [merged.first_name || merged.firstName, merged.last_name || merged.lastName].filter(Boolean).join(' ');
+
+  // Build a unified stats sub-object so frontend dataTransformers.ts can use apiPlayer.stats.*
+  const s = statsPayload || {};
+  const stats = {
+    goals: toFiniteNumber(s.goals ?? summary.goals, merged.goals ?? 0),
+    assists: toFiniteNumber(s.total_assists ?? s.assists ?? summary.assists, merged.assists ?? 0),
+    appearances: toFiniteNumber(s.appearances ?? s.matches_played, summary.appearances ?? merged.appearances ?? 0),
+    minutesPlayed: toFiniteNumber(s.minutes_played, 0),
+    passAccuracy: toFiniteNumber(s.pass_accuracy ?? s.pass_success_rate ?? summary.passAccuracy, merged.passAccuracy ?? 0),
+    passes: toFiniteNumber(s.passes_total, 0),
+    totalShots: toFiniteNumber(s.total_shots, 0),
+    shotsOnTarget: toFiniteNumber(s.shots_on_target, 0),
+    keyPasses: toFiniteNumber(s.key_passes, 0),
+    totalTackles: toFiniteNumber(s.total_tackles, 0),
+    totalInterceptions: toFiniteNumber(s.total_interceptions, 0),
+    totalClearances: toFiniteNumber(s.total_clearances, 0),
+    foulsCommitted: toFiniteNumber(s.fouls_committed, 0),
+    yellowCards: toFiniteNumber(s.yellow_cards, 0),
+    redCards: toFiniteNumber(s.red_cards, 0),
+    totalAerialDuels: toFiniteNumber(s.total_aerial_duels, 0),
+    aerialDuelsWon: toFiniteNumber(s.aerial_duels_won, 0),
+    totalTakeOns: toFiniteNumber(s.total_take_ons, 0),
+    successfulTakeOns: toFiniteNumber(s.successful_take_ons, 0),
+    gamesStarted: toFiniteNumber(s.games_started, 0),
+    saves: toFiniteNumber(s.saves, 0),
+    cleanSheets: toFiniteNumber(s.clean_sheet, 0),
+    dataSource: s.data_source || null,
+  };
 
   return {
     ...merged,
@@ -336,11 +365,12 @@ function mergePlayerReadModel(basePlayer = {}, analyticsPayload = null) {
     age: merged.age ?? summary.age ?? deriveAgeFromBirthDate(merged.birth_date || merged.birthDate),
     rating: toFiniteNumber(summary.rating, merged.rating ?? null),
     overallRating: toFiniteNumber(summary.rating, merged.overallRating ?? merged.rating ?? null),
-    goals: toFiniteNumber(summary.goals, merged.goals ?? 0),
-    assists: toFiniteNumber(summary.assists, merged.assists ?? 0),
-    appearances: toFiniteNumber(summary.appearances, merged.appearances ?? 0),
-    passAccuracy: toFiniteNumber(summary.passAccuracy, merged.passAccuracy ?? 0),
+    goals: stats.goals,
+    assists: stats.assists,
+    appearances: stats.appearances,
+    passAccuracy: stats.passAccuracy,
     shirtNumber: merged.shirtNumber || merged.shirt_number || null,
+    stats,
     analyticsInsights: analyticsPayload?.insights || [],
     analyticsUpdatedAt: analyticsPayload?.last_updated || null,
   };
@@ -488,7 +518,19 @@ router.get('/:id', async (req, res) => {
       playerPayload || {},
       true,
     );
-    const analyticsPayload = await findAnalyticsSummary(req.params.id, resolvedPlayer);
+    const [analyticsPayload, statsResult] = await Promise.all([
+      findAnalyticsSummary(req.params.id, resolvedPlayer),
+      requestJson(statisticsServiceUrl, `/api/v2/statistics/player/${req.params.id}`, {
+        timeoutMs: 2000,
+      }).catch(() => null),
+    ]);
+    // statsResult from statistics-service has shape { data: { stats: {...} } } or { data: { goals, passes_total, ... } }
+    const statsData = (() => {
+      if (!statsResult?.ok) return null;
+      const d = statsResult.payload?.data ?? statsResult.payload ?? {};
+      return d.stats ?? d;
+    })();
+
     const basePlayer = mergePlayerEntity(
       mergePlayerEntity({}, resolvedPlayer || {}, true),
       analyticsPayload?.player || {},
@@ -514,7 +556,7 @@ router.get('/:id', async (req, res) => {
       });
     }
 
-    res.json(mergePlayerReadModel(basePlayer || {}, analyticsPayload));
+    res.json(mergePlayerReadModel(basePlayer || {}, analyticsPayload, statsData));
   } catch (error) {
     console.error('Player get error:', error);
     sendGatewayError(res, error, 'Failed to fetch player');

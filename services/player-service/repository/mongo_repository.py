@@ -372,6 +372,7 @@ class MongoPlayerRepository(IPlayerRepository):
             query = {'$or': [
                 {'playerID': {'$in': id_values}},
                 {'player_id': {'$in': id_values}},
+                {'scoutpro_player_id': {'$in': id_values}},
             ]}
 
             collection_name = 'player_statistics'

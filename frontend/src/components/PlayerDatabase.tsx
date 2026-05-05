@@ -18,7 +18,7 @@ const PlayerDatabase: React.FC = () => {
   const [filters, setFilters] = useState<PlayerFilters>({});
   const [queryParams, setQueryParams] = useState<QueryParams>({
     page: 1,
-    limit: 20,
+    limit: 100,
     sortBy: 'rating',
     sortOrder: 'desc'
   });

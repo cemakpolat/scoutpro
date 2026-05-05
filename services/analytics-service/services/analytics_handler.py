@@ -162,16 +162,42 @@ class AnalyticsHandler:
         """Look up a match document directly from MongoDB by any known ID format."""
         try:
             collection = self.db['matches']
-            query = {
-                '$or': [
-                    {'id': match_id},
-                    {'scoutpro_id': match_id},
-                    {'uID': match_id},
-                    {'uID': f'g{match_id}'},
-                    {'provider_ids.opta': match_id},
-                ]
-            }
+            or_clauses: List[Dict[str, Any]] = [
+                {'id': match_id},
+                {'scoutpro_id': match_id},
+                {'uID': match_id},
+                {'uID': f'g{match_id}'},
+                {'provider_ids.opta': match_id},
+            ]
+
+            if str(match_id).isdigit():
+                numeric_match_id = int(match_id)
+                or_clauses.extend([
+                    {'id': numeric_match_id},
+                    {'scoutpro_id': numeric_match_id},
+                    {'uID': numeric_match_id},
+                    {'provider_ids.opta': numeric_match_id},
+                ])
+
+            query = {'$or': or_clauses}
             doc = await collection.find_one(query)
+            if not doc:
+                event_doc = await self.db['match_events'].find_one(
+                    {
+                        '$or': [
+                            {'matchID': match_id},
+                            {'match_id': match_id},
+                        ]
+                    },
+                    {'scoutpro_match_id': 1},
+                )
+                if event_doc and event_doc.get('scoutpro_match_id') not in (None, ''):
+                    doc = await collection.find_one({
+                        '$or': [
+                            {'id': event_doc['scoutpro_match_id']},
+                            {'scoutpro_id': event_doc['scoutpro_match_id']},
+                        ]
+                    })
             if doc:
                 doc.pop('_id', None)
             return doc or {}
@@ -279,6 +305,62 @@ class AnalyticsHandler:
                 variants.append(numeric_variant)
 
         return variants
+
+    @staticmethod
+    def _team_identifier_variants(value: Any) -> List[Any]:
+        if value in (None, '', 'None'):
+            return []
+
+        normalized = str(value).strip()
+        if not normalized:
+            return []
+
+        variants: List[Any] = [normalized]
+        numeric_value: Optional[int] = None
+
+        if normalized.isdigit():
+            variants.append(f't{normalized}')
+            numeric_value = int(normalized)
+        elif normalized.lower().startswith('t') and normalized[1:].isdigit():
+            numeric_variant = normalized[1:]
+            variants.append(numeric_variant)
+            numeric_value = int(numeric_variant)
+
+        if numeric_value is not None and numeric_value not in variants:
+            variants.append(numeric_value)
+
+        return variants
+
+    async def _resolve_team_name(self, *candidate_ids: Any) -> Optional[str]:
+        clauses: List[Dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+
+        for candidate_id in candidate_ids:
+            for variant in self._team_identifier_variants(candidate_id):
+                key = (type(variant).__name__, str(variant))
+                if key in seen:
+                    continue
+                seen.add(key)
+
+                clauses.extend([
+                    {'uID': variant},
+                    {'id': variant},
+                    {'scoutpro_id': variant},
+                    {'provider_ids.opta': variant},
+                ])
+
+        if not clauses:
+            return None
+
+        team_doc = await self.db['teams'].find_one(
+            {'$or': clauses},
+            {'name': 1, 'shortName': 1},
+        )
+        if not team_doc:
+            return None
+
+        name = team_doc.get('name') or team_doc.get('shortName')
+        return str(name).strip() if name else None
 
     @classmethod
     def _player_event_candidates(cls, player_id: str, player: Dict[str, Any]) -> List[Any]:
@@ -680,9 +762,19 @@ class AnalyticsHandler:
         # to the match-level team context (which uses ScoutPro IDs).
         team_id = str(event.get('scoutpro_team_id') or event.get('team_id') or '')
 
+        # Resolve team name: prefer match context (contains real names from match doc),
+        # then fall back to the event's own team_name field (set during F24 ingestion),
+        # then to the raw Opta team_id as a last resort label.
+        team_name = (
+            match_context['teamNames'].get(team_id)
+            or match_context['teamNames'].get(str(event.get('team_id') or ''))
+            or event.get('team_name')
+            or f'Team {team_id}'
+        )
+
         return {
             'teamId': team_id,
-            'teamName': match_context['teamNames'].get(team_id, f'Team {team_id}'),
+            'teamName': team_name,
             'period': cls._to_int(event.get('period')),
             'startTimestamp': cls._sequence_event_timestamp(event),
             'endTimestamp': cls._sequence_event_timestamp(event),
@@ -863,8 +955,43 @@ class AnalyticsHandler:
         team_ids_in_sequences = list(dict.fromkeys(sequence['teamId'] for sequence in sequences if sequence.get('teamId')))
         home_team_id = match_context['home_team_id'] if match_context['home_team_id'] not in ('home', '') else (team_ids_in_sequences[0] if team_ids_in_sequences else 'home')
         away_team_id = match_context['away_team_id'] if match_context['away_team_id'] not in ('away', '') else (team_ids_in_sequences[1] if len(team_ids_in_sequences) > 1 else 'away')
-        home_team_name = match_context['home_team_name'] if match_context['home_team_name'] not in ('Home', '') else (f'Team {home_team_id}' if home_team_id not in ('home', '') else 'Home')
-        away_team_name = match_context['away_team_name'] if match_context['away_team_name'] not in ('Away', '') else (f'Team {away_team_id}' if away_team_id not in ('away', '') else 'Away')
+
+        # Resolve team names: prefer match context, then fall back to raw Opta team IDs
+        # from F24 game_attrs (stored as home_opta_team_id / away_opta_team_id).
+        home_opta_id = str(match.get('home_opta_team_id') or '') if isinstance(match, dict) else ''
+        away_opta_id = str(match.get('away_opta_team_id') or '') if isinstance(match, dict) else ''
+        home_team_name = match_context['home_team_name']
+        if home_team_name in ('Home', f'Team {home_team_id}', ''):
+            resolved_home_name = await self._resolve_team_name(home_team_id, home_opta_id)
+            if resolved_home_name:
+                home_team_name = resolved_home_name
+        if home_team_name in ('Home', '') and home_opta_id:
+            home_team_name = f'Team {home_opta_id}'
+        away_team_name = match_context['away_team_name']
+        if away_team_name in ('Away', f'Team {away_team_id}', ''):
+            resolved_away_name = await self._resolve_team_name(away_team_id, away_opta_id)
+            if resolved_away_name:
+                away_team_name = resolved_away_name
+        if away_team_name in ('Away', '') and away_opta_id:
+            away_team_name = f'Team {away_opta_id}'
+
+        # Last resort: scan events for stored team_name field
+        if home_team_name in ('Home', f'Team {home_team_id}', '') or away_team_name in ('Away', f'Team {away_team_id}', ''):
+            seen: dict = {}
+            for ev in events:
+                tid = str(ev.get('scoutpro_team_id') or ev.get('team_id') or '')
+                tn = ev.get('team_name') or ''
+                if tid and tn and tid not in seen:
+                    seen[tid] = tn
+            if home_team_name in ('Home', f'Team {home_team_id}', '') and home_team_id in seen:
+                home_team_name = seen[home_team_id]
+            if away_team_name in ('Away', f'Team {away_team_id}', '') and away_team_id in seen:
+                away_team_name = seen[away_team_id]
+            # Also try by Opta raw ID fallback
+            if home_team_name.startswith('Team ') and home_opta_id and home_opta_id in seen:
+                home_team_name = seen[home_opta_id]
+            if away_team_name.startswith('Team ') and away_opta_id and away_opta_id in seen:
+                away_team_name = seen[away_opta_id]
         rapid_regains = self._build_rapid_regain_index(sequences)
 
         return {
