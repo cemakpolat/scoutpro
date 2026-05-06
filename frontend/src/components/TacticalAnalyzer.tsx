@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { 
+import {
   Layers, Zap, Target, Activity, Eye, Loader2
 } from 'lucide-react';
 import apiService from '../services/api';
@@ -74,13 +74,10 @@ const FORMATION_LAYOUTS: Record<string, Array<{ role: string; left: string; top:
   ]
 };
 
-const normalizePercent = (value: unknown, multiplier = 1): number => {
-  const numericValue = Number(value) || 0;
-  if (numericValue <= 1) {
-    return Math.round(numericValue * 100 * multiplier);
-  }
-
-  return Math.round(numericValue * multiplier);
+const PHASE_EVENT_TYPES: Record<string, Set<string>> = {
+  attack: new Set(['shot', 'pass', 'duel', 'take_on', 'carry', 'cross']),
+  defense: new Set(['tackle', 'interception', 'clearance', 'block', 'ball_recovery', 'pressure', 'foul']),
+  transition: new Set(['pass', 'duel', 'ball_recovery', 'take_on', 'carry', 'dribble']),
 };
 
 const resolveLiveMatchLabel = (match: any): string => {
@@ -91,17 +88,176 @@ const resolveLiveMatchLabel = (match: any): string => {
   return `${homeTeam} vs ${awayTeam}`;
 };
 
-const hasConcreteTeamContext = (match: any): boolean => {
-  const homeTeamId = String(match?.homeTeamId || match?.home_team_id || '').trim();
-  const awayTeamId = String(match?.awayTeamId || match?.away_team_id || '').trim();
-  return Boolean(homeTeamId && awayTeamId && homeTeamId !== '0' && awayTeamId !== '0');
-};
-
 const createLocalResponse = <T,>(data: T) => ({
   success: true as const,
   data,
   meta: { timestamp: new Date().toISOString(), source: 'client' },
 });
+
+const normalizeEventType = (event: any): string => {
+  const rawValue = event?.type_name || event?.type?.name || event?.type || event?.event_type || '';
+  return String(rawValue).trim().toLowerCase().replace(/[\s-]+/g, '_');
+};
+
+const isSuccessfulEvent = (event: any): boolean => {
+  if (typeof event?.is_successful === 'boolean') {
+    return event.is_successful;
+  }
+  if (typeof event?.successful === 'boolean') {
+    return event.successful;
+  }
+  if (typeof event?.success === 'boolean') {
+    return event.success;
+  }
+
+  const outcome = String(event?.outcome_name || event?.outcome?.name || '').trim().toLowerCase();
+  return ['successful', 'complete', 'completed', 'won', 'success'].some((token) => outcome.includes(token));
+};
+
+const getEventLocation = (event: any) => {
+  if (typeof event?.location?.x === 'number' && typeof event?.location?.y === 'number') {
+    return event.location;
+  }
+  if (typeof event?.x === 'number' && typeof event?.y === 'number') {
+    return { x: event.x, y: event.y };
+  }
+  return null;
+};
+
+const getEventEndLocation = (event: any, nextEvent?: any) => {
+  if (typeof event?.end_location?.x === 'number' && typeof event?.end_location?.y === 'number') {
+    return event.end_location;
+  }
+  return getEventLocation(nextEvent);
+};
+
+const getZoneFromX = (xValue: number): 'defensive' | 'middle' | 'attacking' => {
+  if (xValue <= 33) {
+    return 'defensive';
+  }
+  if (xValue <= 66) {
+    return 'middle';
+  }
+  return 'attacking';
+};
+
+const prettifyLabel = (value: string): string => {
+  return String(value || 'unknown')
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ');
+};
+
+const resolveTeamName = (match: any, teamId: string): string => {
+  const normalizedTeamId = String(teamId || '').trim();
+  if (!normalizedTeamId) {
+    return 'Unknown Team';
+  }
+
+  const homeTeamId = String(match?.homeTeamId || match?.home_team_id || '').trim();
+  const awayTeamId = String(match?.awayTeamId || match?.away_team_id || '').trim();
+
+  if (homeTeamId && homeTeamId === normalizedTeamId) {
+    return match?.homeTeam || match?.home_team || `Team ${normalizedTeamId}`;
+  }
+  if (awayTeamId && awayTeamId === normalizedTeamId) {
+    return match?.awayTeam || match?.away_team || `Team ${normalizedTeamId}`;
+  }
+
+  return `Team ${normalizedTeamId}`;
+};
+
+const buildFallbackMatchTacticalSnapshot = (events: any[]) => {
+  const defensiveActions = new Set(['tackle', 'interception', 'foul', 'clearance', 'block']);
+  const teamStats: Record<string, {
+    passes: number;
+    passesInOppHalf: number;
+    defensiveActions: number;
+    defensiveActionsInOppHalf: number;
+    pressures: number;
+    zones: Record<'defensive' | 'middle' | 'attacking', number>;
+  }> = {};
+
+  events.forEach((event) => {
+    const teamId = String(event?.team_id || event?.teamId || '').trim();
+    if (!teamId) {
+      return;
+    }
+
+    if (!teamStats[teamId]) {
+      teamStats[teamId] = {
+        passes: 0,
+        passesInOppHalf: 0,
+        defensiveActions: 0,
+        defensiveActionsInOppHalf: 0,
+        pressures: 0,
+        zones: { defensive: 0, middle: 0, attacking: 0 },
+      };
+    }
+
+    const eventType = normalizeEventType(event);
+    const location = getEventLocation(event) || { x: 50, y: 50 };
+    const xValue = Number(location.x) || 0;
+
+    if (eventType === 'pass') {
+      teamStats[teamId].passes += 1;
+      if (xValue > 50) {
+        teamStats[teamId].passesInOppHalf += 1;
+      }
+      teamStats[teamId].zones[getZoneFromX(xValue)] += 1;
+      return;
+    }
+
+    if (defensiveActions.has(eventType)) {
+      teamStats[teamId].defensiveActions += 1;
+      if (xValue > 50) {
+        teamStats[teamId].defensiveActionsInOppHalf += 1;
+      }
+      return;
+    }
+
+    if (eventType === 'pressure') {
+      teamStats[teamId].pressures += 1;
+    }
+  });
+
+  const teams = Object.keys(teamStats);
+  const tacticalMetrics = teams.reduce<Record<string, any>>((accumulator, teamId) => {
+    const opponentPassesInOwnHalf = teams.reduce((sum, otherTeamId) => {
+      if (otherTeamId === teamId) {
+        return sum;
+      }
+      const otherTeam = teamStats[otherTeamId];
+      return sum + otherTeam.passes - otherTeam.passesInOppHalf;
+    }, 0);
+
+    const defensiveActionsInOppHalf = Math.max(teamStats[teamId].defensiveActionsInOppHalf, 1);
+    const totalPasses = Math.max(teamStats[teamId].passes, 1);
+    const ppda = Number((opponentPassesInOwnHalf / defensiveActionsInOppHalf).toFixed(2));
+    const pressStyle = ppda < 10 ? 'high press' : ppda < 20 ? 'medium press' : 'low press';
+
+    accumulator[teamId] = {
+      ppda,
+      press_style: pressStyle,
+      passes: teamStats[teamId].passes,
+      defensive_actions: teamStats[teamId].defensiveActions,
+      pressures: teamStats[teamId].pressures,
+      possession_zones_pct: {
+        defensive: Number(((teamStats[teamId].zones.defensive / totalPasses) * 100).toFixed(1)),
+        middle: Number(((teamStats[teamId].zones.middle / totalPasses) * 100).toFixed(1)),
+        attacking: Number(((teamStats[teamId].zones.attacking / totalPasses) * 100).toFixed(1)),
+      },
+    };
+
+    return accumulator;
+  }, {});
+
+  return {
+    teams,
+    tactical_metrics: tacticalMetrics,
+  };
+};
 
 const TacticalAnalyzer: React.FC = () => {
   const [selectedFormation, setSelectedFormation] = useState('4-3-3');
@@ -121,12 +277,28 @@ const TacticalAnalyzer: React.FC = () => {
     [selectedMatchId]
   );
   const {
-    data: tacticalOverviewData,
-    loading: overviewLoading,
-    error: overviewError,
+    data: formationCatalogData,
+    loading: formationCatalogLoading,
+    error: formationCatalogError,
   } = useApi(
-    () => selectedMatchId ? apiService.getTacticalOverview(selectedFormation, selectedPhase, selectedMatchId) : Promise.resolve(createLocalResponse<any>(null)),
-    [selectedFormation, selectedPhase, selectedMatchId]
+    () => apiService.getTacticalOverview(),
+    []
+  );
+  const {
+    data: matchTacticalMetricsData,
+    loading: matchMetricsLoading,
+    error: matchMetricsError,
+  } = useApi(
+    () => selectedMatchId ? apiService.getMatchTacticalMetrics(selectedMatchId) : Promise.resolve(createLocalResponse<any>(null)),
+    [selectedMatchId]
+  );
+  const {
+    data: sequenceInsightsData,
+    loading: sequenceLoading,
+    error: sequenceError,
+  } = useApi(
+    () => selectedMatchId ? apiService.getMatchSequenceInsights(selectedMatchId) : Promise.resolve(createLocalResponse<any>(null)),
+    [selectedMatchId]
   );
 
   const matchOptions = Array.isArray(enrichedMatches) ? enrichedMatches : [];
@@ -141,9 +313,17 @@ const TacticalAnalyzer: React.FC = () => {
     [matchCatalog, selectedYear, selectedLeague],
   );
   const matchEvents = Array.isArray(matchEventsData) ? matchEventsData : [];
-  const tacticalOverview = tacticalOverviewData && typeof tacticalOverviewData === 'object' ? tacticalOverviewData : null;
-  const loading = eventsLoading || overviewLoading;
-  const tacticalError = eventsError || overviewError || '';
+  const formationCatalog = formationCatalogData && typeof formationCatalogData === 'object' ? formationCatalogData : null;
+  const matchTacticalMetrics = useMemo(() => {
+    if (matchTacticalMetricsData && typeof matchTacticalMetricsData === 'object' && matchTacticalMetricsData.tactical_metrics) {
+      return matchTacticalMetricsData;
+    }
+
+    return buildFallbackMatchTacticalSnapshot(matchEvents);
+  }, [matchEvents, matchTacticalMetricsData]);
+  const sequenceInsights = sequenceInsightsData && typeof sequenceInsightsData === 'object' ? sequenceInsightsData : null;
+  const loading = eventsLoading || formationCatalogLoading || matchMetricsLoading || sequenceLoading;
+  const tacticalError = [eventsError, formationCatalogError, matchMetricsError, sequenceError].filter(Boolean).join(' · ');
 
   useEffect(() => {
     if (selectedYear !== 'all' && !availableYears.includes(selectedYear)) {
@@ -168,31 +348,68 @@ const TacticalAnalyzer: React.FC = () => {
     }
   }, [filteredMatchOptions, selectedMatchId]);
 
-  const filteredMatchEvents = selectedPhase === 'attack'
-    ? matchEvents.filter((event: any) => ['shot', 'pass', 'duel'].includes(event.type_name))
-    : selectedPhase === 'defense'
-      ? matchEvents.filter((event: any) => ['tackle', 'interception', 'clearance', 'ball_control'].includes(event.type_name))
-      : matchEvents.filter((event: any) => ['pass', 'duel', 'ball_control', 'take_on', 'carries'].includes(event.type_name));
+  const selectedMatch = filteredMatchOptions.find((match: any) => String(match.id || match.matchId) === selectedMatchId);
 
-  // Build tactical data from match events
-  const tacticalPatterns = filteredMatchEvents.reduce((acc: any[], event: any) => {
-    const type = event.type_name || 'unknown';
-    const existing = acc.find(p => p.name === type);
-    if (existing) {
-      existing.frequency += 1;
-      existing.success += event.is_successful ? 1 : 0;
-    } else {
-      acc.push({ name: type, frequency: 1, success: event.is_successful ? 1 : 0 });
+  const filteredMatchEvents = useMemo(() => {
+    const allowedTypes = PHASE_EVENT_TYPES[selectedPhase] || null;
+    if (!allowedTypes) {
+      return matchEvents;
     }
-    return acc;
-  }, []).map((pattern: any) => ({
-    name: pattern.name.charAt(0).toUpperCase() + pattern.name.slice(1),
-    frequency: Math.round((pattern.frequency / Math.max(filteredMatchEvents.length, 1)) * 100),
-    success: pattern.frequency > 0 ? Math.round((pattern.success / pattern.frequency) * 100) : 0,
-    zones: ['Mid Field', 'Attack', 'Defense'],
-    impact: (pattern.frequency / Math.max(filteredMatchEvents.length, 1)) > 0.2 ? 'High' : 'Medium',
-    trend: 'stable'
-  })).slice(0, 4);
+
+    return matchEvents.filter((event: any) => allowedTypes.has(normalizeEventType(event)));
+  }, [matchEvents, selectedPhase]);
+
+  const tacticalPatterns = useMemo(() => {
+    const patternsByType = new Map<string, {
+      count: number;
+      success: number;
+      zones: Record<'defensive' | 'middle' | 'attacking', number>;
+    }>();
+
+    filteredMatchEvents.forEach((event: any) => {
+      const type = normalizeEventType(event) || 'unknown';
+      const existing = patternsByType.get(type) || {
+        count: 0,
+        success: 0,
+        zones: { defensive: 0, middle: 0, attacking: 0 },
+      };
+
+      existing.count += 1;
+      if (isSuccessfulEvent(event)) {
+        existing.success += 1;
+      }
+
+      const location = getEventLocation(event);
+      if (location) {
+        existing.zones[getZoneFromX(Number(location.x) || 0)] += 1;
+      }
+
+      patternsByType.set(type, existing);
+    });
+
+    return Array.from(patternsByType.entries())
+      .sort((left, right) => right[1].count - left[1].count)
+      .slice(0, 4)
+      .map(([type, stats]) => {
+        const share = stats.count / Math.max(filteredMatchEvents.length, 1);
+        const successRate = Math.round((stats.success / Math.max(stats.count, 1)) * 100);
+        const dominantZones = Object.entries(stats.zones)
+          .filter(([, count]) => count > 0)
+          .sort((left, right) => right[1] - left[1])
+          .slice(0, 2)
+          .map(([zone]) => prettifyLabel(zone));
+
+        return {
+          name: prettifyLabel(type),
+          count: stats.count,
+          frequency: Math.round(share * 100),
+          success: successRate,
+          dominantZones,
+          impact: share >= 0.25 ? 'High' : share >= 0.12 ? 'Medium' : 'Low',
+          quality: successRate >= 70 ? 'Reliable' : successRate >= 45 ? 'Mixed' : 'Low Yield',
+        };
+      });
+  }, [filteredMatchEvents]);
 
   // Formation options with static scouting benchmarks
   const FORMATION_STATS: Record<string, { effectiveness: number; popularity: number }> = {
@@ -207,100 +424,114 @@ const TacticalAnalyzer: React.FC = () => {
     name: id,
     ...(FORMATION_STATS[id] || { effectiveness: 65, popularity: 10 }),
   }));
-  const formations = Array.isArray(tacticalOverview?.formations) && tacticalOverview.formations.length > 0
-    ? tacticalOverview.formations
+  const formations = Array.isArray(formationCatalog?.formations) && formationCatalog.formations.length > 0
+    ? formationCatalog.formations
     : fallbackFormations;
 
-  // Prefer actual event end locations now that the event store carries them.
-  const playerMovements = filteredMatchEvents
-    .filter((event: any) => event.location?.x != null && event.location?.y != null)
-    .map((event: any, index: number, events: any[]) => {
-      const fallbackTarget = events[index + 1]?.location;
-      const targetLocation = event.end_location?.x != null && event.end_location?.y != null
-        ? event.end_location
-        : fallbackTarget;
+  const playerMovements = useMemo(() => {
+    return filteredMatchEvents
+      .map((event: any, index: number, events: any[]) => {
+        const startLocation = getEventLocation(event);
+        const targetLocation = getEventEndLocation(event, events[index + 1]);
+        if (!startLocation || !targetLocation) {
+          return null;
+        }
 
-      if (!targetLocation?.x && targetLocation?.x !== 0) {
-        return null;
-      }
+        return {
+          id: event.event_id || event.id || `${normalizeEventType(event)}-${index}`,
+          from: [startLocation.x, startLocation.y],
+          to: [targetLocation.x, targetLocation.y],
+          type: normalizeEventType(event) || 'pass',
+          success: isSuccessfulEvent(event),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 8);
+  }, [filteredMatchEvents]);
 
+  const teamTacticalCards = useMemo(() => {
+    const metrics = matchTacticalMetrics?.tactical_metrics || {};
+    const teamIds = Array.isArray(matchTacticalMetrics?.teams) && matchTacticalMetrics.teams.length > 0
+      ? matchTacticalMetrics.teams
+      : Object.keys(metrics);
+
+    return teamIds.map((teamId: string) => {
+      const metric = metrics[teamId] || {};
+      const zones = metric.possession_zones_pct || {};
       return {
-        id: event.event_id || index,
-        from: [event.location.x, event.location.y],
-        to: [targetLocation.x, targetLocation.y],
-        type: event.type_name || 'pass',
-        success: Boolean(event.is_successful),
+        teamId,
+        name: resolveTeamName(selectedMatch, teamId),
+        ppda: Number(metric.ppda) || 0,
+        pressStyle: prettifyLabel(metric.press_style || 'unavailable'),
+        passes: Number(metric.passes) || 0,
+        defensiveActions: Number(metric.defensive_actions) || 0,
+        pressures: Number(metric.pressures) || 0,
+        zones: {
+          defensive: Number(zones.defensive) || 0,
+          middle: Number(zones.middle) || 0,
+          attacking: Number(zones.attacking) || 0,
+        },
       };
-    })
-    .filter(Boolean)
-    .slice(0, 8);
+    });
+  }, [matchTacticalMetrics, selectedMatch]);
 
-  // Zone-based heatmap aggregation (Defensive / Middle / Attacking thirds)
-  const PITCH_ZONES = [
-    { zone: 'Defensive Third',  xMin: 0,  xMax: 33  },
-    { zone: 'Middle Third',     xMin: 33, xMax: 67  },
-    { zone: 'Attacking Third',  xMin: 67, xMax: 100 },
-  ];
-  const fallbackHeatmapData = PITCH_ZONES.map(({ zone, xMin, xMax }) => {
-    const zoneEvents = filteredMatchEvents.filter(
-      (e: any) => typeof e.location?.x === 'number' && e.location.x >= xMin && e.location.x < xMax,
+  const tacticalSummarySections = useMemo(() => {
+    const teamSequenceSummaries = new Map<string, any>(
+      Array.isArray(sequenceInsights?.teamSummaries)
+        ? sequenceInsights.teamSummaries.map((summary: any) => [String(summary.teamId), summary])
+        : []
     );
-    const successful = zoneEvents.filter((e: any) => e.is_successful).length;
-    const total = zoneEvents.length;
-    return {
-      zone,
-      intensity: filteredMatchEvents.length > 0 ? Math.min(100, Math.round((total / filteredMatchEvents.length) * 200)) : 0,
-      effectiveness: total > 0 ? Math.round((successful / total) * 100) : 0,
-    };
-  }).filter((z) => z.intensity > 0);
-  const heatmapData = Array.isArray(tacticalOverview?.heatmap) && tacticalOverview.heatmap.length > 0
-    ? tacticalOverview.heatmap
-    : fallbackHeatmapData;
 
-  const sequenceInsights = tacticalOverview?.sequenceInsights || null;
+    return [
+      {
+        title: 'Pressing Profile',
+        tone: 'text-blue-400',
+        items: teamTacticalCards.map((team) => ({
+          label: team.name,
+          value: `${team.ppda.toFixed(1)} PPDA • ${team.pressStyle}`,
+        })),
+      },
+      {
+        title: 'Ball Progression',
+        tone: 'text-green-400',
+        items: teamTacticalCards.map((team) => ({
+          label: team.name,
+          value: `${team.passes} passes • ${team.zones.attacking.toFixed(1)}% attacking-third share`,
+        })),
+      },
+      {
+        title: 'Sequence Output',
+        tone: 'text-red-400',
+        items: teamTacticalCards.map((team) => {
+          const sequenceSummary = teamSequenceSummaries.get(team.teamId);
+          return {
+            label: team.name,
+            value: sequenceSummary
+              ? `${sequenceSummary.directAttacks} direct • ${sequenceSummary.boxEntries} box • ${sequenceSummary.shotEndings} shot endings`
+              : 'No sequence summary available',
+          };
+        }),
+      },
+    ];
+  }, [sequenceInsights, teamTacticalCards]);
 
-  // Tactical analytics computed from loaded match events
-  const passEvents       = filteredMatchEvents.filter((e: any) => e.type_name === 'pass');
-  const passSuccessful   = passEvents.filter((e: any) => e.is_successful).length;
-  const tackleEvents     = filteredMatchEvents.filter((e: any) => e.type_name === 'tackle');
-  const duelEvents       = filteredMatchEvents.filter((e: any) => e.type_name === 'duel');
-  const interceptEvents  = filteredMatchEvents.filter((e: any) => e.type_name === 'interception');
-  const clearanceEvents  = filteredMatchEvents.filter((e: any) => e.type_name === 'clearance');
-  const aerialEvents     = filteredMatchEvents.filter((e: any) => e.type_name === 'aerial');
-  const aerialWon        = aerialEvents.filter((e: any) => e.is_successful).length;
-  const foulEvents       = filteredMatchEvents.filter((e: any) => e.type_name === 'foul');
-  const shotEvents       = filteredMatchEvents.filter((e: any) => e.type_name === 'shot');
-  const goalEvents       = shotEvents.filter((e: any) => e.is_goal);
-  const fallbackTacticalAnalytics = {
-    pressingTriggers: filteredMatchEvents.length > 0 ? [
-      { label: 'Tackle count',       value: tackleEvents.length,       suffix: '' },
-      { label: 'Interception rate',  value: Math.round(interceptEvents.length / Math.max(1, filteredMatchEvents.length) * 100) },
-      { label: 'Duel involvement',   value: duelEvents.length,         suffix: '' },
-    ] : [],
-    buildupPatterns: filteredMatchEvents.length > 0 ? [
-      { label: 'Passes attempted',   value: passEvents.length,         suffix: '' },
-      { label: 'Pass success rate',  value: Math.round(passSuccessful / Math.max(1, passEvents.length) * 100) },
-      { label: 'Goals from shots',   value: goalEvents.length,         suffix: '' },
-    ] : [],
-    defensiveActions: filteredMatchEvents.length > 0 ? [
-      { label: 'Clearances',         value: clearanceEvents.length,    suffix: '' },
-      { label: 'Aerial duels won',   value: aerialWon,                 suffix: '' },
-      { label: 'Fouls committed',    value: foulEvents.length,         suffix: '' },
-    ] : [],
-  };
-  const tacticalAnalytics = tacticalOverview?.analytics || fallbackTacticalAnalytics;
-
-  const selectedMatch = filteredMatchOptions.find((m: any) => String(m.id || m.matchId) === selectedMatchId);
   const selectedFormationLayout = FORMATION_LAYOUTS[selectedFormation] || FORMATION_LAYOUTS['4-3-3'];
 
   return (
     <div className="space-y-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-3xl font-bold flex items-center">
-          <Layers className="h-8 w-8 mr-3 text-purple-500" />
-          Tactical Analyzer
-        </h1>
-        <div className="flex items-center space-x-4">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div>
+          <h1 className="text-3xl font-bold flex items-center">
+            <Layers className="h-8 w-8 mr-3 text-purple-500" />
+            Tactical Analyzer
+          </h1>
+          <p className="mt-2 text-sm text-slate-400">
+            {selectedMatch
+              ? `Selected match: ${resolveLiveMatchLabel(selectedMatch)}. Pattern cards use the selected phase, while the zone bars and pressing metrics come from the match tactical snapshot.`
+              : 'Select a match to load match-specific tactical patterns, zone splits, and sequence output.'}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-4">
           <select
             value={selectedYear}
             onChange={(e) => setSelectedYear(e.target.value)}
@@ -366,7 +597,10 @@ const TacticalAnalyzer: React.FC = () => {
       {/* Formation Analysis */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2 bg-slate-800 rounded-xl p-6">
-          <h3 className="text-xl font-semibold mb-6">Formation Analysis</h3>
+          <h3 className="text-xl font-semibold mb-2">Formation Analysis</h3>
+          <p className="mb-6 text-sm text-slate-400">
+            The board shows the selected tactical template overlaid with live event traces from the chosen match and phase.
+          </p>
           
           {/* Tactical Board */}
           <div className="relative bg-green-800 rounded-lg p-4 mb-6" style={{ aspectRatio: '16/10' }}>
@@ -402,6 +636,11 @@ const TacticalAnalyzer: React.FC = () => {
                   style={{ left: `${movement.to[0]}%`, top: `${movement.to[1]}%`, position: 'absolute' }}
                 ></div>
                 <svg className="absolute inset-0 pointer-events-none">
+                  <defs>
+                    <marker id="tactical-arrowhead" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                      <path d="M0,0 L8,4 L0,8 z" fill={movement.success ? '#4ade80' : '#f87171'} />
+                    </marker>
+                  </defs>
                   <line
                     x1={`${movement.from[0]}%`}
                     y1={`${movement.from[1]}%`}
@@ -410,7 +649,7 @@ const TacticalAnalyzer: React.FC = () => {
                     stroke={movement.success ? '#4ade80' : '#f87171'}
                     strokeWidth="2"
                     strokeDasharray={movement.type === 'pass' ? '5,5' : '0'}
-                    markerEnd="url(#arrowhead)"
+                    markerEnd="url(#tactical-arrowhead)"
                   />
                 </svg>
               </div>
@@ -454,7 +693,10 @@ const TacticalAnalyzer: React.FC = () => {
 
         {/* Formation Stats */}
         <div className="bg-slate-800 rounded-xl p-6">
-          <h3 className="text-xl font-semibold mb-6">Formation Statistics</h3>
+          <h3 className="text-xl font-semibold mb-2">Formation Benchmarks</h3>
+          <p className="mb-6 text-sm text-slate-400">
+            These benchmark cards show catalog-wide formation usage and effectiveness, not the selected match lineup.
+          </p>
           <div className="space-y-4">
             {formations.length > 0 ? formations.map((formation: any) => (
               <div key={formation.id} className="p-4 bg-slate-700 rounded-lg">
@@ -496,21 +738,16 @@ const TacticalAnalyzer: React.FC = () => {
                   <div className="flex items-center space-x-2">
                     <span className={`px-2 py-1 rounded text-xs ${
                       pattern.impact === 'High' ? 'bg-red-600 text-red-100' :
-                      'bg-yellow-600 text-yellow-100'
+                      pattern.impact === 'Medium' ? 'bg-yellow-600 text-yellow-100' : 'bg-slate-600 text-slate-100'
                     }`}>
                       {pattern.impact}
                     </span>
-                    <span className={`text-sm ${
-                      pattern.trend === 'increasing' ? 'text-green-400' :
-                      pattern.trend === 'decreasing' ? 'text-red-400' : 'text-slate-400'
-                    }`}>
-                      {pattern.trend === 'increasing' ? '↗' : pattern.trend === 'decreasing' ? '↘' : '→'}
-                    </span>
+                    <span className="text-xs text-slate-400">{pattern.quality}</span>
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4 text-sm mb-2">
                   <div>
-                    <div className="text-slate-400">Frequency</div>
+                    <div className="text-slate-400">Share Of Phase Events</div>
                     <div className="font-bold text-blue-400">{pattern.frequency}%</div>
                   </div>
                   <div>
@@ -519,7 +756,10 @@ const TacticalAnalyzer: React.FC = () => {
                   </div>
                 </div>
                 <div className="text-xs text-slate-400">
-                  Active in: {Array.isArray(pattern.zones) ? pattern.zones.join(', ') : 'N/A'}
+                  Zone focus: {pattern.dominantZones.length > 0 ? pattern.dominantZones.join(', ') : 'Unspecified'}
+                </div>
+                <div className="mt-1 text-xs text-slate-500">
+                  {pattern.count} traced events in the selected phase
                 </div>
               </div>
             )) : (
@@ -530,38 +770,69 @@ const TacticalAnalyzer: React.FC = () => {
           </div>
         </div>
 
-        {/* Heat Map */}
+        {/* Match Zone Activity */}
         <div className="bg-slate-800 rounded-xl p-6">
           <h3 className="text-xl font-semibold mb-6 flex items-center">
             <Activity className="h-6 w-6 mr-2 text-red-400" />
-            Activity Heat Map
+            Match Zone Activity
           </h3>
+          <p className="mb-6 text-sm text-slate-400">
+            These charts are match-specific. Each stacked bar shows where a team circulated possession in the selected fixture.
+          </p>
           <div className="space-y-4">
-            {heatmapData.length > 0 ? heatmapData.map((zone: any, index: number) => (
-              <div key={index} className="p-4 bg-slate-700 rounded-lg">
+            {teamTacticalCards.length > 0 ? teamTacticalCards.map((team) => (
+              <div key={team.teamId} className="p-4 bg-slate-700 rounded-lg">
                 <div className="flex justify-between items-center mb-3">
-                  <span className="font-semibold">{zone.zone}</span>
+                  <span className="font-semibold">{team.name}</span>
                   <div className="text-right">
-                    <div className="text-sm text-slate-400">Effectiveness</div>
-                    <div className="font-bold text-green-400">{zone.effectiveness}%</div>
+                    <div className="text-sm text-slate-400">Press Style</div>
+                    <div className="font-bold text-green-400">{team.pressStyle}</div>
+                  </div>
+                </div>
+                <div className="grid grid-cols-3 gap-3 text-sm mb-4">
+                  <div className="rounded-lg bg-slate-800 px-3 py-3">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">PPDA</div>
+                    <div className="mt-1 text-lg font-semibold text-white">{team.ppda.toFixed(1)}</div>
+                  </div>
+                  <div className="rounded-lg bg-slate-800 px-3 py-3">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">Passes</div>
+                    <div className="mt-1 text-lg font-semibold text-white">{team.passes}</div>
+                  </div>
+                  <div className="rounded-lg bg-slate-800 px-3 py-3">
+                    <div className="text-xs uppercase tracking-wide text-slate-500">Def Actions</div>
+                    <div className="mt-1 text-lg font-semibold text-white">{team.defensiveActions}</div>
                   </div>
                 </div>
                 <div className="space-y-2">
                   <div className="flex justify-between text-sm">
-                    <span className="text-slate-400">Activity Intensity</span>
-                    <span className="font-semibold">{zone.intensity}%</span>
+                    <span className="text-slate-400">Possession zones</span>
+                    <span className="font-semibold">{team.zones.attacking.toFixed(1)}% final third</span>
                   </div>
-                  <div className="w-full bg-slate-600 rounded-full h-3">
+                  <div className="flex w-full overflow-hidden rounded-full bg-slate-600 h-3">
                     <div
-                      className="bg-gradient-to-r from-yellow-400 to-red-500 h-3 rounded-full"
-                      style={{ width: `${zone.intensity}%` }}
+                      className="bg-red-500 h-3"
+                      style={{ width: `${team.zones.defensive}%` }}
                     ></div>
+                    <div
+                      className="bg-yellow-500 h-3"
+                      style={{ width: `${team.zones.middle}%` }}
+                    ></div>
+                    <div
+                      className="bg-green-500 h-3"
+                      style={{ width: `${team.zones.attacking}%` }}
+                    ></div>
+                  </div>
+                  <div className="flex flex-wrap gap-3 text-xs text-slate-400">
+                    <span>Def {team.zones.defensive.toFixed(1)}%</span>
+                    <span>Mid {team.zones.middle.toFixed(1)}%</span>
+                    <span>Att {team.zones.attacking.toFixed(1)}%</span>
+                    <span>Pressures {team.pressures}</span>
                   </div>
                 </div>
               </div>
             )) : (
               <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
-                No live heatmap data available.
+                No match tactical snapshot available.
               </div>
             )}
           </div>
@@ -669,21 +940,17 @@ const TacticalAnalyzer: React.FC = () => {
       <div className="bg-slate-800 rounded-xl p-6">
         <h3 className="text-xl font-semibold mb-6 flex items-center">
           <Zap className="h-6 w-6 mr-2 text-purple-400" />
-          Advanced Tactical Analytics
+          Match Tactical Summary
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {[
-            { title: 'Pressing Triggers', tone: 'text-blue-400', items: tacticalAnalytics.pressingTriggers },
-            { title: 'Build-up Patterns', tone: 'text-green-400', items: tacticalAnalytics.buildupPatterns },
-            { title: 'Defensive Actions', tone: 'text-red-400', items: tacticalAnalytics.defensiveActions }
-          ].map((section) => (
+          {tacticalSummarySections.map((section) => (
             <div key={section.title} className="p-4 bg-slate-700 rounded-lg">
               <h4 className={`font-semibold mb-3 ${section.tone}`}>{section.title}</h4>
               <div className="space-y-2 text-sm">
                 {section.items?.length > 0 ? section.items.map((item: any) => (
                   <div key={item.label} className="flex justify-between">
                     <span>{item.label}</span>
-                    <span className="text-slate-200">{item.value}{item.suffix || '%'}</span>
+                    <span className="text-slate-200 text-right">{item.value}</span>
                   </div>
                 )) : (
                   <div className="text-slate-400">No analytics available.</div>

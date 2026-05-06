@@ -3,6 +3,7 @@ import { ArrowLeft, ChevronDown, ChevronUp, Activity, Target, TrendingUp } from 
 import { ShotMap, HeatMap, PassNetwork } from './visualizations';
 import ErrorBoundary from './ErrorBoundary';
 import apiService from '../services/api';
+import type { ModelCenterContext, ModelCenterTab } from './ModelCenter';
 
 function unwrapApiPayload<T>(payload: any): T | null {
   if (!payload) return null;
@@ -18,6 +19,7 @@ interface MatchDetailWithVisualizationsProps {
   homeScore?: number;
   awayScore?: number;
   onBack?: () => void;
+  onOpenModelCenter?: (tab: ModelCenterTab, context?: ModelCenterContext) => void;
 }
 
 function TacticalMetricsPanel({ matchId }: { matchId: string }) {
@@ -166,6 +168,7 @@ export const MatchDetailWithVisualizations: React.FC<MatchDetailWithVisualizatio
   homeScore = 0,
   awayScore = 0,
   onBack,
+  onOpenModelCenter,
 }) => {
   const [expandedSections, setExpandedSections] = useState({
     shotMap: true,
@@ -230,6 +233,22 @@ export const MatchDetailWithVisualizations: React.FC<MatchDetailWithVisualizatio
                 </div>
               </div>
             </div>
+            {onOpenModelCenter && (
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => onOpenModelCenter('match', { matchId })}
+                  className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition-colors hover:bg-cyan-500/20"
+                >
+                  Predict Similar Scenario
+                </button>
+                <button
+                  onClick={() => onOpenModelCenter('lens', { matchId, lensPresetId: 'shot-quality' })}
+                  className="rounded-lg border border-purple-500/30 bg-purple-500/10 px-4 py-2 text-sm font-medium text-purple-200 transition-colors hover:bg-purple-500/20"
+                >
+                  Open Shot Quality Lens
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

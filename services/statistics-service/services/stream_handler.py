@@ -8,6 +8,7 @@ from typing import Any, Dict, Optional
 from config.settings import get_settings
 from shared.messaging import KafkaConsumerClient, EventType, create_event, get_kafka_producer
 from shared.utils.database import DatabaseManager
+from services.event_metric_utils import EventMetricAccumulator
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -153,113 +154,7 @@ class StatisticsStreamProcessor:
         )
 
     def _build_increments(self, raw_event: Dict[str, Any]) -> Dict[str, Any]:
-        event_type = str(raw_event.get('type_name', '')).strip().lower()
-        increments: Dict[str, Any] = {'total_events': 1}
-
-        if event_type == 'pass':
-            increments['passes'] = 1
-            if raw_event.get('is_successful'):
-                increments['passes_completed'] = 1
-            if self._is_truthy(raw_event.get('progressive_pass')):
-                increments['progressive_passes'] = 1
-            if self._is_truthy(raw_event.get('entered_final_third')):
-                increments['final_third_entries'] = 1
-            if self._is_truthy(raw_event.get('entered_box')):
-                increments['passes_into_box'] = 1
-            if self._is_truthy(raw_event.get('is_cross')) or str(raw_event.get('pass_type', '')).lower() == 'cross':
-                increments['crosses'] = 1
-            if self._is_truthy(raw_event.get('is_through_ball')) or str(raw_event.get('pass_type', '')).lower() == 'through_ball':
-                increments['through_balls'] = 1
-            if self._is_truthy(raw_event.get('is_long_ball')) or str(raw_event.get('pass_type', '')).lower() == 'long_ball':
-                increments['long_balls'] = 1
-            if self._is_truthy(raw_event.get('is_switch')):
-                increments['switches_of_play'] = 1
-            if self._is_truthy(raw_event.get('is_key_pass')) or self._is_truthy(raw_event.get('assist_potential')):
-                increments['key_passes'] = 1
-            if self._is_truthy(raw_event.get('is_assist')):
-                increments['assists'] = 1
-            if self._is_truthy(raw_event.get('is_second_assist')):
-                increments['second_assists'] = 1
-            if self._is_truthy(raw_event.get('is_set_piece')):
-                increments['set_piece_passes'] = 1
-            pass_length = self._optional_float(raw_event.get('pass_length'))
-            if pass_length is not None:
-                increments['pass_length_total'] = pass_length
-        elif event_type == 'shot':
-            increments['shots'] = 1
-            if self._is_truthy(raw_event.get('is_on_target')):
-                increments['shots_on_target'] = 1
-            if raw_event.get('is_goal'):
-                increments['goals'] = 1
-            if self._is_truthy(raw_event.get('is_big_chance')):
-                increments['big_chances'] = 1
-            if raw_event.get('is_goal') and self._is_truthy(raw_event.get('is_big_chance')):
-                increments['big_chances_scored'] = 1
-            if self._is_truthy(raw_event.get('is_set_piece')):
-                increments['set_piece_shots'] = 1
-            xg_val = self._optional_float(raw_event.get('xg_value'))
-            if xg_val is None:
-                xg_val = self._optional_float(raw_event.get('analytical_xg'))
-            if xg_val is None:
-                xg_val = self._compute_analytical_xg(raw_event)
-            increments['xG'] = xg_val
-            increments['xg_total'] = xg_val
-            shot_distance = self._optional_float(raw_event.get('shot_distance'))
-            if shot_distance is not None:
-                increments['shot_distance_total'] = shot_distance
-            body_part = str(raw_event.get('body_part', '')).lower()
-            if 'head' in body_part:
-                increments['headed_shots'] = 1
-        elif event_type == 'foul':
-            increments['fouls'] = 1
-        elif event_type == 'card':
-            increments['cards'] = 1
-            card_type = str(raw_event.get('card_type', '')).lower()
-            if card_type == 'yellow':
-                increments['yellow_cards'] = 1
-            elif card_type == 'red':
-                increments['red_cards'] = 1
-        elif event_type == 'duel':
-            increments['duels'] = 1
-            if raw_event.get('is_successful'):
-                increments['duels_won'] = 1
-        elif event_type == 'take_on':
-            increments['take_ons'] = 1
-            if raw_event.get('is_successful'):
-                increments['take_ons_won'] = 1
-        elif event_type == 'interception':
-            increments['interceptions'] = 1
-            if self._is_high_regain(raw_event):
-                increments['high_regains'] = 1
-        elif event_type == 'tackle':
-            increments['tackles'] = 1
-            if raw_event.get('is_successful'):
-                increments['tackles_won'] = 1
-            if self._is_high_regain(raw_event):
-                increments['high_regains'] = 1
-        elif event_type == 'clearance':
-            increments['clearances'] = 1
-            if self._is_high_regain(raw_event):
-                increments['high_regains'] = 1
-        elif event_type == 'goalkeeper':
-            increments['goalkeeper_actions'] = 1
-            if raw_event.get('action_type') == 'save' and raw_event.get('is_successful'):
-                increments['saves'] = 1
-        elif event_type == 'ball_control':
-            increments['ball_controls'] = 1
-            action_type = str(raw_event.get('action_type', '')).lower()
-            if action_type == 'recovery':
-                increments['recoveries'] = 1
-                if self._is_high_regain(raw_event):
-                    increments['high_regains'] = 1
-            elif action_type == 'dispossessed':
-                increments['dispossessions'] = 1
-        else:
-            safe_event_name = re.sub(r'[^a-z0-9]+', '_', event_type).strip('_')
-            if safe_event_name:
-                increments[f'event_{safe_event_name}'] = 1
-
-        return increments
+        return EventMetricAccumulator.build_increments(raw_event)
 
     @staticmethod
     def _compute_analytical_xg(event: Dict[str, Any]) -> float:

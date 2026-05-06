@@ -1,6 +1,6 @@
 # Implementation Todo
 
-Updated: 2026-04-29
+Updated: 2026-05-06
 
 ## Verified Baseline
 
@@ -19,6 +19,25 @@ Updated: 2026-04-29
 - [ ] Add provider mapping for Opta, StatsBomb, and future providers.
 - [ ] Route StatsBomb ingestion through the same canonical read-model pipeline as Opta.
 - [ ] Replace placeholder analytics/search contracts with fully backed read models.
+
+## ML Consumption Surfaces
+
+- [x] Add a user-facing Model Center page so trained models can be used outside the ML Laboratory.
+- [x] Expose interactive prediction and similarity tools through a visible frontend navigation entry.
+- [x] Expose background ML task submission and result monitoring through a visible frontend navigation entry.
+- [x] Add a first team assessment surface in Model Center using live team stats, insights, rankings, and comparisons.
+- [x] Expand team assessment with forecasts, risk flags, and deeper drill-downs.
+- [x] Add a first match prediction surface in Model Center with user-entered scenario inputs.
+- [x] Add a first clustering explorer in Model Center using live cluster metadata and on-demand cluster assignment.
+- [x] Add true sequence-window and lagged-history lens filters so single events, possession windows, and past-event views can be compared directly.
+- [x] Add saved feature-lens presets for recurring analytical slices such as shot quality, buildup passing, and fatigue versus workload.
+- [x] Reuse the feature lens inside Model Center so event- and parameter-slice exploration is not limited to ML Laboratory.
+- [x] Embed the shared feature lens inside Scouting Dashboard so scouting decisions can use the same event and parameter slices without leaving the shortlist flow.
+- [x] Add drill-down links from ML Laboratory experiments into user-facing prediction and assessment surfaces.
+- [x] Add prediction history and saved runs for user-triggered interactive predictions.
+- [x] Add initial contextual entry points from Scouting and Analytics into the Model Center.
+- [x] Add direct model entry actions from player and match detail views into Model Center tabs.
+- [x] Expand contextual "Use This Model" actions with deeper prefilled workflows inside player, team, and match detail views.
 
 ## Current Slice
 

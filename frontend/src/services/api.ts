@@ -14,7 +14,8 @@ import {
   QueryParams,
   MLAlgorithm,
   MLDataset,
-  MLExperiment
+  MLExperiment,
+  MLDatasetFeatureInsights,
 } from '../types';
 import { CalendarEvent, MatchSchedule, ScoutingTrip } from '../types/calendar';
 import { Activity as CollaborationActivity, Task, Workspace } from '../types/collaboration';
@@ -288,6 +289,19 @@ class ApiService {
 
   async getMLDatasets(): Promise<ApiResponse<MLDataset[]> | ApiError> {
     return this.request<MLDataset[]>('/ml/datasets');
+  }
+
+  async getMLDatasetFeatureInsights(
+    datasetId: string,
+    options: { eventType?: string; temporalScope?: string; fields?: string[]; limit?: number } = {}
+  ): Promise<ApiResponse<MLDatasetFeatureInsights> | ApiError> {
+    const params = new URLSearchParams();
+    if (options.eventType) params.set('eventType', options.eventType);
+    if (options.temporalScope) params.set('temporalScope', options.temporalScope);
+    if (options.fields && options.fields.length > 0) params.set('fields', options.fields.join(','));
+    if (options.limit) params.set('limit', String(options.limit));
+    const query = params.toString();
+    return this.request<MLDatasetFeatureInsights>(`/ml/datasets/${datasetId}/feature-insights${query ? `?${query}` : ''}`);
   }
 
   async getMLExperiments(): Promise<ApiResponse<MLExperiment[]> | ApiError> {
@@ -607,6 +621,24 @@ class ApiService {
       body: JSON.stringify(stats),
     });
   }
+
+  async predictMatchOutcome(features: Record<string, any>): Promise<ApiResponse<any>> {
+    return this.request<any>('/ml/predict/match-outcome', {
+      method: 'POST',
+      body: JSON.stringify(features),
+    });
+  }
+
+  async predictEngineModel(modelName: string, payload: Record<string, any>): Promise<ApiResponse<any>> {
+    return this.request<any>(`/ml/engine/predict/${modelName}`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async predictPlayerCluster(features: Record<string, any>): Promise<ApiResponse<any>> {
+    return this.predictEngineModel('player_clustering', features);
+  }
   // =======================================================================
 
   // Analytics Service endpoints (Port 8012) - Advanced BI Dashboard
@@ -643,6 +675,10 @@ class ApiService {
     if (options?.seasonId) params.append('season_id', options.seasonId);
 
     return this.request<any>(`/statistics/team/${teamId}${params.toString() ? `?${params.toString()}` : ''}`);
+  }
+
+  async getMatchPrediction(matchId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/statistics/match/${matchId}/prediction`);
   }
 
   async aggregatePlayerStatistics(

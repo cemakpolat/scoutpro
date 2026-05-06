@@ -250,6 +250,58 @@ async def get_match_sequence_summary(
     )
 
 
+@router.get("/player/{player_id}/prediction", response_model=APIResponse)
+async def get_player_prediction(
+    player_id: str,
+    competition_id: Optional[int] = Query(None),
+    season_id: Optional[int] = Query(None),
+    service: StatisticsService = Depends(get_statistics_service)
+):
+    payload = await service.get_player_prediction(player_id, competition_id, season_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"Prediction not found for player {player_id}")
+
+    return APIResponse(
+        success=True,
+        data=payload,
+        message="Player prediction retrieved successfully"
+    )
+
+
+@router.get("/team/{team_id}/prediction", response_model=APIResponse)
+async def get_team_prediction(
+    team_id: str,
+    competition_id: Optional[int] = Query(None),
+    season_id: Optional[int] = Query(None),
+    service: StatisticsService = Depends(get_statistics_service)
+):
+    payload = await service.get_team_prediction(team_id, competition_id, season_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"Prediction not found for team {team_id}")
+
+    return APIResponse(
+        success=True,
+        data=payload,
+        message="Team prediction retrieved successfully"
+    )
+
+
+@router.get("/match/{match_id}/prediction", response_model=APIResponse)
+async def get_match_prediction(
+    match_id: str,
+    service: StatisticsService = Depends(get_statistics_service)
+):
+    payload = await service.get_match_prediction(match_id)
+    if not payload:
+        raise HTTPException(status_code=404, detail=f"Prediction not found for match {match_id}")
+
+    return APIResponse(
+        success=True,
+        data=payload,
+        message="Match prediction retrieved successfully"
+    )
+
+
 @router.post("/projections/rebuild", response_model=APIResponse)
 async def rebuild_match_projections(
     request: ProjectionRebuildRequest,

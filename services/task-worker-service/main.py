@@ -101,6 +101,13 @@ class TaskResponse(BaseModel):
     completed_at: Optional[str] = None
 
 
+def _to_task_response(task: Dict[str, Any]) -> TaskResponse:
+    payload = dict(task)
+    if "task_type" not in payload and "type" in payload:
+        payload["task_type"] = payload["type"]
+    return TaskResponse(**payload)
+
+
 # ── Endpoints ──────────────────────────────────────────────────────────────────
 
 @app.get("/health")
@@ -116,7 +123,7 @@ async def submit_task(req: SubmitTaskRequest):
     envelope = {"task_id": task_id, "task_type": req.task_type, "payload": req.payload}
     await producer.send(settings.kafka_tasks_topic, value=envelope)
 
-    return TaskResponse(**task)
+    return _to_task_response(task)
 
 
 @app.get("/tasks/{task_id}", response_model=TaskResponse)
@@ -124,7 +131,7 @@ async def get_task(task_id: str):
     task = await task_store.get(task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return TaskResponse(**task)
+    return _to_task_response(task)
 
 
 @app.get("/tasks/{task_id}/result")
@@ -146,4 +153,4 @@ async def get_task_result(task_id: str):
 @app.get("/tasks", response_model=List[TaskResponse])
 async def list_tasks(limit: int = 50):
     tasks = await task_store.list_recent(limit=limit)
-    return [TaskResponse(**t) for t in tasks]
+    return [_to_task_response(task) for task in tasks]

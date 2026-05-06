@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ArrowLeft, MapPin, Calendar, DollarSign, TrendingUp, Activity, Shield, Target, Zap, Users, Loader2, Download } from 'lucide-react';
 import apiService from '../services/api';
 import { deriveAge } from '../utils/dataTransformers';
+import type { ModelCenterContext, ModelCenterTab } from './ModelCenter';
 
 interface Player {
   id: string | number;
@@ -41,11 +42,34 @@ interface Player {
   detailedPosition?: string;
   shirt_number?: number;
   shirtNumber?: number;
+  stats?: {
+    goals?: number;
+    assists?: number;
+    appearances?: number;
+    minutesPlayed?: number;
+    expectedGoals?: number;
+    expectedAssists?: number;
+    passAccuracy?: number;
+    passes?: number;
+    totalShots?: number;
+    shotsOnTarget?: number;
+    keyPasses?: number;
+    totalTackles?: number;
+    totalInterceptions?: number;
+    totalClearances?: number;
+    totalAerialDuels?: number;
+    aerialDuelsWon?: number;
+    successfulTakeOns?: number;
+    cleanSheets?: number;
+    saves?: number;
+  };
+  analyticsInsights?: InsightItem[];
 }
 
 interface PlayerDetailProps {
   player: Player;
   onBack: () => void;
+  onOpenModelCenter?: (tab: ModelCenterTab, context?: ModelCenterContext) => void;
 }
 
 interface CompositeIndexData {
@@ -57,6 +81,7 @@ interface CompositeIndexData {
 
 interface InsightItem {
   title?: string;
+  value?: string | number;
   impact?: string;
   description?: string;
 }
@@ -146,6 +171,41 @@ interface MlPredictionsData {
 const toFiniteNumber = (value: unknown): number => {
   const normalized = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(normalized) ? normalized : 0;
+};
+
+const pickPreferredNumber = (...values: unknown[]): number | null => {
+  let fallback: number | null = null;
+
+  for (const value of values) {
+    const normalized = typeof value === 'number' ? value : Number(value);
+    if (!Number.isFinite(normalized)) {
+      continue;
+    }
+
+    if (normalized > 0) {
+      return normalized;
+    }
+
+    if (fallback === null) {
+      fallback = normalized;
+    }
+  }
+
+  return fallback;
+};
+
+const clamp = (value: number, min = 0, max = 100): number => Math.min(max, Math.max(min, value));
+
+const formatInsightValue = (value: string | number | undefined): string | null => {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Number.isInteger(value) ? String(value) : value.toFixed(1);
+  }
+
+  return String(value);
 };
 
 const resolveEventAnalyticsPlayerId = (player: Player): string => {
@@ -268,10 +328,10 @@ const normalizeHeatmap = (value: unknown): HeatmapData | null => {
   };
 };
 
-const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBack }) => {
+const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBack, onOpenModelCenter }) => {
   const [player, setPlayer] = useState(initialPlayer);
   const [insights, setInsights] = useState<PlayerInsightsData | null>(null);
-  const [, setLoading] = useState(false);
+  const [isLoading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [, setEnhancedStats] = useState<unknown>(null);
   const [heatmap, setHeatmap] = useState<HeatmapData | null>(null);
@@ -415,17 +475,135 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
     : typeof player.overallRating === 'number' && Number.isFinite(player.overallRating)
       ? player.overallRating
       : null;
-  const matchesPlayed = typeof player.matches === 'number'
-    ? player.matches
-    : typeof player.appearances === 'number'
-      ? player.appearances
-      : 0;
-  const goals = Number(player.goals ?? 0);
-  const assists = Number(player.assists ?? 0);
-  const passAccuracy = typeof player.passAccuracy === 'number' ? player.passAccuracy : null;
-  const xG = typeof player.xG === 'number' ? player.xG : null;
-  const xA = typeof player.xA === 'number' ? player.xA : null;
-  const hasTrackedEventData = matchesPlayed > 0 || goals > 0 || assists > 0 || (passAccuracy ?? 0) > 0 || (xG ?? 0) > 0 || (xA ?? 0) > 0 || resolvedRating != null;
+  const playerStats = player.stats || {};
+  const matchesPlayed = pickPreferredNumber(player.matches, player.appearances, playerStats.appearances) ?? 0;
+  const goals = pickPreferredNumber(player.goals, playerStats.goals) ?? 0;
+  const assists = pickPreferredNumber(player.assists, playerStats.assists) ?? 0;
+  const minutesPlayed = pickPreferredNumber(playerStats.minutesPlayed);
+  const passAccuracy = pickPreferredNumber(player.passAccuracy, playerStats.passAccuracy);
+  const totalPasses = pickPreferredNumber(playerStats.passes) ?? 0;
+  const totalShots = pickPreferredNumber(playerStats.totalShots) ?? 0;
+  const shotsOnTarget = pickPreferredNumber(playerStats.shotsOnTarget) ?? 0;
+  const keyPasses = pickPreferredNumber(playerStats.keyPasses) ?? 0;
+  const totalTackles = pickPreferredNumber(playerStats.totalTackles) ?? 0;
+  const totalInterceptions = pickPreferredNumber(playerStats.totalInterceptions) ?? 0;
+  const totalClearances = pickPreferredNumber(playerStats.totalClearances) ?? 0;
+  const totalAerialDuels = pickPreferredNumber(playerStats.totalAerialDuels) ?? 0;
+  const aerialDuelsWon = pickPreferredNumber(playerStats.aerialDuelsWon) ?? 0;
+  const successfulTakeOns = pickPreferredNumber(playerStats.successfulTakeOns) ?? 0;
+  const cleanSheets = pickPreferredNumber(playerStats.cleanSheets) ?? 0;
+  const saves = pickPreferredNumber(playerStats.saves) ?? 0;
+  const hasExpectedSource = Boolean(
+    expectedMetrics ||
+    playerStats.expectedGoals !== undefined ||
+    playerStats.expectedAssists !== undefined ||
+    (typeof player.xG === 'number' && player.xG > 0) ||
+    (typeof player.xA === 'number' && player.xA > 0)
+  );
+  const xG = hasExpectedSource ? pickPreferredNumber(expectedMetrics?.xg, playerStats.expectedGoals, player.xG) : null;
+  const xA = hasExpectedSource ? pickPreferredNumber(expectedMetrics?.xa, playerStats.expectedAssists, player.xA) : null;
+  const directContributions = goals + assists;
+  const defensiveActions = totalTackles + totalInterceptions + totalClearances;
+  const appearanceBase = Math.max(matchesPlayed, 1);
+  const coverageSignals = [
+    matchesPlayed,
+    minutesPlayed ?? 0,
+    totalPasses,
+    totalShots,
+    shotsOnTarget,
+    keyPasses,
+    defensiveActions,
+    directContributions,
+    xG ?? 0,
+    xA ?? 0,
+    passAccuracy ?? 0,
+  ].filter((value) => value > 0).length;
+  const hasTrackedEventData = coverageSignals > 0;
+  const hasLimitedEventData = hasTrackedEventData && coverageSignals < 4;
+  const dataCoverageLabel = hasTrackedEventData
+    ? hasLimitedEventData
+      ? 'Limited event coverage'
+      : 'Event metrics available'
+    : isLoading
+      ? 'Loading analytics'
+      : resolvedRating != null
+        ? 'Summary only'
+        : 'Profile only';
+  const performanceMetricRows = [
+    matchesPlayed > 0 ? { label: 'Matches Played', value: String(matchesPlayed) } : null,
+    minutesPlayed != null && minutesPlayed > 0 ? { label: 'Minutes Played', value: String(minutesPlayed) } : null,
+    matchesPlayed > 0 ? { label: 'Goal Contributions', value: String(directContributions) } : null,
+    matchesPlayed > 0 ? { label: 'Goals per Match', value: (goals / appearanceBase).toFixed(2) } : null,
+    matchesPlayed > 0 ? { label: 'Assists per Match', value: (assists / appearanceBase).toFixed(2) } : null,
+    passAccuracy != null && passAccuracy > 0 ? { label: 'Pass Accuracy', value: `${passAccuracy.toFixed(1)}%` } : null,
+    xG != null && xG > 0 ? { label: 'xG', value: xG.toFixed(2) } : null,
+    xA != null && xA > 0 ? { label: 'xA', value: xA.toFixed(2) } : null,
+    totalShots > 0 ? { label: 'Shots on Target', value: `${shotsOnTarget} / ${totalShots}` } : null,
+    defensiveActions > 0 ? { label: 'Defensive Actions', value: String(defensiveActions) } : null,
+    cleanSheets > 0 ? { label: 'Clean Sheets', value: String(cleanSheets) } : null,
+    saves > 0 ? { label: 'Saves', value: String(saves) } : null,
+  ].filter((metric): metric is { label: string; value: string } => Boolean(metric));
+  const attackingEstimate = clamp(
+    (goals / appearanceBase) * 40 +
+    (assists / appearanceBase) * 28 +
+    ((xG ?? 0) / appearanceBase) * 24 +
+    ((xA ?? 0) / appearanceBase) * 18 +
+    (shotsOnTarget / appearanceBase) * 8 +
+    (totalShots / appearanceBase) * 4,
+  );
+  const possessionEstimate = clamp(
+    (passAccuracy ?? 0) * 0.65 +
+    Math.min(totalPasses / appearanceBase, 80) * 0.35 +
+    (keyPasses / appearanceBase) * 7 +
+    (successfulTakeOns / appearanceBase) * 5,
+  );
+  const aerialWinRate = totalAerialDuels > 0 ? (aerialDuelsWon / totalAerialDuels) * 100 : 0;
+  const defendingEstimate = clamp(
+    (totalTackles / appearanceBase) * 12 +
+    (totalInterceptions / appearanceBase) * 12 +
+    (totalClearances / appearanceBase) * 8 +
+    aerialWinRate * 0.3,
+  );
+  const compositeIndexHasSignal = Boolean(
+    compositeIndex && (compositeIndex.totalIndex > 0 || compositeIndex.attacking > 0 || compositeIndex.possession > 0 || compositeIndex.defending > 0)
+  );
+  const compositeSummary = compositeIndexHasSignal ? compositeIndex : null;
+  const expectedMetricsHasSignal = Boolean(
+    expectedMetrics && (expectedMetrics.xg > 0 || expectedMetrics.xa > 0 || expectedMetrics.shotsWithXg > 0 || expectedMetrics.passesWithXa > 0)
+  );
+  const expectedSummary = expectedMetricsHasSignal ? expectedMetrics : null;
+  const fallbackInsights: InsightItem[] = [
+    {
+      title: 'Profile Snapshot',
+      impact: 'medium',
+      description: `${player.name} is listed as ${resolvedPosition} for ${resolvedClub}${resolvedAge != null ? ` at age ${resolvedAge}` : ''}${player.preferred_foot || player.preferredFoot ? ` and favors the ${player.preferred_foot || player.preferredFoot} foot` : ''}.`,
+    },
+    {
+      title: 'Production Snapshot',
+      impact: hasLimitedEventData ? 'medium' : 'high',
+      description: matchesPlayed > 0
+        ? `${matchesPlayed} appearance${matchesPlayed === 1 ? '' : 's'} with ${directContributions} direct goal contribution${directContributions === 1 ? '' : 's'}${passAccuracy != null && passAccuracy > 0 ? ` and ${passAccuracy.toFixed(1)}% pass accuracy` : ''}${xG != null && xG > 0 ? `, xG ${xG.toFixed(2)}` : ''}${xA != null && xA > 0 ? `${xG != null && xG > 0 ? ', ' : ', '}xA ${xA.toFixed(2)}` : ''}.`
+        : hasTrackedEventData
+          ? `Tracked summary data is available${passAccuracy != null && passAccuracy > 0 ? `, including ${passAccuracy.toFixed(1)}% pass accuracy` : ''}${defensiveActions > 0 ? ` and ${defensiveActions} defensive actions` : ''}.`
+          : 'Only canonical player profile data is available right now; production metrics will expand as more tracked matches are ingested.',
+    },
+    {
+      title: 'Data Coverage',
+      impact: hasLimitedEventData || !hasTrackedEventData ? 'high' : 'medium',
+      description: hasTrackedEventData
+        ? hasLimitedEventData
+          ? 'Advanced event coverage is partial for this player, so composite and expected models are supplemented with profile-summary estimates.'
+          : 'Advanced event and profile summary data are both available for this player.'
+        : isLoading
+          ? 'Advanced analytics are still loading for this profile.'
+          : 'No tracked event bundle is available for this player yet; the profile currently relies on biographical and summary data.',
+    },
+  ];
+  const profileInsights = insights?.insights?.length
+    ? insights.insights
+    : Array.isArray(player.analyticsInsights) && player.analyticsInsights.length > 0
+      ? player.analyticsInsights
+      : fallbackInsights;
   const heatmapCells = heatmap?.cells || [];
   const heatmapGridCols = heatmap?.gridCols || 10;
   const heatmapGridRows = heatmap?.gridRows || 10;
@@ -467,6 +645,35 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
               <span>{downloading ? 'Generating...' : 'Download PDF'}</span>
             </button>
           </div>
+
+          {onOpenModelCenter && (
+            <div className="mb-4 flex flex-wrap gap-2">
+              <button
+                onClick={() => onOpenModelCenter('interactive', { playerId: String(player.id), interactivePanel: 'similar' })}
+                className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-4 py-2 text-sm font-medium text-cyan-200 transition-colors hover:bg-cyan-500/20"
+              >
+                Open Similar Players
+              </button>
+              <button
+                onClick={() => onOpenModelCenter('interactive', { playerId: String(player.id), interactivePanel: 'performance' })}
+                className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2 text-sm font-medium text-emerald-200 transition-colors hover:bg-emerald-500/20"
+              >
+                Project Performance
+              </button>
+              <button
+                onClick={() => onOpenModelCenter('clusters', { playerId: String(player.id) })}
+                className="rounded-lg border border-indigo-500/30 bg-indigo-500/10 px-4 py-2 text-sm font-medium text-indigo-200 transition-colors hover:bg-indigo-500/20"
+              >
+                Open Cluster Explorer
+              </button>
+              <button
+                onClick={() => onOpenModelCenter('lens', { playerId: String(player.id), lensPresetId: 'fatigue-workload' })}
+                className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm font-medium text-amber-200 transition-colors hover:bg-amber-500/20"
+              >
+                Open Workload Lens
+              </button>
+            </div>
+          )}
 
           <div className="bg-slate-800 rounded-lg shadow-sm border border-slate-700 p-6">
             <div className="flex items-center space-x-6">
@@ -550,46 +757,25 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
               <Activity className="w-5 h-5 mr-2" />
               Performance Metrics
             </h3>
-            {hasTrackedEventData ? (
+            {performanceMetricRows.length > 0 ? (
               <div className="space-y-4">
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-400">Matches Played</span>
-                  <span className="font-semibold text-white">{matchesPlayed}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-400">Goals per Match</span>
-                  <span className="font-semibold text-white">{matchesPlayed > 0 ? (goals / matchesPlayed).toFixed(2) : '—'}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-400">Assists per Match</span>
-                  <span className="font-semibold text-white">{matchesPlayed > 0 ? (assists / matchesPlayed).toFixed(2) : '—'}</span>
-                </div>
-                <div className="flex justify-between items-center">
-                  <span className="text-slate-400">Goal Contributions</span>
-                  <span className="font-semibold text-white">{goals + assists}</span>
-                </div>
-                {passAccuracy != null && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-slate-400">Pass Accuracy</span>
-                    <span className="font-semibold text-white">{passAccuracy}%</span>
+                {performanceMetricRows.map((metric) => (
+                  <div key={metric.label} className="flex justify-between items-center">
+                    <span className="text-slate-400">{metric.label}</span>
+                    <span className="font-semibold text-white">{metric.value}</span>
                   </div>
-                )}
-                {xG != null && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-slate-400">xG</span>
-                    <span className="font-semibold text-white">{xG}</span>
-                  </div>
-                )}
-                {xA != null && (
-                  <div className="flex justify-between items-center">
-                    <span className="text-slate-400">xA</span>
-                    <span className="font-semibold text-white">{xA}</span>
+                ))}
+                {hasLimitedEventData && (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+                    This profile has partial tracked coverage. Summary stats are shown now, and advanced cards below are estimated where event models are sparse.
                   </div>
                 )}
               </div>
             ) : (
               <div className="rounded-lg border border-slate-700 bg-slate-700/40 px-4 py-5 text-sm text-slate-300">
-                No evaluated event statistics are available for this player yet. Biographical data is shown from the canonical player profile.
+                {isLoading
+                  ? 'Loading tracked metrics for this player profile.'
+                  : 'No evaluated event statistics are available for this player yet. Biographical data is shown from the canonical player profile.'}
               </div>
             )}
           </div>
@@ -620,25 +806,32 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
               </div>
               <div className="rounded-lg bg-slate-700/60 px-3 py-3">
                 <div className="text-xs uppercase tracking-wide text-slate-400">Data Coverage</div>
-                <div className="mt-1 text-sm text-white">{hasTrackedEventData ? 'Event metrics available' : 'Profile only'}</div>
+                <div className="mt-1 text-sm text-white">{dataCoverageLabel}</div>
               </div>
             </div>
 
-            {/* API-driven insights */}
-            {insights && insights.insights && insights.insights.length > 0 && (
+            {profileInsights.length > 0 && (
               <div className="mt-4 space-y-2">
-                <h4 className="text-sm font-medium text-slate-400 mb-2">AI Insights</h4>
-                {insights.insights.map((ins: InsightItem, i: number) => (
+                <h4 className="text-sm font-medium text-slate-400 mb-2">Profile Insights</h4>
+                {profileInsights.map((ins: InsightItem, i: number) => {
+                  const insightValue = formatInsightValue(ins.value);
+
+                  return (
                   <div key={i} className="p-3 bg-slate-700 rounded-lg">
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-sm font-medium text-white">{ins.title}</span>
-                      <span className={`text-xs px-2 py-0.5 rounded ${
-                        ins.impact === 'high' ? 'bg-red-600/30 text-red-300' : 'bg-yellow-600/30 text-yellow-300'
-                      }`}>{ins.impact}</span>
+                      {insightValue ? (
+                        <span className="text-xs px-2 py-0.5 rounded bg-cyan-500/20 text-cyan-200">{insightValue}</span>
+                      ) : ins.impact ? (
+                        <span className={`text-xs px-2 py-0.5 rounded ${
+                          ins.impact === 'high' ? 'bg-red-600/30 text-red-300' : 'bg-yellow-600/30 text-yellow-300'
+                        }`}>{ins.impact}</span>
+                      ) : null}
                     </div>
                     <p className="text-xs text-slate-400">{ins.description}</p>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
 
@@ -787,46 +980,50 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
               Composite Index & Expected
             </h3>
             <div className="space-y-4">
-              {compositeIndex ? (
+              {compositeSummary ? (
                 <>
                   <div className="flex justify-between items-center bg-slate-700/30 p-2 rounded">
                     <span className="text-slate-400">Total Index</span>
-                    <span className="font-bold text-green-400">{compositeIndex.totalIndex.toFixed(2)}</span>
+                    <span className="font-bold text-green-400">{compositeSummary.totalIndex.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between items-center p-2">
                     <span className="text-slate-400">Attacking</span>
-                    <span className="font-semibold text-white">{compositeIndex.attacking.toFixed(2)}</span>
+                    <span className="font-semibold text-white">{compositeSummary.attacking.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between items-center p-2">
                     <span className="text-slate-400">Possession</span>
-                    <span className="font-semibold text-white">{compositeIndex.possession.toFixed(2)}</span>
+                    <span className="font-semibold text-white">{compositeSummary.possession.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between items-center p-2">
                     <span className="text-slate-400">Defending</span>
-                    <span className="font-semibold text-white">{compositeIndex.defending.toFixed(2)}</span>
+                    <span className="font-semibold text-white">{compositeSummary.defending.toFixed(2)}</span>
                   </div>
                 </>
               ) : (
                 <div className="text-slate-400 text-sm border border-slate-700/50 p-3 rounded-lg text-center">
-                  Computing composite elements...
+                  {isLoading ? 'Computing composite elements...' : 'No composite event model is available for this player yet.'}
                 </div>
               )}
-              {expectedMetrics && (
+              {expectedSummary ? (
                 <div className="mt-4 pt-4 border-t border-slate-700">
                   <div className="flex justify-between items-center p-2">
                     <span className="text-slate-400">Analytical xG</span>
-                    <span className="font-semibold text-white">{expectedMetrics.xg.toFixed(2)}</span>
+                    <span className="font-semibold text-white">{expectedSummary.xg.toFixed(2)}</span>
                   </div>
                   <div className="flex justify-between items-center p-2">
                     <span className="text-slate-400">Analytical xA</span>
-                    <span className="font-semibold text-white">{expectedMetrics.xa.toFixed(2)}</span>
+                    <span className="font-semibold text-white">{expectedSummary.xa.toFixed(2)}</span>
                   </div>
                   <div className="grid grid-cols-2 gap-3 px-2 pt-2 text-xs text-slate-400">
-                    <span>Shots With xG: {expectedMetrics.shotsWithXg}</span>
-                    <span>Passes With xA: {expectedMetrics.passesWithXa}</span>
+                    <span>Shots With xG: {expectedSummary.shotsWithXg}</span>
+                    <span>Passes With xA: {expectedSummary.passesWithXa}</span>
                   </div>
                 </div>
-              )}
+              ) : !isLoading ? (
+                <div className="mt-4 pt-4 border-t border-slate-700 px-2 text-sm text-slate-400">
+                  Expected xG/xA values are not available for this player yet. They will populate once shot and pass event data is ingested.
+                </div>
+              ) : null}
             </div>
           </div>
 

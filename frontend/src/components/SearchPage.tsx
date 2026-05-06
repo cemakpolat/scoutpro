@@ -21,8 +21,9 @@ import { searchService } from '../services/searchService';
 import { exportService } from '../services/exportService';
 import apiService from '../services/api';
 import { SearchResult, SearchFilters, SearchPreset } from '../types/search';
+import type { ModelCenterContext, ModelCenterTab } from './ModelCenter';
 
-const SearchPage: React.FC = () => {
+const SearchPage: React.FC<{ onOpenModelCenter?: (tab: ModelCenterTab, context?: ModelCenterContext) => void }> = ({ onOpenModelCenter }) => {
   const [query, setQuery] = useState('');
   const [filters, setFilters] = useState<SearchFilters>({});
   const [results, setResults] = useState<SearchResult[]>([]);
@@ -318,7 +319,7 @@ const SearchPage: React.FC = () => {
   };
 
   if (selectedPlayer) {
-    return <PlayerDetail player={selectedPlayer} onBack={() => setSelectedPlayer(null)} />;
+    return <PlayerDetail player={selectedPlayer} onBack={() => setSelectedPlayer(null)} onOpenModelCenter={onOpenModelCenter} />;
   }
 
   const sequenceReadyCount = Object.values(playerCoverageById).filter((coverage: any) => coverage?.hasCoverage === true).length;

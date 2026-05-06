@@ -13,6 +13,11 @@ import {
 } from 'lucide-react';
 import { useApi } from '../hooks/useApi';
 import apiService from '../services/api';
+import type { ModelCenterContext, ModelCenterTab } from './ModelCenter';
+
+interface AnalyticsDashboardProps {
+  onOpenModelCenter?: (tab: ModelCenterTab, context?: ModelCenterContext) => void;
+}
 
 type TrendMetric = 'avgGoals' | 'avgHomeGoals' | 'avgAwayGoals' | 'matchCount';
 
@@ -43,7 +48,7 @@ const formatMatchLabel = (match: any) => {
   return `${home} vs ${away}`;
 };
 
-const AnalyticsDashboard: React.FC = () => {
+const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onOpenModelCenter }) => {
   const [selectedMetric, setSelectedMetric] = useState<TrendMetric>('avgGoals');
   const [timeframe, setTimeframe] = useState('season');
 
@@ -129,9 +134,12 @@ const AnalyticsDashboard: React.FC = () => {
             <option value="month">Last Month</option>
             <option value="week">Last Week</option>
           </select>
-          <button className="flex items-center space-x-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors">
+          <button
+            onClick={() => onOpenModelCenter?.('team')}
+            className="flex items-center space-x-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 rounded-lg transition-colors"
+          >
             <Brain className="h-4 w-4" />
-            <span>AI Insights</span>
+            <span>Team Assessment</span>
           </button>
         </div>
       </div>
@@ -235,6 +243,22 @@ const AnalyticsDashboard: React.FC = () => {
                       <div className="font-semibold text-blue-400">{team.passCompletion}%</div>
                     </div>
                   </div>
+                  {onOpenModelCenter && (
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        onClick={() => onOpenModelCenter('team', { teamId: String(team.id) })}
+                        className="rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-xs font-medium text-cyan-200 transition-colors hover:bg-cyan-500/20"
+                      >
+                        Assess This Team
+                      </button>
+                      <button
+                        onClick={() => onOpenModelCenter('lens', { teamId: String(team.id), lensPresetId: 'fatigue-workload' })}
+                        className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs font-medium text-amber-200 transition-colors hover:bg-amber-500/20"
+                      >
+                        Fatigue Lens
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

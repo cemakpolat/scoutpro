@@ -8,8 +8,9 @@ import { exportService } from '../services/exportService';
 import { PlayerFilters, QueryParams } from '../types';
 import PlayerCard from './PlayerCard';
 import PlayerDetail from './PlayerDetail';
+import type { ModelCenterContext, ModelCenterTab } from './ModelCenter';
 
-const PlayerDatabase: React.FC = () => {
+const PlayerDatabase: React.FC<{ onOpenModelCenter?: (tab: ModelCenterTab, context?: ModelCenterContext) => void }> = ({ onOpenModelCenter }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedPlayer, setSelectedPlayer] = useState(null);
   const [positionFilter, setPositionFilter] = useState('all');
@@ -212,7 +213,7 @@ const PlayerDatabase: React.FC = () => {
   };
 
   if (selectedPlayer) {
-    return <PlayerDetail player={selectedPlayer} onBack={() => setSelectedPlayer(null)} />;
+    return <PlayerDetail player={selectedPlayer} onBack={() => setSelectedPlayer(null)} onOpenModelCenter={onOpenModelCenter} />;
   }
 
   return (

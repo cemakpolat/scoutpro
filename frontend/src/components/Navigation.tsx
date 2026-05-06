@@ -30,6 +30,7 @@ const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab, notifi
     { id: 'scouting', label: 'Scouting Hub', icon: Target },
     { id: 'reports', label: 'Report Builder', icon: FileText },
     { id: 'analytics', label: 'Analytics Lab', icon: BarChart3 },
+    { id: 'model-center', label: 'Model Center', icon: Cpu },
     { id: 'ml-lab', label: 'ML Laboratory', icon: TrendingUp },
     { id: 'data-management', label: 'Data Management', icon: Database },
     { id: 'data-importer', label: 'Data Import/Export', icon: Upload },

@@ -41,6 +41,11 @@ const CollaborationHub: React.FC = () => {
   const [taskPriority, setTaskPriority] = useState<'low' | 'medium' | 'high' | 'urgent'>('medium');
   const [taskDueDate, setTaskDueDate] = useState('');
 
+  // Member management state
+  const [newMemberName, setNewMemberName] = useState('');
+  const [newMemberRole, setNewMemberRole] = useState<'editor' | 'viewer'>('editor');
+  const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
+
   const formatRelativeTime = (timestamp: string): string => {
     const now = new Date();
     const date = new Date(timestamp);
@@ -193,6 +198,35 @@ const CollaborationHub: React.FC = () => {
       status: newStatus,
       completedAt: newStatus === 'completed' ? new Date().toISOString().split('T')[0] : undefined
     });
+  };
+
+  const handleAddMember = () => {
+    if (!viewingWorkspace || !newMemberName.trim()) return;
+
+    const newMember = {
+      userId: `u${Date.now()}`,
+      name: newMemberName.trim(),
+      email: `${newMemberName.toLowerCase().replace(/\s+/g, '.')}@scoutpro.com`,
+      role: newMemberRole as 'editor' | 'viewer',
+      joinedAt: new Date().toISOString().split('T')[0]
+    };
+
+    updateWorkspace(viewingWorkspace.id, {
+      members: [...viewingWorkspace.members, newMember]
+    });
+
+    setNewMemberName('');
+    setNewMemberRole('editor');
+    setViewingWorkspace({ ...viewingWorkspace, members: [...viewingWorkspace.members, newMember] });
+  };
+
+  const handleRemoveMember = () => {
+    if (!viewingWorkspace || !removingMemberId) return;
+
+    const updatedMembers = viewingWorkspace.members.filter(m => m.userId !== removingMemberId);
+    updateWorkspace(viewingWorkspace.id, { members: updatedMembers });
+    setViewingWorkspace({ ...viewingWorkspace, members: updatedMembers });
+    setRemovingMemberId(null);
   };
 
   // Filter workspaces based on search query
@@ -988,6 +1022,18 @@ const CollaborationHub: React.FC = () => {
         variant="danger"
       />
 
+      {/* Remove Member Confirmation */}
+      <ConfirmDialog
+        isOpen={removingMemberId !== null}
+        onClose={() => setRemovingMemberId(null)}
+        onConfirm={handleRemoveMember}
+        title="Remove Member"
+        message="Are you sure you want to remove this member from the workspace? They will no longer have access to this workspace and its contents."
+        confirmText="Remove"
+        cancelText="Cancel"
+        variant="danger"
+      />
+
       {/* Workspace View Modal */}
       {viewingWorkspace && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -1036,6 +1082,44 @@ const CollaborationHub: React.FC = () => {
                 <Users className="h-5 w-5 mr-2" />
                 Members
               </h3>
+
+              {/* Add Member Form */}
+              <div className="bg-slate-700 rounded-lg p-4 mb-4 space-y-3">
+                <div>
+                  <label className="block text-sm font-medium mb-2">Add New Member</label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newMemberName}
+                      onChange={(e) => setNewMemberName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          void handleAddMember();
+                        }
+                      }}
+                      placeholder="Enter member name..."
+                      className="flex-1 px-3 py-2 bg-slate-600 border border-slate-500 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <select
+                      value={newMemberRole}
+                      onChange={(e) => setNewMemberRole(e.target.value as 'editor' | 'viewer')}
+                      className="px-3 py-2 bg-slate-600 border border-slate-500 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    >
+                      <option value="editor">Editor</option>
+                      <option value="viewer">Viewer</option>
+                    </select>
+                    <button
+                      onClick={() => void handleAddMember()}
+                      disabled={!newMemberName.trim()}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-600 disabled:cursor-not-allowed rounded text-sm font-medium transition-colors"
+                    >
+                      <Plus className="h-4 w-4" />
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Members List */}
               <div className="space-y-2">
                 {viewingWorkspace.members.map((member) => (
                   <div key={member.userId} className="bg-slate-700 rounded-lg p-3 flex items-center justify-between">
@@ -1059,6 +1143,15 @@ const CollaborationHub: React.FC = () => {
                       <span className="text-xs text-slate-400">
                         Joined {new Date(member.joinedAt).toLocaleDateString()}
                       </span>
+                      {member.role !== 'owner' && (
+                        <button
+                          onClick={() => setRemovingMemberId(member.userId)}
+                          className="px-2 py-1 text-red-400 hover:text-red-300 hover:bg-red-500/20 rounded text-xs transition-colors"
+                          title="Remove member"
+                        >
+                          <Trash2 className="h-3 w-3" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 ))}

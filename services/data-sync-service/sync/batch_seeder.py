@@ -28,6 +28,7 @@ From the data-sync-service startup or from an admin API endpoint::
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -155,6 +156,8 @@ class OptaBatchSeeder:
             "MONGODB_URL",
             "mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin",
         )
+        self.mongo_uri = uri
+        self.db_name = db_name
         self.client = MongoClient(uri, serverSelectionTimeoutMS=5000)
         self.db = self.client[db_name]
 
@@ -202,6 +205,19 @@ class OptaBatchSeeder:
         sport_api = data.get("SoccerFeed", data.get("SoccerDocument", data))
         if "SoccerDocument" in sport_api:
             sport_api = sport_api["SoccerDocument"]
+
+        competition_node = sport_api.get("Competition") if isinstance(sport_api.get("Competition"), dict) else {}
+        competition_name = competition_node.get("Name") or f"Competition {self.competition_id}"
+        competition_country = competition_node.get("Country")
+        season_name = str(self.season_id)
+        self._upsert_competition_and_season(
+            provider="opta",
+            competition_provider_id=str(self.competition_id),
+            competition_name=str(competition_name),
+            season_provider_id=str(self.season_id),
+            season_name=season_name,
+            country=competition_country,
+        )
 
         match_data_list = sport_api.get("MatchData", [])
         if isinstance(match_data_list, dict):
@@ -264,6 +280,19 @@ class OptaBatchSeeder:
             }
 
             match_ops.append(UpdateOne({"uID": match_uid}, {"$set": doc}, upsert=True))
+            self._upsert_provider_mapping(
+                entity_type="match",
+                provider="opta",
+                provider_id=match_uid,
+                canonical_id=sp_match_id,
+                display_name=f"{competition_name}: {home_team or 'home'} vs {away_team or 'away'}",
+                source_match_id=match_uid,
+                metadata={
+                    "competition_name": competition_name,
+                    "home_team_ref": home_team,
+                    "away_team_ref": away_team,
+                },
+            )
 
         if match_ops:
             self.db.matches.bulk_write(match_ops, ordered=False)
@@ -285,6 +314,14 @@ class OptaBatchSeeder:
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
                 team_ops.append(UpdateOne({"uID": team_ref}, {"$set": team_doc}, upsert=True))
+                self._upsert_provider_mapping(
+                    entity_type="team",
+                    provider="opta",
+                    provider_id=team_ref,
+                    canonical_id=sp_team_id,
+                    display_name=team_ref,
+                    metadata={"competition_id": str(self.competition_id)},
+                )
             
             if team_ops:
                 self.db.teams.bulk_write(team_ops, ordered=False)
@@ -681,7 +718,7 @@ class OptaBatchSeeder:
     # ------------------------------------------------------------------
 
     def seed_statsbomb(self) -> None:
-        """Ingest all StatsBomb CSV files from data/statsbomb/ → match_events."""
+        """Ingest all StatsBomb CSV files through the canonical read-model projector."""
         import csv as csv_mod
 
         # StatsBomb data lives next to the opta dir: data/statsbomb/
@@ -698,86 +735,233 @@ class OptaBatchSeeder:
             background=True,
         )
 
-        try:
-            from shared.adapters.statsbomb.statsbomb_mapper import StatsbombMapper
-            mapper = StatsbombMapper()
-        except ImportError as exc:
-            logger.warning("seed_statsbomb: StatsbombMapper unavailable (%s), skipping", exc)
-            return
-
         total_events = 0
         for csv_file in files:
             try:
-                count = self._ingest_statsbomb_csv(csv_file, mapper, csv_mod)
+                count = self._ingest_statsbomb_csv(csv_file, csv_mod)
                 total_events += count
             except Exception as exc:
                 logger.error("seed_statsbomb failed for %s: %s", csv_file.name, exc)
 
         logger.info("seed_statsbomb: ingested %d events across %d files", total_events, len(files))
 
-    def _ingest_statsbomb_csv(self, path: Path, mapper: Any, csv_mod: Any) -> int:
+    def _ingest_statsbomb_csv(self, path: Path, csv_mod: Any) -> int:
         # Extract match_id from filename: HomeTeam_AwayTeam_<match_id>.csv
         stem_parts = path.stem.rsplit("_", 1)
         file_match_id = stem_parts[-1] if len(stem_parts) == 2 else path.stem
 
-        now = datetime.now(timezone.utc).isoformat()
-        ops: List[UpdateOne] = []
+        rows: List[Dict[str, Any]] = []
 
         with open(path, "r", encoding="utf-8") as fh:
             reader = csv_mod.DictReader(fh)
             for row in reader:
-                event_id = row.get("id", "")
-                if not event_id:
+                if not row.get("id"):
                     continue
+                rows.append(row)
 
-                match_id = str(row.get("match_id") or file_match_id)
+        if not rows:
+            return 0
 
-                entity = mapper.map_event(row)
-                if not entity:
-                    continue
-                doc = entity.model_dump()
+        match_id = str(rows[0].get("match_id") or file_match_id)
+        self._upsert_statsbomb_context(match_id, rows)
+        projected_count = asyncio.run(self._project_statsbomb_rows(match_id, rows))
+        logger.info("seed_statsbomb: projected %d events from %s", projected_count, path.name)
+        return len(rows)
 
-                # Normalize Coordinate objects that Pydantic may leave as models
-                for field in ("location", "end_location"):
-                    val = doc.get(field)
-                    if val is not None and hasattr(val, "x"):
-                        doc[field] = {"x": val.x, "y": val.y}
+    async def _project_statsbomb_rows(self, match_id: str, rows: List[Dict[str, Any]]) -> int:
+        from sync.read_model_projector import BatchEventReadModelProjector
 
-                # Align keys with the Opta match_events schema
-                doc["matchID"] = match_id
-                doc["match_id"] = match_id
+        projector = BatchEventReadModelProjector(
+            mongodb_url=self.mongo_uri,
+            mongodb_database=self.db_name,
+        )
+        try:
+            result = await projector.project("statsbomb", match_id, rows)
+            return int(result.get("projected_events", 0) or 0)
+        finally:
+            await projector.close()
 
-                minute = doc.get("minute", 0) or 0
-                second = doc.get("second", 0) or 0
-                doc["timestamp_seconds"] = minute * 60 + second
+    def _upsert_statsbomb_context(self, match_id: str, rows: List[Dict[str, Any]]) -> None:
+        from shared.utils.id_generator import ScoutProId
 
-                # is_goal: shots where outcome_name == 'Goal'
-                if "is_goal" not in doc:
-                    outcome = (row.get("outcome_name") or "").lower()
-                    doc["is_goal"] = (doc.get("type_name") == "shot" and outcome == "goal")
+        now = datetime.now(timezone.utc).isoformat()
+        team_names: Dict[str, str] = {}
+        player_names: Dict[str, str] = {}
+        ordered_team_ids: List[str] = []
 
-                # Preserve StatsBomb-specific metrics
-                doc["analytical_xg"] = _safe_float(row.get("statsbomb_xg")) or 0.0
-                doc["xg"] = doc["analytical_xg"]
-                doc["obv_total_net"] = _safe_float(row.get("obv_total_net"))
+        for row in rows:
+            for team_id_key, team_name_key in (
+                ("team_id", "team_name"),
+                ("possession_team_id", "possession_team_name"),
+            ):
+                team_provider_id = str(row.get(team_id_key) or "").strip()
+                team_name = str(row.get(team_name_key) or "").strip()
+                if team_provider_id and team_name and team_provider_id not in team_names:
+                    team_names[team_provider_id] = team_name
+                    ordered_team_ids.append(team_provider_id)
+                    self._upsert_provider_mapping(
+                        entity_type="team",
+                        provider="statsbomb",
+                        provider_id=team_provider_id,
+                        canonical_id=ScoutProId.team("statsbomb", team_provider_id),
+                        display_name=team_name,
+                        source_match_id=match_id,
+                        metadata={"team_name": team_name},
+                    )
 
-                doc["event_source"] = "statsbomb_batch"
-                # competition_id / season_id are not carried in StatsBomb CSVs
-                doc.setdefault("competition_id", None)
-                doc.setdefault("season_id", None)
-                doc["ingested_at"] = now
+            for player_id_key, player_name_key in (
+                ("player_id", "player_name"),
+                ("formation_player_id", "formation_player_name"),
+                ("substituted_player_id", "substituted_player_name"),
+                ("pass_recipient_id", "pass_recipient_name"),
+            ):
+                player_provider_id = str(row.get(player_id_key) or "").strip()
+                player_name = str(row.get(player_name_key) or "").strip()
+                if player_provider_id and player_name and player_provider_id not in player_names:
+                    player_names[player_provider_id] = player_name
+                    self._upsert_provider_mapping(
+                        entity_type="player",
+                        provider="statsbomb",
+                        provider_id=player_provider_id,
+                        canonical_id=ScoutProId.player("statsbomb", player_provider_id),
+                        display_name=player_name,
+                        source_match_id=match_id,
+                        metadata={"player_name": player_name},
+                    )
 
-                ops.append(UpdateOne(
-                    {"event_id": event_id, "matchID": match_id},
-                    {"$set": doc},
-                    upsert=True,
-                ))
+        home_team_provider_id = ordered_team_ids[0] if ordered_team_ids else None
+        away_team_provider_id = ordered_team_ids[1] if len(ordered_team_ids) > 1 else None
+        home_team_name = team_names.get(home_team_provider_id or "")
+        away_team_name = team_names.get(away_team_provider_id or "")
+        scoutpro_match_id = ScoutProId.match("statsbomb", match_id)
 
-        if ops:
-            self.db.match_events.bulk_write(ops, ordered=False)
-            logger.info("seed_statsbomb: upserted %d events from %s", len(ops), path.name)
+        self.db.matches.update_one(
+            {"uID": match_id},
+            {
+                "$set": {
+                    "uID": match_id,
+                    "scoutpro_id": scoutpro_match_id,
+                    "id": scoutpro_match_id,
+                    "provider_ids": {"statsbomb": ScoutProId.provider_numeric("match", match_id)},
+                    "homeTeamName": home_team_name,
+                    "awayTeamName": away_team_name,
+                    "home_provider_team_id": home_team_provider_id,
+                    "away_provider_team_id": away_team_provider_id,
+                    "updated_at": now,
+                }
+            },
+            upsert=True,
+        )
+        self._upsert_provider_mapping(
+            entity_type="match",
+            provider="statsbomb",
+            provider_id=match_id,
+            canonical_id=scoutpro_match_id,
+            display_name=f"{home_team_name or 'Home'} vs {away_team_name or 'Away'}",
+            source_match_id=match_id,
+            metadata={
+                "home_team_name": home_team_name,
+                "away_team_name": away_team_name,
+            },
+        )
 
-        return len(ops)
+    def _upsert_competition_and_season(
+        self,
+        provider: str,
+        competition_provider_id: str,
+        competition_name: str,
+        season_provider_id: str,
+        season_name: str,
+        country: Optional[str] = None,
+    ) -> None:
+        from shared.utils.id_generator import ScoutProId
+
+        now = datetime.now(timezone.utc).isoformat()
+        scoutpro_competition_id = ScoutProId.competition(provider, competition_provider_id)
+        scoutpro_season_id = ScoutProId.season(provider, season_provider_id)
+
+        self.db.competitions.update_one(
+            {"scoutpro_id": scoutpro_competition_id},
+            {
+                "$set": {
+                    "uID": competition_provider_id,
+                    "scoutpro_id": scoutpro_competition_id,
+                    "id": scoutpro_competition_id,
+                    "provider_ids": {provider: ScoutProId.provider_numeric("competition", competition_provider_id)},
+                    "name": competition_name,
+                    "country": country,
+                    "currentSeasonID": scoutpro_season_id,
+                    "seasonCount": 1,
+                    "updated_at": now,
+                }
+            },
+            upsert=True,
+        )
+        self._upsert_provider_mapping(
+            entity_type="competition",
+            provider=provider,
+            provider_id=competition_provider_id,
+            canonical_id=scoutpro_competition_id,
+            display_name=competition_name,
+            metadata={"country": country},
+        )
+
+        self.db.seasons.update_one(
+            {"scoutpro_id": scoutpro_season_id},
+            {
+                "$set": {
+                    "uID": season_provider_id,
+                    "scoutpro_id": scoutpro_season_id,
+                    "id": scoutpro_season_id,
+                    "provider_ids": {provider: ScoutProId.provider_numeric("season", season_provider_id)},
+                    "name": season_name,
+                    "competitionID": scoutpro_competition_id,
+                    "year": _safe_int(season_provider_id),
+                    "updated_at": now,
+                }
+            },
+            upsert=True,
+        )
+        self._upsert_provider_mapping(
+            entity_type="season",
+            provider=provider,
+            provider_id=season_provider_id,
+            canonical_id=scoutpro_season_id,
+            display_name=season_name,
+            metadata={"competition_id": scoutpro_competition_id},
+        )
+
+    def _upsert_provider_mapping(
+        self,
+        entity_type: str,
+        provider: str,
+        provider_id: str,
+        canonical_id: Any,
+        display_name: Optional[str] = None,
+        source_match_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        self.db.provider_mappings.update_one(
+            {
+                "entity_type": entity_type,
+                "provider": provider,
+                "provider_id": str(provider_id),
+            },
+            {
+                "$set": {
+                    "canonical_id": str(canonical_id),
+                    "display_name": display_name,
+                    "source_match_id": source_match_id,
+                    "metadata": metadata or {},
+                    "updated_at": now,
+                },
+                "$setOnInsert": {
+                    "created_at": now,
+                },
+            },
+            upsert=True,
+        )
 
     # ------------------------------------------------------------------
     # File loading

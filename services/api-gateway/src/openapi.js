@@ -1,10 +1,79 @@
+const fs = require('fs');
+const path = require('path');
+
+const ROUTE_MODULES = [
+  { file: 'auth.js', mountPath: '/api/auth', tag: 'auth' },
+  { file: 'players.js', mountPath: '/api/players', tag: 'players' },
+  { file: 'detailed-stats.js', mountPath: '/api/players', tag: 'players' },
+  { file: 'matches.js', mountPath: '/api/matches', tag: 'matches' },
+  { file: 'teams.js', mountPath: '/api/teams', tag: 'teams' },
+  { file: 'analytics.js', mountPath: '/api/analytics', tag: 'analytics' },
+  { file: 'statistics.js', mountPath: '/api/statistics', tag: 'statistics' },
+  { file: 'notifications.js', mountPath: '/api/notifications', tag: 'notifications' },
+  { file: 'ml.js', mountPath: '/api/ml', tag: 'ml' },
+  { file: 'search.js', mountPath: '/api/search', tag: 'search' },
+  { file: 'reports.js', mountPath: '/api/v2/reports', tag: 'reports' },
+  { file: 'exports.js', mountPath: '/api/v2/exports', tag: 'exports' },
+  { file: 'imports.js', mountPath: '/api/v2/imports', tag: 'imports' },
+  { file: 'calendar.js', mountPath: '/api/v2/calendar', tag: 'calendar' },
+  { file: 'collaboration.js', mountPath: '/api/v2/collaboration', tag: 'collaboration' },
+  { file: 'admin.js', mountPath: '/api/v2/admin', tag: 'admin' },
+  { file: 'leagues.js', mountPath: '/api/leagues', tag: 'leagues' },
+  { file: 'market.js', mountPath: '/api/market', tag: 'market' },
+  { file: 'tactical.js', mountPath: '/api/tactical', tag: 'tactical' },
+  { file: 'ai.js', mountPath: '/api/ai', tag: 'ai' },
+  { file: 'videos.js', mountPath: '/api/v2/videos', tag: 'videos' },
+  { file: 'events.js', mountPath: '/api/v2/events', tag: 'events' },
+  { file: 'advancedAnalytics.js', mountPath: '/api/v2/analytics', tag: 'analytics' },
+  { file: 'tasks.js', mountPath: '/api/tasks', tag: 'tasks' },
+];
+
+const TAG_DESCRIPTIONS = {
+  system: 'Gateway metadata, health, and documentation endpoints.',
+  auth: 'Authentication and current-user endpoints.',
+  players: 'Player discovery, enrichment, and advanced statistics endpoints.',
+  matches: 'Match discovery, live data, event feeds, and visualizations.',
+  teams: 'Team catalog, squad, and event endpoints.',
+  leagues: 'League list, detail, and match lookup endpoints.',
+  analytics: 'Legacy analytics routes and v2 advanced analytics insights.',
+  statistics: 'Statistics-service projections, rankings, and comparisons.',
+  notifications: 'Notification feed and read-state management endpoints.',
+  ml: 'Machine-learning catalog, training, prediction, and similarity endpoints.',
+  search: 'Unified search, saved searches, and search history endpoints.',
+  reports: 'Asynchronous report generation, listing, download, and deletion endpoints.',
+  exports: 'Dataset export endpoints and export templates.',
+  imports: 'Import templates, jobs, retries, and import report endpoints.',
+  calendar: 'Calendar scheduling, trip planning, and match assignment endpoints.',
+  collaboration: 'Workspace, task, and activity collaboration endpoints.',
+  admin: 'Administrative monitoring and snapshot endpoints.',
+  market: 'Market trends, predictions, and valuation endpoints.',
+  tactical: 'Tactical patterns, formations, heatmaps, and overview endpoints.',
+  ai: 'AI-generated insights and recommendation endpoints.',
+  videos: 'Video upload, playback, annotation, and analysis endpoints.',
+  events: 'Event listing endpoints.',
+  tasks: 'Background task submission and status endpoints.',
+  websocket: 'WebSocket status helpers.',
+};
+
+const METHODS_WITH_BODY = new Set(['post', 'put', 'patch']);
+const ROUTE_PATTERN = /router\.(get|post|put|patch|delete)\(\s*['"`]([^'"`]+)['"`]/g;
+const METHOD_VERBS = {
+  get: 'Get',
+  post: 'Submit',
+  put: 'Update',
+  patch: 'Patch',
+  delete: 'Delete',
+};
+
+let cachedGeneratedPaths;
+
 function buildGatewayOpenApiSpec(serverUrl) {
   return {
     openapi: '3.1.0',
     info: {
       title: 'ScoutPro API Gateway',
       version: '2.1.0',
-      description: 'Unified HTTP contract for ScoutPro frontend-facing gateway endpoints.',
+      description: 'Unified HTTP contract for the ScoutPro frontend-facing gateway. Route coverage is generated from the mounted Express routers, while payload schemas remain permissive until endpoint-specific models are tightened.',
       contact: {
         name: 'ScoutPro Platform',
       },
@@ -18,447 +87,16 @@ function buildGatewayOpenApiSpec(serverUrl) {
         description: 'Current gateway origin',
       },
     ],
-    tags: [
-      { name: 'system', description: 'Gateway metadata and health endpoints.' },
-      { name: 'players', description: 'Player list and detail endpoints aggregated by the gateway.' },
-      { name: 'matches', description: 'Match list and detail endpoints aggregated by the gateway.' },
-      { name: 'teams', description: 'Team list and detail endpoints aggregated by the gateway.' },
-      { name: 'analytics', description: 'Legacy and v2 analytics routes exposed to the frontend.' },
-      { name: 'statistics', description: 'Statistics-service projections exposed via the gateway.' },
-      { name: 'tasks', description: 'Background task submission and tracking endpoints.' },
-      { name: 'websocket', description: 'WebSocket status helpers.' },
-    ],
-    paths: {
-      '/': {
-        get: {
-          tags: ['system'],
-          summary: 'Gateway metadata',
-          responses: {
-            '200': {
-              description: 'Gateway service metadata',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/GatewayRoot' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/health': {
-        get: {
-          tags: ['system'],
-          summary: 'Gateway health',
-          responses: {
-            '200': {
-              description: 'Gateway health status',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/HealthResponse' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/players': {
-        get: {
-          tags: ['players'],
-          summary: 'List players',
-          parameters: [
-            { name: 'search', in: 'query', schema: { type: 'string' } },
-            { name: 'q', in: 'query', schema: { type: 'string' } },
-            { name: 'position', in: 'query', schema: { type: 'string' } },
-            { name: 'nationality', in: 'query', schema: { type: 'string' } },
-            { name: 'club', in: 'query', schema: { type: 'string' } },
-            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
-          ],
-          responses: {
-            '200': {
-              description: 'Player list',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'array',
-                    items: { $ref: '#/components/schemas/FlexibleEntity' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/players/{id}': {
-        get: {
-          tags: ['players'],
-          summary: 'Get player detail',
-          parameters: [
-            { name: 'id', in: 'path', required: true, schema: { type: 'string' } },
-          ],
-          responses: {
-            '200': {
-              description: 'Player detail',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-            '404': {
-              description: 'Player not found',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/ErrorResponse' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/matches': {
-        get: {
-          tags: ['matches'],
-          summary: 'List matches',
-          parameters: [
-            { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500, default: 100 } },
-            { name: 'status', in: 'query', schema: { type: 'string' } },
-            { name: 'competition_id', in: 'query', schema: { type: 'string' } },
-            { name: 'season_id', in: 'query', schema: { type: 'string' } },
-          ],
-          responses: {
-            '200': {
-              description: 'Match list',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'array',
-                    items: { $ref: '#/components/schemas/FlexibleEntity' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/teams': {
-        get: {
-          tags: ['teams'],
-          summary: 'List teams',
-          responses: {
-            '200': {
-              description: 'Team list',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'array',
-                    items: { $ref: '#/components/schemas/FlexibleEntity' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/analytics/{type}': {
-        get: {
-          tags: ['analytics'],
-          summary: 'Legacy analytics overview routes',
-          parameters: [
-            {
-              name: 'type',
-              in: 'path',
-              required: true,
-              schema: {
-                type: 'string',
-                enum: ['overview', 'dashboard', 'top-performers'],
-              },
-            },
-          ],
-          responses: {
-            '200': {
-              description: 'Legacy analytics payload',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/analytics/player/{playerId}': {
-        get: {
-          tags: ['analytics'],
-          summary: 'Legacy player analytics',
-          parameters: [
-            { name: 'playerId', in: 'path', required: true, schema: { type: 'string' } },
-          ],
-          responses: {
-            '200': {
-              description: 'Player analytics payload',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/analytics/match/{matchId}': {
-        get: {
-          tags: ['analytics'],
-          summary: 'Legacy match analytics',
-          parameters: [
-            { name: 'matchId', in: 'path', required: true, schema: { type: 'string' } },
-          ],
-          responses: {
-            '200': {
-              description: 'Match analytics payload',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/v2/analytics/dashboard/overview': {
-        get: {
-          tags: ['analytics'],
-          summary: 'Overview dashboard',
-          responses: {
-            '200': {
-              description: 'Analytics overview dashboard payload',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/v2/analytics/dashboard/player/{player_id}': {
-        get: {
-          tags: ['analytics'],
-          summary: 'Player dashboard',
-          parameters: [
-            { name: 'player_id', in: 'path', required: true, schema: { type: 'string' } },
-          ],
-          responses: {
-            '200': {
-              description: 'Player dashboard payload',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/v2/analytics/dashboard/team/{team_id}': {
-        get: {
-          tags: ['analytics'],
-          summary: 'Team dashboard',
-          parameters: [
-            { name: 'team_id', in: 'path', required: true, schema: { type: 'string' } },
-          ],
-          responses: {
-            '200': {
-              description: 'Team dashboard payload',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/v2/analytics/advanced-metrics/{match_id}': {
-        get: {
-          tags: ['analytics'],
-          summary: 'Match advanced metrics',
-          parameters: [
-            { name: 'match_id', in: 'path', required: true, schema: { type: 'string' } },
-            { name: 'time_bucket', in: 'query', schema: { type: 'string', default: '5m' } },
-          ],
-          responses: {
-            '200': {
-              description: 'Advanced match metrics payload',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/statistics/player/{playerId}': {
-        get: {
-          tags: ['statistics'],
-          summary: 'Player statistics',
-          parameters: [
-            { name: 'playerId', in: 'path', required: true, schema: { type: 'string' } },
-            { name: 'competition_id', in: 'query', schema: { type: 'string' } },
-            { name: 'season_id', in: 'query', schema: { type: 'string' } },
-            { name: 'per_90', in: 'query', schema: { type: 'boolean' } },
-          ],
-          responses: {
-            '200': {
-              description: 'Player statistics payload',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/statistics/team/{teamId}': {
-        get: {
-          tags: ['statistics'],
-          summary: 'Team statistics',
-          parameters: [
-            { name: 'teamId', in: 'path', required: true, schema: { type: 'string' } },
-            { name: 'competition_id', in: 'query', schema: { type: 'string' } },
-            { name: 'season_id', in: 'query', schema: { type: 'string' } },
-          ],
-          responses: {
-            '200': {
-              description: 'Team statistics payload',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/statistics/rankings/players': {
-        get: {
-          tags: ['statistics'],
-          summary: 'Player rankings',
-          parameters: [
-            { name: 'stat_name', in: 'query', schema: { type: 'string', default: 'passes' } },
-            { name: 'position', in: 'query', schema: { type: 'string' } },
-            { name: 'competition_id', in: 'query', schema: { type: 'string' } },
-            { name: 'limit', in: 'query', schema: { type: 'integer', default: 50 } },
-          ],
-          responses: {
-            '200': {
-              description: 'Player rankings payload',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'array',
-                    items: { $ref: '#/components/schemas/FlexibleEntity' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/statistics/rankings/teams': {
-        get: {
-          tags: ['statistics'],
-          summary: 'Team rankings',
-          parameters: [
-            { name: 'stat_name', in: 'query', schema: { type: 'string', default: 'goals' } },
-            { name: 'competition_id', in: 'query', schema: { type: 'string' } },
-            { name: 'limit', in: 'query', schema: { type: 'integer', default: 50 } },
-          ],
-          responses: {
-            '200': {
-              description: 'Team rankings payload',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'array',
-                    items: { $ref: '#/components/schemas/FlexibleEntity' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/tasks': {
-        get: {
-          tags: ['tasks'],
-          summary: 'List tasks',
-          parameters: [
-            { name: 'limit', in: 'query', schema: { type: 'integer', default: 50 } },
-          ],
-          responses: {
-            '200': {
-              description: 'Recent background tasks',
-              content: {
-                'application/json': {
-                  schema: {
-                    type: 'array',
-                    items: { $ref: '#/components/schemas/FlexibleEntity' },
-                  },
-                },
-              },
-            },
-          },
-        },
-        post: {
-          tags: ['tasks'],
-          summary: 'Submit task',
-          requestBody: {
-            required: true,
-            content: {
-              'application/json': {
-                schema: {
-                  type: 'object',
-                  required: ['task_type', 'payload'],
-                  properties: {
-                    task_type: { type: 'string' },
-                    payload: { type: 'object', additionalProperties: true },
-                  },
-                },
-              },
-            },
-          },
-          responses: {
-            '202': {
-              description: 'Task accepted',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-          },
-        },
-      },
-      '/api/ws/stats': {
-        get: {
-          tags: ['websocket'],
-          summary: 'WebSocket stats',
-          responses: {
-            '200': {
-              description: 'WebSocket connection statistics',
-              content: {
-                'application/json': {
-                  schema: { $ref: '#/components/schemas/FlexibleEntity' },
-                },
-              },
-            },
-          },
-        },
-      },
-    },
+    tags: Object.entries(TAG_DESCRIPTIONS).map(([name, description]) => ({ name, description })),
+    paths: mergePathMaps(buildGeneratedPaths(), buildManualPaths()),
     components: {
+      securitySchemes: {
+        bearerAuth: {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+        },
+      },
       schemas: {
         HealthResponse: {
           type: 'object',
@@ -497,9 +135,315 @@ function buildGatewayOpenApiSpec(serverUrl) {
           type: 'object',
           additionalProperties: true,
         },
+        FlexiblePayload: {
+          description: 'Permissive placeholder schema for endpoints that do not yet have a dedicated response model.',
+          oneOf: [
+            { $ref: '#/components/schemas/FlexibleEntity' },
+            {
+              type: 'array',
+              items: { $ref: '#/components/schemas/FlexibleEntity' },
+            },
+            { type: 'string' },
+            { type: 'number' },
+            { type: 'boolean' },
+            { type: 'null' },
+          ],
+        },
       },
     },
   };
+}
+
+function buildManualPaths() {
+  return {
+    '/': {
+      get: {
+        tags: ['system'],
+        operationId: 'getGatewayRoot',
+        summary: 'Gateway metadata',
+        responses: {
+          '200': {
+            description: 'Gateway service metadata',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/GatewayRoot' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/health': {
+      get: {
+        tags: ['system'],
+        operationId: 'getGatewayHealth',
+        summary: 'Gateway health',
+        responses: {
+          '200': {
+            description: 'Gateway health status',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/HealthResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/openapi.json': {
+      get: {
+        tags: ['system'],
+        operationId: 'getGatewayOpenApiDocument',
+        summary: 'OpenAPI document',
+        responses: {
+          '200': {
+            description: 'Generated OpenAPI specification for the gateway',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/FlexibleEntity' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/docs': {
+      get: {
+        tags: ['system'],
+        operationId: 'getGatewaySwaggerUi',
+        summary: 'Swagger UI',
+        responses: {
+          '200': {
+            description: 'Interactive Swagger UI HTML',
+            content: {
+              'text/html': {
+                schema: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/api/ws/stats': {
+      get: {
+        tags: ['websocket'],
+        operationId: 'getWebsocketStats',
+        summary: 'WebSocket stats',
+        responses: {
+          '200': {
+            description: 'WebSocket connection statistics',
+            content: {
+              'application/json': {
+                schema: { $ref: '#/components/schemas/FlexibleEntity' },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
+function buildGeneratedPaths() {
+  if (cachedGeneratedPaths) {
+    return cachedGeneratedPaths;
+  }
+
+  const generatedPaths = {};
+
+  for (const routeModule of ROUTE_MODULES) {
+    const routeFilePath = path.join(__dirname, 'routes', routeModule.file);
+
+    let source;
+    let matches;
+    try {
+      source = fs.readFileSync(routeFilePath, 'utf8');
+      matches = source.matchAll(ROUTE_PATTERN);
+    } catch (error) {
+      continue;
+    }
+
+    for (const match of matches) {
+      const method = match[1];
+      const routePath = match[2];
+      const fullPath = normalizeExpressPath(routeModule.mountPath, routePath);
+      const pathItem = generatedPaths[fullPath] || {};
+
+      if (pathItem[method]) {
+        continue;
+      }
+
+      generatedPaths[fullPath] = {
+        ...pathItem,
+        [method]: buildGeneratedOperation(routeModule, method, fullPath),
+      };
+    }
+  }
+
+  cachedGeneratedPaths = generatedPaths;
+  return generatedPaths;
+}
+
+function buildGeneratedOperation(routeModule, method, fullPath) {
+  const operation = {
+    tags: [routeModule.tag],
+    operationId: buildOperationId(method, fullPath),
+    summary: buildSummary(method, fullPath),
+    description: `Auto-generated from ${routeModule.file} to keep the published contract aligned with mounted Express routes. Parameters and payload schemas should be tightened as endpoint-specific models become available.`,
+    responses: buildGeneratedResponses(method, fullPath),
+    'x-generated': true,
+    'x-route-source': routeModule.file,
+  };
+
+  const parameters = extractPathParameters(fullPath);
+  if (parameters.length > 0) {
+    operation.parameters = parameters;
+  }
+
+  if (METHODS_WITH_BODY.has(method)) {
+    operation.requestBody = buildGeneratedRequestBody(fullPath);
+  }
+
+  return operation;
+}
+
+function buildGeneratedResponses(method, fullPath) {
+  const successStatus = method === 'post' && (fullPath === '/api/tasks' || fullPath.endsWith('/generate')) ? '202' : method === 'post' ? '201' : '200';
+
+  return {
+    [successStatus]: {
+      description: `${METHOD_VERBS[method]} response for ${fullPath}`,
+      content: {
+        [getResponseContentType(fullPath)]: {
+          schema: getResponseSchema(fullPath),
+        },
+      },
+    },
+    default: {
+      description: 'Error response',
+      content: {
+        'application/json': {
+          schema: { $ref: '#/components/schemas/ErrorResponse' },
+        },
+      },
+    },
+  };
+}
+
+function buildGeneratedRequestBody(fullPath) {
+  if (fullPath.includes('/upload')) {
+    return {
+      required: true,
+      content: {
+        'multipart/form-data': {
+          schema: {
+            type: 'object',
+            properties: {
+              file: {
+                type: 'string',
+                format: 'binary',
+              },
+            },
+            additionalProperties: true,
+          },
+        },
+      },
+    };
+  }
+
+  return {
+    required: false,
+    content: {
+      'application/json': {
+        schema: { $ref: '#/components/schemas/FlexibleEntity' },
+      },
+    },
+  };
+}
+
+function getResponseContentType(fullPath) {
+  if (fullPath.endsWith('/download') || fullPath.endsWith('/stream')) {
+    return 'application/octet-stream';
+  }
+
+  return 'application/json';
+}
+
+function getResponseSchema(fullPath) {
+  if (fullPath.endsWith('/download') || fullPath.endsWith('/stream')) {
+    return {
+      type: 'string',
+      format: 'binary',
+    };
+  }
+
+  return { $ref: '#/components/schemas/FlexiblePayload' };
+}
+
+function normalizeExpressPath(mountPath, routePath) {
+  const normalizedPath = !routePath || routePath === '/' ? mountPath : `${mountPath}${routePath}`;
+  return normalizedPath.replace(/\/+/g, '/').replace(/:(\w+)/g, '{$1}');
+}
+
+function extractPathParameters(fullPath) {
+  return Array.from(fullPath.matchAll(/\{(\w+)\}/g), ([, name]) => ({
+    name,
+    in: 'path',
+    required: true,
+    schema: {
+      type: 'string',
+    },
+  }));
+}
+
+function buildSummary(method, fullPath) {
+  const summaryTarget = fullPath
+    .split('/')
+    .filter(Boolean)
+    .filter((segment) => segment !== 'api' && segment !== 'v2')
+    .map((segment) => segment.replace(/[{}]/g, '').replace(/-/g, ' '))
+    .join(' ');
+
+  return `${METHOD_VERBS[method]} ${summaryTarget || 'gateway resource'}`;
+}
+
+function buildOperationId(method, fullPath) {
+  const tokens = [method].concat(
+    fullPath
+      .split('/')
+      .filter(Boolean)
+      .map((segment) => {
+        if (segment.startsWith('{') && segment.endsWith('}')) {
+          return `by-${segment.slice(1, -1)}`;
+        }
+
+        return segment;
+      })
+      .join('-')
+      .replace(/[^a-zA-Z0-9-]+/g, '-')
+      .split('-')
+      .filter(Boolean)
+  );
+
+  return tokens
+    .map((token, index) => {
+      const lower = token.toLowerCase();
+      return index === 0 ? lower : lower.charAt(0).toUpperCase() + lower.slice(1);
+    })
+    .join('');
+}
+
+function mergePathMaps(generatedPaths, manualPaths) {
+  const mergedPaths = { ...generatedPaths };
+
+  for (const [pathKey, pathItem] of Object.entries(manualPaths)) {
+    mergedPaths[pathKey] = {
+      ...(mergedPaths[pathKey] || {}),
+      ...pathItem,
+    };
+  }
+
+  return mergedPaths;
 }
 
 function renderSwaggerUiHtml(openApiUrl) {

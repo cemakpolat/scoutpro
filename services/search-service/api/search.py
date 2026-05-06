@@ -52,6 +52,42 @@ async def search_teams(
     )
 
 
+@router.get("/competitions", response_model=APIResponse)
+async def search_competitions(
+    request: Request,
+    q: str = Query(..., min_length=2),
+    country: Optional[str] = Query(None),
+    size: int = Query(20, le=100)
+):
+    """Search for competitions backed by the canonical read model."""
+    search_client = request.app.state.search_client
+    results = await search_client.search_competitions(q, country=country, limit=size)
+
+    return APIResponse(
+        success=True,
+        data=results,
+        message=f"Found {len(results)} competitions"
+    )
+
+
+@router.get("/venues", response_model=APIResponse)
+async def search_venues(
+    request: Request,
+    q: str = Query(..., min_length=2),
+    country: Optional[str] = Query(None),
+    size: int = Query(20, le=100)
+):
+    """Search for venues backed by the canonical read model."""
+    search_client = request.app.state.search_client
+    results = await search_client.search_venues(q, country=country, limit=size)
+
+    return APIResponse(
+        success=True,
+        data=results,
+        message=f"Found {len(results)} venues"
+    )
+
+
 @router.get("/all", response_model=APIResponse)
 async def search_all(
     request: Request,

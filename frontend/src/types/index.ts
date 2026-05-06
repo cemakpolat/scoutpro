@@ -235,6 +235,13 @@ export interface MLAlgorithm {
   interpretability: string;
   bestFor: string[];
   parameters: Record<string, any>;
+  trainable?: boolean;
+  executionMode?: 'background' | 'prediction_only' | 'unavailable';
+  supportedDatasetIds?: string[];
+  recommendedDatasetId?: string | null;
+  eventFamilies?: string[];
+  temporalScopes?: string[];
+  unavailableReason?: string | null;
 }
 
 export interface MLDataset {
@@ -247,6 +254,43 @@ export interface MLDataset {
   description: string;
   quality: number;
   lastUpdated: string;
+  collection?: string;
+  recordCount?: number;
+  updatedAt?: string;
+  eventFamilies?: string[];
+  temporalScopes?: string[];
+}
+
+export interface MLFeatureStat {
+  field: string;
+  sampleCount: number;
+  coverage: number;
+  min: number | null;
+  max: number | null;
+  mean: number | null;
+}
+
+export interface MLFeatureCorrelation {
+  left: string;
+  right: string;
+  coefficient: number;
+  sampleSize: number;
+}
+
+export interface MLDatasetFeatureInsights {
+  datasetId: string;
+  datasetName: string;
+  collection: string;
+  eventFamilies: string[];
+  temporalScopes: string[];
+  activeTemporalScope: string;
+  availableEventTypes: string[];
+  activeEventType: string | null;
+  featureStats: MLFeatureStat[];
+  recommendedFields: string[];
+  selectedFields: string[];
+  correlations: MLFeatureCorrelation[];
+  sampleSize: number;
 }
 
 export interface MLExperiment {

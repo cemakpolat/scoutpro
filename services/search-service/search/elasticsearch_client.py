@@ -50,6 +50,8 @@ class SearchClient:
             await db.players.create_index([("name", "text"), ("position", "text"), ("nationality", "text")], background=True)
             await db.teams.create_index([("name", "text"), ("country", "text")], background=True)
             await db.matches.create_index([("homeTeamName", "text"), ("awayTeamName", "text"), ("competition", "text")], background=True)
+            await db.competitions.create_index([("name", "text"), ("country", "text")], background=True)
+            await db.venues.create_index([("name", "text"), ("city", "text"), ("country", "text")], background=True)
             logger.info("MongoDB text indices ensured")
         except Exception as e:
             logger.debug(f"Text index creation (may already exist): {e}")
@@ -140,7 +142,38 @@ class SearchClient:
                 }
             }
         }
-        for index, mapping in [("players", players_mapping), ("teams", teams_mapping), ("matches", matches_mapping)]:
+        competitions_mapping = {
+            "mappings": {
+                "properties": {
+                    "competition_id": {"type": "keyword"},
+                    "name": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                    "country": {"type": "keyword"},
+                    "currentSeasonID": {"type": "keyword"},
+                    "indexed_at": {"type": "date", "ignore_malformed": True},
+                    "updated_at": {"type": "date", "ignore_malformed": True},
+                }
+            }
+        }
+        venues_mapping = {
+            "mappings": {
+                "properties": {
+                    "venue_id": {"type": "keyword"},
+                    "name": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+                    "city": {"type": "keyword"},
+                    "country": {"type": "keyword"},
+                    "capacity": {"type": "integer"},
+                    "indexed_at": {"type": "date", "ignore_malformed": True},
+                    "updated_at": {"type": "date", "ignore_malformed": True},
+                }
+            }
+        }
+        for index, mapping in [
+            ("players", players_mapping),
+            ("teams", teams_mapping),
+            ("matches", matches_mapping),
+            ("competitions", competitions_mapping),
+            ("venues", venues_mapping),
+        ]:
             try:
                 if not await self.es.indices.exists(index=index):
                     await self.es.indices.create(index=index, body=mapping)
@@ -253,12 +286,28 @@ class SearchClient:
             return await self._es_search_matches(query, limit)
         return await self._mongo_search_matches(query, limit)
 
+    async def search_competitions(self, query: str, country: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+        if self._es_available and self.es:
+            results = await self._es_search_competitions(query, country, limit)
+            if results:
+                return results
+        return await self._mongo_search_competitions(query, country, limit)
+
+    async def search_venues(self, query: str, country: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+        if self._es_available and self.es:
+            results = await self._es_search_venues(query, country, limit)
+            if results:
+                return results
+        return await self._mongo_search_venues(query, country, limit)
+
     async def search_all(self, query: str, size: int = 10) -> Dict[str, List[Dict[str, Any]]]:
         """Search across all entity types."""
         return {
             "players": await self.search_players(query, limit=size),
             "teams": await self.search_teams(query, limit=size),
             "matches": await self.search_matches(query, limit=size),
+            "competitions": await self.search_competitions(query, limit=size),
+            "venues": await self.search_venues(query, limit=size),
         }
 
     # ---- Elasticsearch implementations ----
@@ -297,6 +346,46 @@ class SearchClient:
         except Exception as e:
             logger.error(f"ES match search error: {e}")
             return await self._mongo_search_matches(query, limit)
+
+    async def _es_search_competitions(self, query: str, country: Optional[str], limit: int) -> List[Dict[str, Any]]:
+        try:
+            filter_clauses = []
+            if country:
+                filter_clauses.append({"term": {"country": country}})
+            body = {
+                "query": {
+                    "bool": {
+                        "must": [{"multi_match": {"query": query, "fields": ["name^3", "country"]}}],
+                        "filter": filter_clauses,
+                    }
+                },
+                "size": limit,
+            }
+            resp = await self.es.search(index="competitions", body=body)
+            return [{"_score": h["_score"], **h["_source"]} for h in resp["hits"]["hits"]]
+        except Exception as e:
+            logger.error(f"ES competition search error: {e}")
+            return []
+
+    async def _es_search_venues(self, query: str, country: Optional[str], limit: int) -> List[Dict[str, Any]]:
+        try:
+            filter_clauses = []
+            if country:
+                filter_clauses.append({"term": {"country": country}})
+            body = {
+                "query": {
+                    "bool": {
+                        "must": [{"multi_match": {"query": query, "fields": ["name^3", "city", "country"]}}],
+                        "filter": filter_clauses,
+                    }
+                },
+                "size": limit,
+            }
+            resp = await self.es.search(index="venues", body=body)
+            return [{"_score": h["_score"], **h["_source"]} for h in resp["hits"]["hits"]]
+        except Exception as e:
+            logger.error(f"ES venue search error: {e}")
+            return []
 
     # ---- MongoDB fallback implementations ----
 
@@ -376,6 +465,41 @@ class SearchClient:
             logger.error(f"MongoDB match search error: {e}")
             return []
 
+    async def _mongo_search_competitions(self, query: str, country: Optional[str], limit: int) -> List[Dict[str, Any]]:
+        try:
+            db = self._get_db()
+            mongo_filter: Dict[str, Any] = {}
+            if query:
+                mongo_filter["$or"] = [
+                    {"name": {"$regex": query, "$options": "i"}},
+                    {"country": {"$regex": query, "$options": "i"}},
+                ]
+            if country:
+                mongo_filter["country"] = {"$regex": country, "$options": "i"}
+            cursor = db.competitions.find(mongo_filter, {"_id": 0}).limit(limit)
+            return await cursor.to_list(length=limit)
+        except Exception as e:
+            logger.error(f"MongoDB competition search error: {e}")
+            return []
+
+    async def _mongo_search_venues(self, query: str, country: Optional[str], limit: int) -> List[Dict[str, Any]]:
+        try:
+            db = self._get_db()
+            mongo_filter: Dict[str, Any] = {}
+            if query:
+                mongo_filter["$or"] = [
+                    {"name": {"$regex": query, "$options": "i"}},
+                    {"city": {"$regex": query, "$options": "i"}},
+                    {"country": {"$regex": query, "$options": "i"}},
+                ]
+            if country:
+                mongo_filter["country"] = {"$regex": country, "$options": "i"}
+            cursor = db.venues.find(mongo_filter, {"_id": 0}).limit(limit)
+            return await cursor.to_list(length=limit)
+        except Exception as e:
+            logger.error(f"MongoDB venue search error: {e}")
+            return []
+
     async def bulk_index_from_mongo(self) -> Dict[str, int]:
         """Bootstrap ES index from MongoDB collections."""
         if not self._es_available or not self.es:
@@ -411,4 +535,46 @@ class SearchClient:
             await self.index_team(tid, search_doc)
             count += 1
         counts["teams"] = count
+        count = 0
+        async for doc in db.matches.find({}, {"_id": 0}):
+            mid = str(doc.get("scoutpro_id") or doc.get("uID") or doc.get("id") or count)
+            search_doc = {
+                "match_id": mid,
+                "home_team_id": str(doc.get("homeTeamID") or doc.get("home_team_id") or ""),
+                "away_team_id": str(doc.get("awayTeamID") or doc.get("away_team_id") or ""),
+                "homeTeamName": doc.get("homeTeamName") or doc.get("home_team_name"),
+                "awayTeamName": doc.get("awayTeamName") or doc.get("away_team_name"),
+                "competition": doc.get("competition"),
+                "date": doc.get("date"),
+                "status": doc.get("status"),
+                "venue": doc.get("venue"),
+            }
+            await self.index_document("matches", mid, search_doc)
+            count += 1
+        counts["matches"] = count
+        count = 0
+        async for doc in db.competitions.find({}, {"_id": 0}):
+            competition_id = str(doc.get("scoutpro_id") or doc.get("id") or doc.get("uID") or count)
+            search_doc = {
+                "competition_id": competition_id,
+                "name": doc.get("name"),
+                "country": doc.get("country"),
+                "currentSeasonID": str(doc.get("currentSeasonID") or ""),
+            }
+            await self.index_document("competitions", competition_id, search_doc)
+            count += 1
+        counts["competitions"] = count
+        count = 0
+        async for doc in db.venues.find({}, {"_id": 0}):
+            venue_id = str(doc.get("scoutpro_id") or doc.get("id") or doc.get("uID") or count)
+            search_doc = {
+                "venue_id": venue_id,
+                "name": doc.get("name"),
+                "city": doc.get("city"),
+                "country": doc.get("country"),
+                "capacity": doc.get("capacity"),
+            }
+            await self.index_document("venues", venue_id, search_doc)
+            count += 1
+        counts["venues"] = count
         return counts

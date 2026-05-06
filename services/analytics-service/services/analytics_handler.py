@@ -1397,17 +1397,41 @@ class AnalyticsHandler:
 
         async def load() -> Dict[str, Any]:
             started = datetime.now()
-            players_payload, matches_payload, teams_payload, top_players_payload, top_teams_payload = await asyncio.gather(
-                self._get_json(f"{self.player_service_url}/api/v2/players", params={"limit": 500}),
-                self._get_json(f"{self.match_service_url}/api/v2/matches", params={"limit": 500}),
-                self._get_json(f"{self.team_service_url}/api/v2/teams", params={"limit": 500}),
+            season_filters: List[Dict[str, Any]] = []
+            if season:
+                season_filters.extend([
+                    {"season_id": season},
+                    {"seasonID": season},
+                    {"seasonName": season},
+                ])
+                if season.isdigit():
+                    numeric_season = int(season)
+                    season_filters.extend([
+                        {"season_id": numeric_season},
+                        {"seasonID": numeric_season},
+                        {"year": numeric_season},
+                    ])
+
+            match_query = {"$or": season_filters} if season_filters else {}
+
+            players_task = self.db["players"].find({}, {"_id": 0}).limit(500).to_list(length=500)
+            teams_task = self.db["teams"].find({}, {"_id": 0}).limit(500).to_list(length=500)
+            matches_task = self.db["matches"].find(match_query, {"_id": 0}).limit(500).to_list(length=500)
+            competition_count_task = self.db["competitions"].count_documents({})
+            season_count_task = self.db["seasons"].count_documents({})
+            venue_count_task = self.db["venues"].count_documents({})
+            provider_mapping_count_task = self.db["provider_mappings"].count_documents({})
+            top_players_payload, top_teams_payload, players, teams, matches, total_competitions, total_seasons, total_venues, total_provider_mappings = await asyncio.gather(
                 self._get_json(f"{self.statistics_service_url}/api/v2/statistics/rankings/players", params={"stat_name": "goals", "limit": 5}),
                 self._get_json(f"{self.statistics_service_url}/api/v2/statistics/rankings/teams", params={"stat_name": "goals", "limit": 5}),
+                players_task,
+                teams_task,
+                matches_task,
+                competition_count_task,
+                season_count_task,
+                venue_count_task,
+                provider_mapping_count_task,
             )
-
-            players = self._extract_list(players_payload, 'players')
-            teams = self._extract_list(teams_payload, 'teams')
-            matches = self._extract_list(matches_payload, 'matches')
             top_players = self._unwrap_data(top_players_payload) or []
             top_teams = self._unwrap_data(top_teams_payload) or []
 
@@ -1435,11 +1459,15 @@ class AnalyticsHandler:
                 "totalPlayers": len(players),
                 "totalTeams": len(teams),
                 "totalMatches": len(matches),
+                "totalCompetitions": int(total_competitions),
+                "totalSeasons": int(total_seasons),
+                "totalVenues": int(total_venues),
+                "providerMappings": int(total_provider_mappings),
                 "avgGoalsPerMatch": self._compute_average_goals(matches) or 0.0,
                 "liveMatches": len(live_matches),
                 "recentActivity": len(recent_matches),
-                "activeScouts": len(teams),
-                "scoutingReports": len(top_players) + len(top_teams),
+                "activeScouts": int(total_competitions),
+                "scoutingReports": int(total_provider_mappings),
                 "modelAccuracy": model_accuracy,
                 "transferPredictions": transfer_predictions,
                 "responseTime": response_time,
@@ -1462,9 +1490,13 @@ class AnalyticsHandler:
                 "transferPredictions": transfer_predictions,
                 "responseTime": response_time,
                 "sources": {
-                    "players": "player-service",
-                    "teams": "team-service",
-                    "matches": "match-service",
+                    "players": "mongodb:players",
+                    "teams": "mongodb:teams",
+                    "matches": "mongodb:matches",
+                    "competitions": "mongodb:competitions",
+                    "seasons": "mongodb:seasons",
+                    "venues": "mongodb:venues",
+                    "providerMappings": "mongodb:provider_mappings",
                 },
                 "last_updated": datetime.now().isoformat()
             }
@@ -1553,11 +1585,16 @@ class AnalyticsHandler:
         cache_key = f"analytics:league-trends:{competition}:{metric}:{period}"
 
         async def load() -> Dict[str, Any]:
-            matches_payload = await self._get_json(
-                f"{self.match_service_url}/api/v2/matches",
-                params={"limit": 500},
-            )
-            matches = self._filter_matches(self._extract_list(matches_payload, 'matches'), competition)
+            matches = await self.db["matches"].find({}, {"_id": 0}).limit(500).to_list(length=500)
+            matches = self._filter_matches(matches, competition)
+
+            if not matches:
+                matches_payload = await self._get_json(
+                    f"{self.match_service_url}/api/v2/matches",
+                    params={"limit": 500},
+                )
+                matches = self._filter_matches(self._extract_list(matches_payload, 'matches'), competition)
+
             buckets: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
             for match in matches:

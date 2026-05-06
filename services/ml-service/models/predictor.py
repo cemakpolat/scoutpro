@@ -17,6 +17,17 @@ logger = logging.getLogger(__name__)
 
 _MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://root:scoutpro123@mongo:27017/scoutpro")
 _FEATURE_COLS = ["pass_accuracy", "shot_accuracy", "duel_win_rate", "matches_played"]
+_XG_SHOT_EVENT_TYPES = {
+    "shot",
+    "miss",
+    "post",
+    "attempt_saved",
+    "attempt saved",
+    "goal",
+    "blocked_shot",
+    "chance_missed",
+    "chance missed",
+}
 
 
 class PlayerPerformancePredictor:
@@ -338,14 +349,51 @@ class XGModel:
             logger.warning(f"Could not load xG model: {e}")
 
     @staticmethod
+    def _extract_location(shot: Dict[str, Any]) -> tuple[float, float]:
+        location = shot.get("location")
+
+        if isinstance(location, dict):
+            raw_x = location.get("x", shot.get("x", 0))
+            raw_y = location.get("y", shot.get("y", 50))
+        elif isinstance(location, (list, tuple)) and len(location) >= 2:
+            raw_x, raw_y = location[0], location[1]
+        else:
+            raw_x = shot.get("x", 0)
+            raw_y = shot.get("y", 50)
+
+        return float(raw_x or 0), float(raw_y or 50)
+
+    @staticmethod
+    def _normalize_qualifiers(shot: Dict[str, Any]) -> Dict[str, Any]:
+        qualifiers = shot.get("qualifiers")
+        if isinstance(qualifiers, dict):
+            return {str(key): value for key, value in qualifiers.items()}
+
+        if isinstance(qualifiers, list):
+            normalized: Dict[str, Any] = {}
+            for qualifier in qualifiers:
+                if not isinstance(qualifier, dict):
+                    continue
+                qualifier_id = qualifier.get("qualifier_id") or qualifier.get("qualifierID") or qualifier.get("id")
+                if qualifier_id in (None, ""):
+                    continue
+                normalized[str(qualifier_id)] = qualifier.get("value")
+            return normalized
+
+        raw_event = shot.get("raw_event") or {}
+        raw_qualifiers = raw_event.get("qualifiers")
+        if isinstance(raw_qualifiers, dict):
+            return {str(key): value for key, value in raw_qualifiers.items()}
+
+        return {}
+
+    @staticmethod
     def _extract_features(shot: Dict[str, Any]) -> Optional[List[float]]:
         """Extract xG features from a shot event document."""
         try:
-            loc = shot.get("location") or {}
-            x = float(loc.get("x", 0))
-            y = float(loc.get("y", 50))
+            x, y = XGModel._extract_location(shot)
             raw = shot.get("raw_event") or {}
-            quals = shot.get("qualifiers") or {}
+            quals = XGModel._normalize_qualifiers(shot)
 
             # Distance to goal (Opta: goal at x=100, y=50)
             GOAL_X, GOAL_Y = 100.0, 50.0
@@ -360,11 +408,11 @@ class XGModel:
             angle = max(0.0, angle)
 
             # Body part
-            body_part = str(raw.get("body_part") or "").lower()
+            body_part = str(shot.get("body_part") or raw.get("body_part") or "").lower()
             is_header = 1.0 if "head" in body_part else 0.0
 
             # Shot situation
-            shot_type = str(raw.get("shot_type") or "").lower()
+            shot_type = str(shot.get("shot_type") or raw.get("shot_type") or "").lower()
             is_direct_set_piece = 1.0 if shot_type in ("free_kick",) else 0.0
             is_penalty = 1.0 if shot_type == "penalty" else 0.0
 
@@ -386,9 +434,29 @@ class XGModel:
         from sklearn.preprocessing import StandardScaler
         from sklearn.pipeline import Pipeline
 
-        client = pymongo.MongoClient(mongodb_url)
+        client = pymongo.MongoClient(mongodb_url, serverSelectionTimeoutMS=5000)
         db = client[database]
-        shots = list(db.match_events.find({"type_name": "shot"}, {"location": 1, "raw_event": 1, "qualifiers": 1, "is_goal": 1}))
+        shots = list(
+            db.match_events.find(
+                {
+                    "$or": [
+                        {"type_name": {"$in": sorted(_XG_SHOT_EVENT_TYPES)}},
+                        {"is_goal": True},
+                    ]
+                },
+                {
+                    "type_name": 1,
+                    "location": 1,
+                    "x": 1,
+                    "y": 1,
+                    "raw_event": 1,
+                    "qualifiers": 1,
+                    "shot_type": 1,
+                    "body_part": 1,
+                    "is_goal": 1,
+                },
+            )
+        )
         client.close()
 
         X, y = [], []
@@ -396,12 +464,33 @@ class XGModel:
             feats = self._extract_features(shot)
             if feats is not None:
                 X.append(feats)
-                y.append(1 if shot.get("is_goal") else 0)
+                event_type = str(shot.get("type_name") or "").strip().lower()
+                y.append(1 if shot.get("is_goal") or event_type == "goal" else 0)
 
         if len(X) < 20:
-            return {"error": "Insufficient shot data", "n_shots": len(X)}
+            return {
+                "error": "Insufficient shot-event data for xG training",
+                "n_shots": len(X),
+                "event_types": sorted(_XG_SHOT_EVENT_TYPES),
+            }
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+        positive_examples = int(sum(y))
+        negative_examples = int(len(y) - positive_examples)
+        if positive_examples < 2 or negative_examples < 2:
+            return {
+                "error": "Insufficient goal and non-goal examples for xG training",
+                "n_shots": len(X),
+                "goal_events": positive_examples,
+                "non_goal_events": negative_examples,
+            }
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            X,
+            y,
+            test_size=0.2,
+            random_state=42,
+            stratify=y,
+        )
 
         pipeline = Pipeline([
             ("scaler", StandardScaler()),
@@ -423,6 +512,8 @@ class XGModel:
             "n_shots": len(X),
             "n_train": len(X_train),
             "n_test": len(X_test),
+            "goal_events": positive_examples,
+            "non_goal_events": negative_examples,
             "auc_roc": round(auc, 4),
             "goal_rate": goal_rate,
         }

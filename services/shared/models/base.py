@@ -131,6 +131,51 @@ class Match(BaseModel):
         from_attributes = True
 
 
+class Competition(BaseModel):
+    id: str = Field(alias="scoutpro_id")
+    provider_ids: Dict[str, str] = Field(default_factory=dict)
+    opta_uid: Optional[str] = Field(None, alias="uID")
+    name: str
+    country: Optional[str] = None
+    gender: Optional[str] = None
+    type: Optional[str] = None
+    current_season_id: Optional[str] = Field(None, alias="currentSeasonID")
+    season_count: Optional[int] = Field(None, alias="seasonCount")
+
+    class Config:
+        populate_by_name = True
+        from_attributes = True
+
+
+class Season(BaseModel):
+    id: str = Field(alias="scoutpro_id")
+    provider_ids: Dict[str, str] = Field(default_factory=dict)
+    name: str
+    year: Optional[int] = None
+    competition_id: Optional[str] = Field(None, alias="competitionID")
+    start_date: Optional[str] = Field(None, alias="startDate")
+    end_date: Optional[str] = Field(None, alias="endDate")
+
+    class Config:
+        populate_by_name = True
+        from_attributes = True
+
+
+class Venue(BaseModel):
+    id: str = Field(alias="scoutpro_id")
+    provider_ids: Dict[str, str] = Field(default_factory=dict)
+    opta_uid: Optional[str] = Field(None, alias="uID")
+    name: str
+    city: Optional[str] = None
+    country: Optional[str] = None
+    capacity: Optional[int] = None
+    surface: Optional[str] = None
+
+    class Config:
+        populate_by_name = True
+        from_attributes = True
+
+
 class PlayerStatistics(BaseModel):
     player_id: str
     player_name: Optional[str] = None

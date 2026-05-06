@@ -8,6 +8,7 @@ import Navigation from './components/Navigation';
 import LoginPage from './components/auth/LoginPage';
 import RegisterPage from './components/auth/RegisterPage';
 import ProtectedRoute from './components/auth/ProtectedRoute';
+import type { ModelCenterContext, ModelCenterTab } from './components/ModelCenter';
 
 // Lazy-loaded page components for code splitting
 const Dashboard = lazy(() => import('./components/Dashboard'));
@@ -17,6 +18,7 @@ const MultiMatchAnalysis = lazy(() => import('./components/MultiMatchAnalysis'))
 const ScoutingDashboard = lazy(() => import('./components/ScoutingDashboard'));
 const ReportBuilder = lazy(() => import('./components/ReportBuilder'));
 const AnalyticsDashboard = lazy(() => import('./components/AnalyticsDashboard'));
+const ModelCenter = lazy(() => import('./components/ModelCenter'));
 const MLLaboratory = lazy(() => import('./components/MLLaboratory'));
 const AdminConsole = lazy(() => import('./components/AdminConsole'));
 const NotificationCenter = lazy(() => import('./components/NotificationCenter'));
@@ -35,7 +37,7 @@ const CalendarScheduling = lazy(() => import('./components/CalendarScheduling'))
 
 
 // Match Analysis page: select a real match then show visualizations
-function MatchAnalysisPage() {
+function MatchAnalysisPage({ onOpenModelCenter }: { onOpenModelCenter: (tab: ModelCenterTab, context?: ModelCenterContext) => void }) {
   const { matches, loading } = useData();
   const [selectedMatchId, setSelectedMatchId] = React.useState<string>('');
   const [selectedYear, setSelectedYear] = React.useState('all');
@@ -185,6 +187,7 @@ function MatchAnalysisPage() {
           awayTeamId={awayTeamId ? String(awayTeamId) : undefined}
           homeScore={homeScore}
           awayScore={awayScore}
+          onOpenModelCenter={onOpenModelCenter}
         />
       </React.Suspense>
     </div>
@@ -205,36 +208,54 @@ function PageLoading() {
 
 function AppContent() {
   const [activeTab, setActiveTab] = useState('dashboard');
+  const [modelCenterState, setModelCenterState] = useState<{ tab: ModelCenterTab } & ModelCenterContext>({ tab: 'navigator' });
   const [notifications, setNotifications] = useState([]);
   const [authView, setAuthView] = useState<'login' | 'register'>('login');
   const { isAuthenticated, user } = useAuth();
+
+  const openModelCenter = (tab: ModelCenterTab = 'navigator', context?: ModelCenterContext) => {
+    setModelCenterState({ tab, ...context });
+    setActiveTab('model-center');
+  };
 
   const renderActiveComponent = () => {
     switch (activeTab) {
       case 'dashboard':
         return <Dashboard />;
       case 'search':
-        return <SearchPage />;
+        return <SearchPage onOpenModelCenter={openModelCenter} />;
       case 'player-comparison':
         return <PlayerComparison />;
       case 'data-importer':
         return <DataImporter />;
       case 'match-analysis':
-        return <MatchAnalysisPage />;
+        return <MatchAnalysisPage onOpenModelCenter={openModelCenter} />;
       case 'players':
-        return <PlayerDatabase />;
+        return <PlayerDatabase onOpenModelCenter={openModelCenter} />;
       case 'match-centre':
         return <MatchCentre />;
       case 'multi-match':
         return <MultiMatchAnalysis />;
       case 'scouting':
-        return <ScoutingDashboard />;
+        return <ScoutingDashboard onOpenModelCenter={openModelCenter} />;
       case 'reports':
         return <ReportBuilder />;
       case 'analytics':
-        return <AnalyticsDashboard />;
+        return <AnalyticsDashboard onOpenModelCenter={openModelCenter} />;
+      case 'model-center':
+        return (
+          <ModelCenter
+            onNavigate={setActiveTab}
+            initialTab={modelCenterState.tab}
+            initialPlayerId={modelCenterState.playerId}
+            initialMatchId={modelCenterState.matchId}
+            initialTeamId={modelCenterState.teamId}
+            initialInteractivePanel={modelCenterState.interactivePanel}
+            initialLensPresetId={modelCenterState.lensPresetId}
+          />
+        );
       case 'ml-lab':
-        return <MLLaboratory />;
+        return <MLLaboratory onOpenModelCenter={openModelCenter} />;
       case 'admin':
         return <AdminConsole />;
       case 'data-management':

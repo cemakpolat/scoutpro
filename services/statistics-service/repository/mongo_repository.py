@@ -2,6 +2,7 @@
 MongoDB implementation of Statistics Repository
 """
 import re
+import math
 from typing import Optional, List, Dict, Any
 from motor.motor_asyncio import AsyncIOMotorDatabase
 from .interfaces import IStatisticsRepository
@@ -307,7 +308,141 @@ class MongoStatisticsRepository(IStatisticsRepository):
         # legacy field names from older batch runs
         'total_tackles', 'total_passes', 'total_shots', 'total_interceptions',
         'total_clearances', 'goal_assist', 'assists',
+        # event pipeline rich additive metrics
+        'passes_total', 'passes_completed', 'passes_unsuccessful',
+        'forward_passes', 'backward_passes', 'sideway_passes',
+        'total_crosses', 'successful_crosses',
+        'long_passes', 'successful_long_passes',
+        'through_ball', 'through_balls', 'through_ball_successful', 'through_balls_successful',
+        'total_corners', 'blocked_passes', 'total_free_kicks_taken',
+        'passes_into_box', 'final_third_entries', 'set_piece_passes',
+        'long_balls', 'switches_of_play', 'pass_length_total',
+        'total_shots', 'shots_inside_box', 'shots_outside_box',
+        'goals_inside_the_box', 'goals_outside_the_box',
+        'headed_goals', 'headed_shots', 'goals_from_set_play',
+        'goals_from_open_play', 'goals_from_penalties', 'blocked_shot',
+        'non_penalty_goals', 'big_chances', 'big_chances_scored',
+        'set_piece_shots', 'xg_total', 'shots_with_xg', 'shot_distance_total',
+        'xA', 'xa_total', 'total_xa', 'passes_with_xa',
+        'total_assists', 'intentional_assists', 'assists_from_open_play',
+        'assists_from_set_play', 'assists_from_free_kick', 'assists_from_corners',
+        'assists_from_throw_in', 'assists_from_goal_kick',
+        'key_passes', 'key_passes_after_dribble', 'key_pass_corner',
+        'key_pass_free_kick', 'assist_and_key_passes',
+        'chances_created_from_open_play', 'chances_created_from_set_play',
+        'total_touches', 'total_touches_in_attacking_third',
+        'total_touches_in_middle_third', 'total_touches_in_defensive_third',
+        'total_touches_in_box', 'turnover', 'total_successful_tackles',
+        'tackle_attempts', 'last_man_tackles', 'total_ball_recovery',
+        'total_recoveries_in_defensive_third', 'total_recoveries_in_middle_third',
+        'total_recoveries_in_attacking_third', 'total_interceptions_in_defensive_third',
+        'total_interceptions_in_middle_third', 'total_interceptions_in_attacking_third',
+        'total_clearances_in_defensive_third', 'recoveries', 'pressures', 'blocks',
+        'total_aerial_duels', 'aerial_duels_won', 'aerial_duels_lost',
+        'aerial_duels_in_attacking_half', 'aerial_duels_in_defending_half',
+        'aerial_duels_in_attacking_third', 'aerial_duels_in_middle_third',
+        'aerial_duels_in_defending_third',
+        'total_duels', 'duels', 'successful_duels', 'unsuccessful_duels', 'duels_won',
+        'defensive_duels', 'offensive_duels', 'total_ground_duels',
+        'successful_ground_duels', 'unsuccessful_ground_duels',
+        'duels_in_attacking_third', 'duels_in_middle_third', 'duels_in_defending_third',
+        'total_take_ons', 'take_ons', 'successful_take_ons', 'take_ons_won',
+        'unsuccessful_take_ons', 'take_on_overrun', 'take_ons_in_attacking_third',
+        'take_ons_in_box', 'successful_take_ons_in_box', 'times_tackled',
+        'fouls', 'fouls_won', 'handball_conceded', 'penalty_conceded', 'penalty_won',
+        'fouls_won_in_defending_third', 'fouls_won_in_middle_third',
+        'fouls_won_in_attacking_third', 'fouls_committed_in_defending_third',
+        'fouls_committed_in_middle_third', 'fouls_committed_in_attacking_third',
+        'second_yellow_cards', 'card_rescinded', 'total_cards', 'cards',
+        'total_dispossessed', 'total_errors', 'errors_led_to_goal',
+        'errors_led_to_shot', 'caught_offside', 'ball_touches',
+        'ball_controls', 'dispossessions', 'matches_played',
+        'games_played', 'games_started', 'substitute_on', 'substitute_off',
+        'goalkeeper_actions', 'saves', 'goals_against', 'clean_sheet',
+        'gk_sweeper', 'accurate_keeper_sweeper', 'crosses_faced',
+        'crosses_claimed', 'crosses_punched', 'crosses_not_claimed',
+        'gk_pick_ups', 'goal_kicks', 'successful_goal_kicks', 'gk_throws',
+        'successful_gk_throws', 'gk_smother', 'penalty_faced',
+        'penalties_saved', 'penalties_scored', 'penalties_missed',
+        'shots_against', 'shots_on_target_against', 'team_own_goals',
+        'saves_from_own_player', 'save_body', 'save_caught', 'save_diving',
+        'save_feet', 'save_hands', 'save_penalty', 'save_inside_box', 'save_outside_box',
     ]
+
+    @staticmethod
+    def _safe_rate(numerator: Any, denominator: Any) -> float:
+        try:
+            denominator_value = float(denominator or 0)
+            if denominator_value <= 0:
+                return 0.0
+            return round(float(numerator or 0) / denominator_value * 100, 2)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _per_90(value: Any, minutes_played: Any) -> float:
+        try:
+            minute_total = float(minutes_played or 0)
+            if minute_total <= 0:
+                return 0.0
+            return round(float(value or 0) * 90.0 / minute_total, 2)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
+    def _stat_value(doc: Dict[str, Any], *keys: str) -> float:
+        for key in keys:
+            value = doc.get(key)
+            if value not in (None, ''):
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    continue
+        return 0.0
+
+    @classmethod
+    def _apply_player_derived_metrics(cls, doc: Dict[str, Any]) -> Dict[str, Any]:
+        passes = cls._stat_value(doc, 'passes', 'passes_total', 'total_passes')
+        passes_successful = cls._stat_value(doc, 'passes_successful', 'passes_completed')
+        shots = cls._stat_value(doc, 'shots', 'total_shots')
+        shots_on_target = cls._stat_value(doc, 'shots_on_target')
+        goals = cls._stat_value(doc, 'goals')
+        big_chances = cls._stat_value(doc, 'big_chances')
+        big_chances_scored = cls._stat_value(doc, 'big_chances_scored')
+        take_ons = cls._stat_value(doc, 'take_ons', 'total_take_ons')
+        take_ons_won = cls._stat_value(doc, 'take_ons_won', 'successful_take_ons')
+        duels = cls._stat_value(doc, 'duels', 'total_duels')
+        duels_won = cls._stat_value(doc, 'duels_won', 'successful_duels')
+        aerials = cls._stat_value(doc, 'aerials', 'total_aerial_duels')
+        aerials_won = cls._stat_value(doc, 'aerials_won', 'aerial_duels_won')
+        tackles = cls._stat_value(doc, 'tackles', 'total_tackles')
+        tackles_successful = cls._stat_value(doc, 'tackles_successful', 'total_successful_tackles')
+        minutes_played = cls._stat_value(doc, 'minutes_played')
+        xg_total = cls._stat_value(doc, 'total_xg', 'xg_total')
+        assists = cls._stat_value(doc, 'assists', 'total_assists', 'goal_assist')
+        key_passes = cls._stat_value(doc, 'key_passes')
+        progressive_passes = cls._stat_value(doc, 'progressive_passes')
+        recoveries = cls._stat_value(doc, 'ball_recoveries', 'total_ball_recovery', 'recoveries')
+        interceptions = cls._stat_value(doc, 'interceptions', 'total_interceptions')
+
+        doc['pass_accuracy'] = cls._safe_rate(passes_successful, passes)
+        doc['pass_success_rate'] = doc['pass_accuracy']
+        doc['shot_accuracy'] = cls._safe_rate(shots_on_target, shots)
+        doc['conversion_rate'] = cls._safe_rate(goals, shots)
+        doc['big_chance_conversion_rate'] = cls._safe_rate(big_chances_scored, big_chances)
+        doc['progressive_pass_rate'] = cls._safe_rate(progressive_passes, passes)
+        doc['take_on_success_rate'] = cls._safe_rate(take_ons_won, take_ons)
+        doc['duel_success_rate'] = cls._safe_rate(duels_won, duels)
+        doc['aerial_duel_success_rate'] = cls._safe_rate(aerials_won, aerials)
+        doc['tackle_success_rate'] = cls._safe_rate(tackles_successful, tackles)
+        doc['goals_per_90'] = cls._per_90(goals, minutes_played)
+        doc['assists_per_90'] = cls._per_90(assists, minutes_played)
+        doc['xg_per_90'] = cls._per_90(xg_total, minutes_played)
+        doc['key_passes_per_90'] = cls._per_90(key_passes, minutes_played)
+        doc['progressive_passes_per_90'] = cls._per_90(progressive_passes, minutes_played)
+        doc['recoveries_per_90'] = cls._per_90(recoveries, minutes_played)
+        doc['interceptions_per_90'] = cls._per_90(interceptions, minutes_played)
+        return doc
 
     async def _get_player_season_aggregate(
         self,
@@ -363,27 +498,8 @@ class MongoStatisticsRepository(IStatisticsRepository):
             doc['opta_team_id'] = doc.get('team_id')
             doc['team_id'] = doc['scoutpro_team_id']
 
-        # Normalise field aliases so downstream consumers get consistent keys
-        doc.setdefault('appearances', doc.get('matches_played', 0))
-        doc.setdefault('goals', doc.get('goals', 0))
-        doc.setdefault('assists', doc.get('goal_assist') or doc.get('assists') or 0)
-        doc.setdefault('total_shots', doc.get('total_shots') or doc.get('shots') or 0)
-        doc.setdefault('total_tackles', doc.get('total_tackles') or doc.get('tackles') or 0)
-        doc.setdefault('total_interceptions',
-                       doc.get('total_interceptions') or doc.get('interceptions') or 0)
-        doc.setdefault('total_clearances',
-                       doc.get('total_clearances') or doc.get('clearances') or 0)
-        doc.setdefault('total_passes', doc.get('total_passes') or doc.get('passes') or 0)
-
-        # Pass accuracy
-        total_p = doc.get('passes') or doc.get('total_passes') or 0
-        succ_p = doc.get('passes_successful') or 0
-        if total_p > 0:
-            doc['pass_accuracy'] = round(succ_p / total_p * 100, 2)
-            doc['pass_success_rate'] = doc['pass_accuracy']
-        else:
-            doc['pass_accuracy'] = 0.0
-            doc['pass_success_rate'] = 0.0
+        cls = self.__class__
+        cls._finalize_player_aggregate_doc(doc)
 
         doc['data_source'] = 'player_statistics_aggregate'
         return doc
@@ -392,7 +508,429 @@ class MongoStatisticsRepository(IStatisticsRepository):
         'passes', 'passes_successful', 'shots', 'goals', 'tackles',
         'interceptions', 'clearances', 'fouls', 'yellow_cards', 'red_cards',
         'total_events', 'total_xg',
+        'passes_completed', 'progressive_passes', 'final_third_entries',
+        'passes_into_box', 'crosses', 'through_balls', 'long_balls',
+        'key_passes', 'assists', 'second_assists', 'set_piece_passes',
+        'pass_length_total', 'shots_on_target', 'big_chances', 'big_chances_scored',
+        'set_piece_shots', 'xg_total', 'shots_with_xg', 'headed_shots',
+        'cards', 'duels', 'duels_won', 'aerials', 'aerials_won',
+        'take_ons', 'take_ons_won', 'high_regains', 'tackles_won',
+        'goalkeeper_actions', 'saves', 'recoveries', 'ball_controls',
+        'dispossessions', 'blocks', 'pressures', 'corners', 'goals_against',
+        'shots_against', 'shots_on_target_against', 'passes_against', 'total_xg_against',
     ]
+
+    _PLAYER_METRIC_ALIASES = {
+        'goals': ['goals'],
+        'assists': ['assists', 'goal_assist', 'total_assists'],
+        'passes': ['passes', 'total_passes', 'passes_total'],
+        'successfulpasses': ['passes_successful', 'passes_completed', 'successful_passes', 'successfulPasses'],
+        'passaccuracy': ['pass_accuracy', 'pass_success_rate', 'passAccuracy'],
+        'shots': ['shots', 'total_shots'],
+        'shotsontarget': ['shots_on_target', 'shotsOnTarget'],
+        'xg': ['total_xg', 'xg_total', 'xG'],
+        'xa': ['total_xa', 'xa_total', 'xA'],
+        'keypasses': ['key_passes', 'keyPasses'],
+        'progressivepasses': ['progressive_passes', 'progressivePasses'],
+        'matchesplayed': ['matches_played', 'appearances', 'games_played', 'matchesPlayed'],
+        'goalsper90': ['goals_per_90', 'goalsPer90'],
+        'assistsper90': ['assists_per_90', 'assistsPer90'],
+        'xgper90': ['xg_per_90', 'xGPer90'],
+        'takeonsuccessrate': ['take_on_success_rate', 'takeOnSuccessRate'],
+        'duelsuccessrate': ['duel_success_rate', 'duelSuccessRate'],
+        'aerialduelsuccessrate': ['aerial_duel_success_rate', 'aerialDuelSuccessRate'],
+        'recoveriesper90': ['recoveries_per_90', 'recoveriesPer90'],
+        'interceptionsper90': ['interceptions_per_90', 'interceptionsPer90'],
+    }
+
+    _TEAM_METRIC_ALIASES = {
+        'goals': ['goals'],
+        'goalsagainst': ['goals_against', 'goalsAgainst'],
+        'passes': ['passes'],
+        'passaccuracy': ['pass_accuracy', 'passAccuracy'],
+        'shots': ['shots'],
+        'shotsontarget': ['shots_on_target', 'shotsOnTarget'],
+        'xg': ['total_xg', 'xg_total', 'xG'],
+        'xgagainst': ['total_xg_against', 'xGAgainst'],
+        'possessionpercentage': ['possession_percentage', 'possessionPercentage'],
+        'goalspermatch': ['goals_per_match', 'goalsPerMatch'],
+        'xgpermatch': ['xg_per_match', 'xGPerMatch'],
+        'xgagainstpermatch': ['xg_against_per_match', 'xGAgainstPerMatch'],
+        'shotspermatch': ['shots_per_match', 'shotsPerMatch'],
+        'shotsontargetpermatch': ['shots_on_target_per_match', 'shotsOnTargetPerMatch'],
+        'keypassespermatch': ['key_passes_per_match', 'keyPassesPerMatch'],
+        'progressivepassespermatch': ['progressive_passes_per_match', 'progressivePassesPerMatch'],
+        'highregainspermatch': ['high_regains_per_match', 'highRegainsPerMatch'],
+    }
+
+    _DEFAULT_PLAYER_COMPARISON_METRICS = [
+        'goals',
+        'assists',
+        'passAccuracy',
+        'shots',
+        'xG',
+        'xA',
+        'keyPasses',
+        'progressivePasses',
+    ]
+
+    _MATCH_ADVANCED_FLAT_FIELDS = [
+        'home_goals', 'away_goals',
+        'home_shots', 'away_shots',
+        'home_shots_on_target', 'away_shots_on_target',
+        'home_xg', 'away_xg',
+        'home_passes', 'away_passes',
+        'home_passes_successful', 'away_passes_successful',
+        'home_pass_accuracy', 'away_pass_accuracy',
+        'home_progressive_passes', 'away_progressive_passes',
+        'home_passes_into_box', 'away_passes_into_box',
+        'home_key_passes', 'away_key_passes',
+        'home_through_balls', 'away_through_balls',
+        'home_corners', 'away_corners',
+        'home_big_chances', 'away_big_chances',
+        'home_tackles', 'away_tackles',
+        'home_interceptions', 'away_interceptions',
+        'home_clearances', 'away_clearances',
+        'home_recoveries', 'away_recoveries',
+        'home_high_regains', 'away_high_regains',
+        'home_fouls', 'away_fouls',
+        'home_yellow_cards', 'away_yellow_cards',
+        'home_red_cards', 'away_red_cards',
+        'total_events',
+    ]
+
+    @staticmethod
+    def _build_competition_filter(competition_id: Optional[int]) -> Dict[str, Any]:
+        if competition_id in (None, ''):
+            return {}
+
+        values = [competition_id, str(competition_id)]
+        return {
+            '$or': [
+                {'competition_id': {'$in': values}},
+                {'competitionID': {'$in': values}},
+            ]
+        }
+
+    @staticmethod
+    def _normalize_metric_name(metric_name: str) -> str:
+        snake = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', str(metric_name or '').strip()).lower()
+        return re.sub(r'[^a-z0-9]+', '', snake)
+
+    @classmethod
+    def _metric_candidates(cls, metric_name: str, alias_map: Dict[str, List[str]]) -> List[str]:
+        raw = str(metric_name or '').strip()
+        snake = re.sub(r'([a-z0-9])([A-Z])', r'\1_\2', raw).lower() if raw else ''
+        candidates: List[str] = []
+        for key in (raw, snake):
+            if key and key not in candidates:
+                candidates.append(key)
+        for key in alias_map.get(cls._normalize_metric_name(metric_name), []):
+            if key not in candidates:
+                candidates.append(key)
+        return candidates
+
+    @classmethod
+    def _metric_value(cls, doc: Dict[str, Any], metric_name: str, alias_map: Dict[str, List[str]]) -> float:
+        candidates = cls._metric_candidates(metric_name, alias_map)
+        return cls._stat_value(doc, *candidates) if candidates else 0.0
+
+    @classmethod
+    def _apply_player_output_aliases(cls, doc: Dict[str, Any]) -> Dict[str, Any]:
+        doc['playerID'] = doc.get('playerID') or doc.get('player_id')
+        doc['successful_passes'] = cls._stat_value(doc, 'successful_passes', 'passes_successful', 'passes_completed')
+        doc['successfulPasses'] = doc['successful_passes']
+        doc['passAccuracy'] = cls._stat_value(doc, 'pass_accuracy', 'pass_success_rate', 'passAccuracy')
+        doc['shotsOnTarget'] = cls._stat_value(doc, 'shots_on_target', 'shotsOnTarget')
+        doc['xG'] = round(cls._stat_value(doc, 'total_xg', 'xg_total', 'xG'), 4)
+        doc['xA'] = round(cls._stat_value(doc, 'total_xa', 'xa_total', 'xA'), 4)
+        doc['keyPasses'] = cls._stat_value(doc, 'key_passes', 'keyPasses')
+        doc['progressivePasses'] = cls._stat_value(doc, 'progressive_passes', 'progressivePasses')
+        doc['matchesPlayed'] = cls._stat_value(doc, 'matches_played', 'appearances', 'games_played', 'matchesPlayed')
+        doc['goalsPer90'] = cls._stat_value(doc, 'goals_per_90', 'goalsPer90')
+        doc['assistsPer90'] = cls._stat_value(doc, 'assists_per_90', 'assistsPer90')
+        doc['xGPer90'] = cls._stat_value(doc, 'xg_per_90', 'xGPer90')
+        doc['takeOnSuccessRate'] = cls._stat_value(doc, 'take_on_success_rate', 'takeOnSuccessRate')
+        doc['duelSuccessRate'] = cls._stat_value(doc, 'duel_success_rate', 'duelSuccessRate')
+        doc['aerialDuelSuccessRate'] = cls._stat_value(doc, 'aerial_duel_success_rate', 'aerialDuelSuccessRate')
+        return doc
+
+    @classmethod
+    def _apply_team_output_aliases(cls, doc: Dict[str, Any]) -> Dict[str, Any]:
+        doc['teamID'] = doc.get('teamID') or doc.get('opta_team_id') or doc.get('team_id')
+        doc['passAccuracy'] = cls._stat_value(doc, 'pass_accuracy', 'passAccuracy')
+        doc['shotsOnTarget'] = cls._stat_value(doc, 'shots_on_target', 'shotsOnTarget')
+        doc['xG'] = round(cls._stat_value(doc, 'total_xg', 'xg_total', 'xG'), 4)
+        doc['xGAgainst'] = round(cls._stat_value(doc, 'total_xg_against', 'xGAgainst'), 4)
+        doc['possessionPercentage'] = cls._stat_value(doc, 'possession_percentage', 'possessionPercentage')
+        doc['goalsPerMatch'] = cls._stat_value(doc, 'goals_per_match', 'goalsPerMatch')
+        doc['xGPerMatch'] = cls._stat_value(doc, 'xg_per_match', 'xGPerMatch')
+        doc['xGAgainstPerMatch'] = cls._stat_value(doc, 'xg_against_per_match', 'xGAgainstPerMatch')
+        doc['shotsPerMatch'] = cls._stat_value(doc, 'shots_per_match', 'shotsPerMatch')
+        doc['shotsOnTargetPerMatch'] = cls._stat_value(doc, 'shots_on_target_per_match', 'shotsOnTargetPerMatch')
+        doc['keyPassesPerMatch'] = cls._stat_value(doc, 'key_passes_per_match', 'keyPassesPerMatch')
+        doc['progressivePassesPerMatch'] = cls._stat_value(doc, 'progressive_passes_per_match', 'progressivePassesPerMatch')
+        doc['highRegainsPerMatch'] = cls._stat_value(doc, 'high_regains_per_match', 'highRegainsPerMatch')
+        return doc
+
+    @classmethod
+    def _finalize_player_aggregate_doc(cls, doc: Dict[str, Any]) -> Dict[str, Any]:
+        matches_played = int(cls._stat_value(doc, 'matches_played', 'appearances', 'games_played'))
+        doc['matches_played'] = matches_played
+        doc['appearances'] = matches_played
+        doc['games_played'] = matches_played
+        doc['goals'] = cls._stat_value(doc, 'goals')
+        doc['assists'] = cls._stat_value(doc, 'assists', 'goal_assist', 'total_assists')
+        doc['total_shots'] = cls._stat_value(doc, 'total_shots', 'shots')
+        doc['total_tackles'] = cls._stat_value(doc, 'total_tackles', 'tackles')
+        doc['total_interceptions'] = cls._stat_value(doc, 'total_interceptions', 'interceptions')
+        doc['total_clearances'] = cls._stat_value(doc, 'total_clearances', 'clearances')
+        doc['total_passes'] = cls._stat_value(doc, 'total_passes', 'passes', 'passes_total')
+        cls._apply_player_derived_metrics(doc)
+        cls._apply_player_output_aliases(doc)
+        return doc
+
+    @classmethod
+    def _finalize_team_aggregate_doc(cls, doc: Dict[str, Any]) -> Dict[str, Any]:
+        doc['matches_played'] = int(cls._stat_value(doc, 'matches_played'))
+        cls._apply_team_derived_metrics(doc)
+        cls._apply_team_output_aliases(doc)
+        return doc
+
+    async def _fetch_player_metadata_map(self, player_ids: List[Any]) -> Dict[str, Dict[str, Any]]:
+        metadata: Dict[str, Dict[str, Any]] = {}
+        if not player_ids:
+            return metadata
+
+        string_values: List[str] = []
+        numeric_values: List[int] = []
+        for player_id in player_ids:
+            self._append_identifier_variants(string_values, numeric_values, player_id, prefix='p')
+
+        query_clauses: List[Dict[str, Any]] = []
+        for field in ('uID', 'provider_ids.opta', 'scoutpro_id', 'id'):
+            if string_values:
+                query_clauses.append({field: {'$in': string_values}})
+            if numeric_values and field in ('uID', 'scoutpro_id', 'id'):
+                query_clauses.append({field: {'$in': numeric_values}})
+
+        if not query_clauses:
+            return metadata
+
+        cursor = self.db['players'].find(
+            {'$or': query_clauses},
+            {
+                '_id': 0,
+                'uID': 1,
+                'provider_ids': 1,
+                'scoutpro_id': 1,
+                'id': 1,
+                'name': 1,
+                'position': 1,
+                'detailed_position': 1,
+                'raw_position': 1,
+                'club': 1,
+                'team_name': 1,
+                'nationality': 1,
+                'age': 1,
+            },
+        )
+        async for player in cursor:
+            for key in (
+                player.get('uID'),
+                (player.get('provider_ids') or {}).get('opta'),
+                player.get('scoutpro_id'),
+                player.get('id'),
+            ):
+                if key not in (None, ''):
+                    metadata[str(key)] = player
+
+        return metadata
+
+    async def _fetch_team_metadata_map(self, team_ids: List[Any]) -> Dict[str, Dict[str, Any]]:
+        metadata: Dict[str, Dict[str, Any]] = {}
+        if not team_ids:
+            return metadata
+
+        string_values: List[str] = []
+        numeric_values: List[int] = []
+        for team_id in team_ids:
+            self._append_identifier_variants(string_values, numeric_values, team_id, prefix='t')
+
+        query_clauses: List[Dict[str, Any]] = []
+        for field in ('uID', 'provider_ids.opta', 'scoutpro_id', 'id'):
+            if string_values:
+                query_clauses.append({field: {'$in': string_values}})
+            if numeric_values and field in ('uID', 'scoutpro_id', 'id'):
+                query_clauses.append({field: {'$in': numeric_values}})
+
+        if not query_clauses:
+            return metadata
+
+        cursor = self.db['teams'].find(
+            {'$or': query_clauses},
+            {'_id': 0, 'uID': 1, 'provider_ids': 1, 'scoutpro_id': 1, 'id': 1, 'name': 1, 'country': 1},
+        )
+        async for team in cursor:
+            for key in (
+                team.get('uID'),
+                (team.get('provider_ids') or {}).get('opta'),
+                team.get('scoutpro_id'),
+                team.get('id'),
+            ):
+                if key not in (None, ''):
+                    metadata[str(key)] = team
+
+        return metadata
+
+    @staticmethod
+    def _position_matches(position_filter: Optional[str], metadata: Dict[str, Any], doc: Dict[str, Any]) -> bool:
+        if not position_filter:
+            return True
+
+        normalized = str(position_filter).strip().lower()
+        for candidate in (
+            metadata.get('position'),
+            metadata.get('detailed_position'),
+            metadata.get('raw_position'),
+            doc.get('player_position'),
+            doc.get('position'),
+        ):
+            if candidate and normalized in str(candidate).lower():
+                return True
+        return False
+
+    async def _aggregate_player_documents(self, competition_id: Optional[int] = None) -> Dict[str, Dict[str, Any]]:
+        query = self._build_competition_filter(competition_id)
+        aggregates: Dict[str, Dict[str, Any]] = {}
+
+        cursor = self.player_stats_collection.find(query)
+        async for raw_doc in cursor:
+            player_key = raw_doc.get('player_id') or raw_doc.get('playerID')
+            if player_key in (None, ''):
+                continue
+
+            opta_player_id = str(player_key).lstrip('p')
+            bucket = aggregates.setdefault(
+                opta_player_id,
+                {
+                    'player_id': opta_player_id,
+                    'opta_player_id': opta_player_id,
+                    'scoutpro_player_id': None,
+                    'competition_id': raw_doc.get('competition_id') or raw_doc.get('competitionID'),
+                    'season_id': raw_doc.get('season_id') or raw_doc.get('seasonID'),
+                    '_match_ids': set(),
+                },
+            )
+
+            if bucket.get('scoutpro_player_id') in (None, '') and raw_doc.get('scoutpro_player_id') not in (None, ''):
+                bucket['scoutpro_player_id'] = str(raw_doc.get('scoutpro_player_id'))
+
+            match_key = raw_doc.get('match_id') or raw_doc.get('matchID')
+            if match_key not in (None, ''):
+                bucket['_match_ids'].add(str(match_key))
+
+            for field in self._PLAYER_SUM_FIELDS:
+                value = raw_doc.get(field)
+                if isinstance(value, (int, float)):
+                    bucket[field] = bucket.get(field, 0) + value
+
+        for bucket in aggregates.values():
+            bucket['matches_played'] = len(bucket.pop('_match_ids', set()))
+            self.__class__._finalize_player_aggregate_doc(bucket)
+
+        return aggregates
+
+    async def _aggregate_team_documents(self, competition_id: Optional[int] = None) -> Dict[str, Dict[str, Any]]:
+        query = self._build_competition_filter(competition_id)
+        aggregates: Dict[str, Dict[str, Any]] = {}
+
+        cursor = self.team_stats_collection.find(query)
+        async for raw_doc in cursor:
+            team_key = raw_doc.get('team_id') or raw_doc.get('teamID')
+            if team_key in (None, ''):
+                continue
+
+            opta_team_id = str(team_key).lstrip('t')
+            bucket = aggregates.setdefault(
+                opta_team_id,
+                {
+                    'team_id': opta_team_id,
+                    'opta_team_id': opta_team_id,
+                    'scoutpro_team_id': None,
+                    'competition_id': raw_doc.get('competition_id') or raw_doc.get('competitionID'),
+                    'season_id': raw_doc.get('season_id') or raw_doc.get('seasonID'),
+                    '_match_ids': set(),
+                },
+            )
+
+            if bucket.get('scoutpro_team_id') in (None, '') and raw_doc.get('scoutpro_team_id') not in (None, ''):
+                bucket['scoutpro_team_id'] = str(raw_doc.get('scoutpro_team_id'))
+
+            match_key = raw_doc.get('match_id') or raw_doc.get('matchID')
+            if match_key not in (None, ''):
+                bucket['_match_ids'].add(str(match_key))
+
+            for field in self._TEAM_SUM_FIELDS:
+                value = raw_doc.get(field)
+                if isinstance(value, (int, float)):
+                    bucket[field] = bucket.get(field, 0) + value
+
+        for bucket in aggregates.values():
+            bucket['matches_played'] = len(bucket.pop('_match_ids', set()))
+            self.__class__._finalize_team_aggregate_doc(bucket)
+
+        return aggregates
+
+    @classmethod
+    def _extract_match_flat_metrics(cls, doc: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            field: doc.get(field)
+            for field in cls._MATCH_ADVANCED_FLAT_FIELDS
+            if field in doc
+        }
+
+    @classmethod
+    def _apply_team_derived_metrics(cls, doc: Dict[str, Any]) -> Dict[str, Any]:
+        matches_played = cls._stat_value(doc, 'matches_played') or 0.0
+        passes = cls._stat_value(doc, 'passes')
+        passes_successful = cls._stat_value(doc, 'passes_successful', 'passes_completed')
+        passes_against = cls._stat_value(doc, 'passes_against')
+        shots = cls._stat_value(doc, 'shots')
+        shots_on_target = cls._stat_value(doc, 'shots_on_target')
+        goals = cls._stat_value(doc, 'goals')
+        goals_against = cls._stat_value(doc, 'goals_against')
+        big_chances = cls._stat_value(doc, 'big_chances')
+        big_chances_scored = cls._stat_value(doc, 'big_chances_scored')
+        progressive_passes = cls._stat_value(doc, 'progressive_passes')
+        take_ons = cls._stat_value(doc, 'take_ons')
+        take_ons_won = cls._stat_value(doc, 'take_ons_won')
+        duels = cls._stat_value(doc, 'duels')
+        duels_won = cls._stat_value(doc, 'duels_won')
+        aerials = cls._stat_value(doc, 'aerials')
+        aerials_won = cls._stat_value(doc, 'aerials_won')
+        xg_total = cls._stat_value(doc, 'total_xg', 'xg_total')
+        xg_against = cls._stat_value(doc, 'total_xg_against')
+
+        doc['pass_accuracy'] = cls._safe_rate(passes_successful, passes)
+        doc['shot_accuracy'] = cls._safe_rate(shots_on_target, shots)
+        doc['conversion_rate'] = cls._safe_rate(goals, shots)
+        doc['big_chance_conversion_rate'] = cls._safe_rate(big_chances_scored, big_chances)
+        doc['progressive_pass_rate'] = cls._safe_rate(progressive_passes, passes)
+        doc['take_on_success_rate'] = cls._safe_rate(take_ons_won, take_ons)
+        doc['duel_success_rate'] = cls._safe_rate(duels_won, duels)
+        doc['aerial_duel_success_rate'] = cls._safe_rate(aerials_won, aerials)
+        doc['possession_percentage'] = cls._safe_rate(passes, passes + passes_against)
+        doc['goals_per_match'] = round(goals / matches_played, 2) if matches_played else 0.0
+        doc['goals_against_per_match'] = round(goals_against / matches_played, 2) if matches_played else 0.0
+        doc['xg_per_match'] = round(xg_total / matches_played, 2) if matches_played else 0.0
+        doc['xg_against_per_match'] = round(xg_against / matches_played, 2) if matches_played else 0.0
+        doc['shots_per_match'] = round(shots / matches_played, 2) if matches_played else 0.0
+        doc['shots_on_target_per_match'] = round(shots_on_target / matches_played, 2) if matches_played else 0.0
+        doc['key_passes_per_match'] = round(cls._stat_value(doc, 'key_passes') / matches_played, 2) if matches_played else 0.0
+        doc['progressive_passes_per_match'] = round(progressive_passes / matches_played, 2) if matches_played else 0.0
+        doc['high_regains_per_match'] = round(cls._stat_value(doc, 'high_regains') / matches_played, 2) if matches_played else 0.0
+        return doc
 
     async def _get_team_season_aggregate(
         self,
@@ -441,15 +979,13 @@ class MongoStatisticsRepository(IStatisticsRepository):
         doc['id'] = sp_team_id
         doc['team_id'] = sp_team_id
         doc['opta_team_id'] = opta_team_id
-
-        total_p = doc.get('passes', 0)
-        succ_p = doc.get('passes_successful', 0)
-        doc['pass_accuracy'] = round(succ_p / total_p * 100, 2) if total_p else 0.0
-        doc['matches_played'] = doc.get('matches_played', 0)
+        self.__class__._finalize_team_aggregate_doc(doc)
         doc['data_source'] = 'team_statistics_aggregate'
         return doc
 
     async def _build_player_statistics_from_events(self, player_id: str) -> Optional[PlayerStatistics]:
+        from services.event_metric_utils import EventMetricAccumulator
+
         projection = {
             'player_name': 1,
             'playerName': 1,
@@ -460,6 +996,32 @@ class MongoStatisticsRepository(IStatisticsRepository):
             'is_successful': 1,
             'match_id': 1,
             'matchID': 1,
+            'location': 1,
+            'raw_event': 1,
+            'xg_value': 1,
+            'analytical_xg': 1,
+            'xa_value': 1,
+            'analytical_xa': 1,
+            'progressive_pass': 1,
+            'entered_final_third': 1,
+            'entered_box': 1,
+            'is_cross': 1,
+            'pass_type': 1,
+            'is_through_ball': 1,
+            'is_long_ball': 1,
+            'is_switch': 1,
+            'is_key_pass': 1,
+            'assist_potential': 1,
+            'is_second_assist': 1,
+            'is_set_piece': 1,
+            'pass_length': 1,
+            'is_on_target': 1,
+            'is_big_chance': 1,
+            'shot_distance': 1,
+            'body_part': 1,
+            'card_type': 1,
+            'action_type': 1,
+            'high_regain': 1,
         }
         docs = await self.match_events_collection.find(
             self._build_player_id_query(player_id),
@@ -470,12 +1032,8 @@ class MongoStatisticsRepository(IStatisticsRepository):
             return None
 
         appearances = set()
-        goals = 0
-        assists = 0
-        shots = 0
-        passes = 0
-        completed_passes = 0
         player_name = None
+        event_totals: Dict[str, Any] = {}
 
         for doc in docs:
             if player_name is None:
@@ -485,35 +1043,28 @@ class MongoStatisticsRepository(IStatisticsRepository):
             if match_id not in (None, ''):
                 appearances.add(str(match_id))
 
-            event_type = str(doc.get('type_name') or doc.get('type') or '').lower()
-            if event_type == 'pass':
-                passes += 1
-                if doc.get('is_successful') is not False:
-                    completed_passes += 1
-
-            if doc.get('is_assist'):
-                assists += 1
-
-            if doc.get('is_goal') or event_type == 'goal':
-                goals += 1
-
-            if event_type in self.SHOT_EVENT_TYPES or doc.get('is_goal'):
-                shots += 1
+            increments = EventMetricAccumulator.build_increments(doc)
+            for key, value in increments.items():
+                if not isinstance(value, (int, float)):
+                    continue
+                event_totals[key] = event_totals.get(key, 0) + value
 
         stats = {
             'player_name': player_name,
             'appearances': len(appearances),
             'matches': len(appearances),
             'games_played': len(appearances),
-            'goals': goals,
-            'assists': assists,
-            'goal_assist': assists,
-            'shots': shots,
-            'passes': passes,
-            'completed_passes': completed_passes,
-            'pass_accuracy': round((completed_passes / passes) * 100, 2) if passes else 0.0,
+            **event_totals,
             'data_source': 'match_events_fallback',
         }
+
+        stats.setdefault('goals', event_totals.get('goals', 0))
+        stats.setdefault('assists', event_totals.get('assists', 0))
+        stats.setdefault('goal_assist', stats.get('assists', 0))
+        stats.setdefault('shots', event_totals.get('shots', 0))
+        stats.setdefault('passes', event_totals.get('passes', 0))
+        stats.setdefault('passes_completed', event_totals.get('passes_completed', 0))
+        self.__class__._apply_player_derived_metrics(stats)
 
         return PlayerStatistics(
             player_id=str(player_id),
@@ -637,7 +1188,63 @@ class MongoStatisticsRepository(IStatisticsRepository):
         match_id: str,
     ) -> Optional[Dict[str, Any]]:
         try:
-            return await self._find_match_projection_doc(self.match_statistics_collection, match_id)
+            from services.match_projection_builder import MatchProjectionBuilder
+
+            match_stats_doc = await self._find_match_projection_doc(self.match_statistics_collection, match_id)
+            match_doc = await self.db['matches'].find_one(self._build_match_lookup_query(match_id), {'_id': 0}) or {}
+
+            advanced_payload: Optional[Dict[str, Any]] = None
+            if isinstance(match_stats_doc, dict) and (match_stats_doc.get('minuteTimeline') or match_stats_doc.get('metrics')):
+                advanced_payload = dict(match_stats_doc)
+            else:
+                events = await self.match_events_collection.find(
+                    self._build_match_event_lookup_query(match_id),
+                    {'_id': 0},
+                ).to_list(length=None)
+                if events:
+                    advanced_payload = MatchProjectionBuilder.build_advanced_metrics(
+                        str((match_stats_doc or {}).get('match_id') or match_id),
+                        match_doc,
+                        events,
+                        time_bucket='5m',
+                    )
+                elif match_stats_doc:
+                    advanced_payload = {
+                        'match_id': str(match_stats_doc.get('match_id') or match_id),
+                        'match': match_doc,
+                        'event_count': int(match_stats_doc.get('total_events') or 0),
+                        'events_available': bool(match_stats_doc.get('total_events')),
+                        'metrics': {},
+                        'minuteTimeline': [],
+                        'timeline': [],
+                        'time_bucket': '5m',
+                        'last_updated': match_stats_doc.get('updated_at'),
+                    }
+
+            if not advanced_payload:
+                return None
+
+            flat_source = match_stats_doc or {}
+            flat_stats = self._extract_match_flat_metrics(flat_source)
+            metrics = dict(advanced_payload.get('metrics') or {})
+            metrics.update({key: value for key, value in flat_stats.items() if value is not None})
+
+            return {
+                'match_id': advanced_payload.get('match_id') or str(flat_source.get('match_id') or match_id),
+                'match': advanced_payload.get('match') or match_doc,
+                'competition_id': flat_source.get('competition_id') or advanced_payload.get('competition_id'),
+                'season_id': flat_source.get('season_id') or advanced_payload.get('season_id'),
+                'home_team_id': flat_source.get('home_team_id'),
+                'away_team_id': flat_source.get('away_team_id'),
+                'event_count': advanced_payload.get('event_count', int(flat_source.get('total_events') or 0)),
+                'events_available': advanced_payload.get('events_available', bool(advanced_payload.get('event_count') or flat_source.get('total_events'))),
+                'metrics': metrics,
+                'flat_stats': flat_stats,
+                'minuteTimeline': advanced_payload.get('minuteTimeline') or [],
+                'timeline': advanced_payload.get('timeline') or [],
+                'time_bucket': advanced_payload.get('time_bucket') or '5m',
+                'last_updated': advanced_payload.get('last_updated') or flat_source.get('updated_at'),
+            }
         except Exception as e:
             logger.error(f"Error getting match advanced metrics: {e}")
             return None
@@ -719,42 +1326,44 @@ class MongoStatisticsRepository(IStatisticsRepository):
         competition_id: Optional[int] = None,
         limit: int = 50
     ) -> List[Dict[str, Any]]:
-        """Get player rankings by statistic, enriched with player names via $lookup."""
+        """Get season-level player rankings using rich event-derived aggregates."""
         try:
-            query = {}
-            if competition_id:
-                query['competitionID'] = competition_id
+            aggregates = await self._aggregate_player_documents(competition_id)
+            metadata_map = await self._fetch_player_metadata_map(
+                list(aggregates.keys()) + [doc.get('scoutpro_player_id') for doc in aggregates.values()]
+            )
 
-            cursor = self.player_stats_collection.find(query).sort(stat_name, -1).limit(limit)
-            docs = await cursor.to_list(length=limit)
+            rankings: List[Dict[str, Any]] = []
+            for opta_player_id, aggregate in aggregates.items():
+                metadata = (
+                    metadata_map.get(str(aggregate.get('scoutpro_player_id') or ''))
+                    or metadata_map.get(opta_player_id)
+                    or {}
+                )
+                if not self._position_matches(position, metadata, aggregate):
+                    continue
 
-            # Batch-resolve player names from the players collection.
-            # player_stats.playerID is from the F24 event namespace;
-            # but some stats may share IDs with F9/F40 players.uID (both numeric).
-            player_ids = [str(doc.get('playerID', '')) for doc in docs if doc.get('playerID')]
-            player_map = {}
-            if player_ids:
-                try:
-                    players_cursor = self.db['players'].find(
-                        {'uID': {'$in': player_ids}},
-                        {'uID': 1, 'name': 1, 'position': 1, 'club': 1, 'nationality': 1}
-                    )
-                    async for p in players_cursor:
-                        player_map[str(p.get('uID', ''))] = p
-                except Exception as e:
-                    logger.warning(f"Player name lookup failed: {e}")
+                ranking_doc = dict(aggregate)
+                ranking_doc['player_id'] = str(ranking_doc.get('scoutpro_player_id') or ranking_doc.get('player_id') or opta_player_id)
+                ranking_doc['opta_player_id'] = opta_player_id
+                ranking_doc['player_name'] = metadata.get('name') or ranking_doc.get('player_name')
+                ranking_doc['name'] = ranking_doc.get('player_name')
+                ranking_doc['player_position'] = metadata.get('position') or metadata.get('detailed_position')
+                ranking_doc['position'] = ranking_doc.get('player_position')
+                ranking_doc['player_team'] = metadata.get('club') or metadata.get('team_name')
+                ranking_doc['club'] = ranking_doc.get('player_team')
+                ranking_doc['nationality'] = metadata.get('nationality')
+                ranking_doc['age'] = metadata.get('age')
+                ranking_doc['_sort_value'] = self._metric_value(ranking_doc, stat_name, self._PLAYER_METRIC_ALIASES)
+                ranking_doc['stat_name'] = stat_name
+                ranking_doc['stat_value'] = ranking_doc['_sort_value']
+                rankings.append(ranking_doc)
 
-            rankings = []
-            for idx, doc in enumerate(docs, 1):
-                if '_id' in doc:
-                    doc.pop('_id')
+            rankings.sort(key=lambda doc: doc.get('_sort_value', 0.0), reverse=True)
+            rankings = rankings[:limit]
+            for idx, doc in enumerate(rankings, 1):
+                doc.pop('_sort_value', None)
                 doc['rank'] = idx
-                pid = str(doc.get('playerID', ''))
-                player_info = player_map.get(pid, {})
-                doc['player_name'] = player_info.get('name') or None
-                doc['player_position'] = player_info.get('position') or None
-                doc['player_team'] = player_info.get('club') or None
-                rankings.append(doc)
 
             return rankings
         except Exception as e:
@@ -767,39 +1376,38 @@ class MongoStatisticsRepository(IStatisticsRepository):
         competition_id: Optional[int] = None,
         limit: int = 50
     ) -> List[Dict[str, Any]]:
-        """Get team rankings by statistic, enriched with team names via $lookup."""
+        """Get season-level team rankings using rich event-derived aggregates."""
         try:
-            query = {}
-            if competition_id:
-                query['competitionID'] = competition_id
+            aggregates = await self._aggregate_team_documents(competition_id)
+            metadata_map = await self._fetch_team_metadata_map(
+                list(aggregates.keys()) + [doc.get('scoutpro_team_id') for doc in aggregates.values()]
+            )
 
-            cursor = self.team_stats_collection.find(query).sort(stat_name, -1).limit(limit)
-            docs = await cursor.to_list(length=limit)
+            rankings: List[Dict[str, Any]] = []
+            for opta_team_id, aggregate in aggregates.items():
+                metadata = (
+                    metadata_map.get(str(aggregate.get('scoutpro_team_id') or ''))
+                    or metadata_map.get(opta_team_id)
+                    or {}
+                )
 
-            # Batch-resolve team names from teams collection
-            team_ids = [str(doc.get('teamID', '')) for doc in docs if doc.get('teamID')]
-            team_map = {}
-            if team_ids:
-                try:
-                    teams_cursor = self.db['teams'].find(
-                        {'uID': {'$in': team_ids}},
-                        {'uID': 1, 'name': 1, 'country': 1}
-                    )
-                    async for t in teams_cursor:
-                        team_map[str(t.get('uID', ''))] = t
-                except Exception as e:
-                    logger.warning(f"Team name lookup failed: {e}")
+                ranking_doc = dict(aggregate)
+                ranking_doc['team_id'] = str(ranking_doc.get('scoutpro_team_id') or ranking_doc.get('team_id') or opta_team_id)
+                ranking_doc['opta_team_id'] = opta_team_id
+                ranking_doc['team_name'] = metadata.get('name') or ranking_doc.get('team_name')
+                ranking_doc['name'] = ranking_doc.get('team_name')
+                ranking_doc['team_country'] = metadata.get('country')
+                ranking_doc['country'] = ranking_doc.get('team_country')
+                ranking_doc['_sort_value'] = self._metric_value(ranking_doc, stat_name, self._TEAM_METRIC_ALIASES)
+                ranking_doc['stat_name'] = stat_name
+                ranking_doc['stat_value'] = ranking_doc['_sort_value']
+                rankings.append(ranking_doc)
 
-            rankings = []
-            for idx, doc in enumerate(docs, 1):
-                if '_id' in doc:
-                    doc.pop('_id')
+            rankings.sort(key=lambda doc: doc.get('_sort_value', 0.0), reverse=True)
+            rankings = rankings[:limit]
+            for idx, doc in enumerate(rankings, 1):
+                doc.pop('_sort_value', None)
                 doc['rank'] = idx
-                tid = str(doc.get('teamID', ''))
-                team_info = team_map.get(tid, {})
-                doc['team_name'] = team_info.get('name') or None
-                doc['team_country'] = team_info.get('country') or None
-                rankings.append(doc)
 
             return rankings
         except Exception as e:
@@ -811,43 +1419,87 @@ class MongoStatisticsRepository(IStatisticsRepository):
         player_ids: List[str],
         stat_categories: Optional[List[str]] = None
     ) -> Dict[str, Any]:
-        """Compare multiple players"""
+        """Compare multiple players using the same rich season aggregates as the ranking endpoints."""
         try:
-            all_values: List[Any] = []
-            for pid in player_ids:
-                raw = str(pid).strip()
-                all_values.append(raw)
-                if raw.isdigit():
-                    all_values.append(int(raw))
-                elif raw.lower().startswith('p') and raw[1:].isdigit():
-                    all_values.append(int(raw[1:]))
-            query = {'$or': [
-                {'playerID': {'$in': all_values}},
-                {'player_id': {'$in': all_values}},
-            ]}
+            metadata_map = await self._fetch_player_metadata_map(player_ids)
+            metric_names = stat_categories or list(self._DEFAULT_PLAYER_COMPARISON_METRICS)
+            aggregates = await self._aggregate_player_documents()
+            comparison: Dict[str, Any] = {'players': [], 'metrics': []}
 
-            cursor = self.player_stats_collection.find(query)
-            docs = await cursor.to_list(length=len(player_ids))
+            for requested_id in player_ids:
+                resolved_player_id = await self._resolve_opta_player_id(str(requested_id))
+                if not resolved_player_id:
+                    resolved_player_id = str(requested_id).lstrip('p')
 
-            comparison = {
-                'players': []
-            }
+                stats_doc = dict(aggregates.get(str(resolved_player_id), {}))
+                self.__class__._apply_player_output_aliases(stats_doc)
 
-            for doc in docs:
-                if '_id' in doc:
-                    doc.pop('_id')
+                metadata = (
+                    metadata_map.get(str(requested_id))
+                    or metadata_map.get(str(stats_doc.get('scoutpro_player_id') or ''))
+                    or metadata_map.get(str(stats_doc.get('opta_player_id') or ''))
+                    or {}
+                )
 
-                # Filter to specific categories if requested
-                if stat_categories:
-                    filtered_doc = {k: v for k, v in doc.items() if k in stat_categories or k == 'playerID'}
-                    comparison['players'].append(filtered_doc)
-                else:
-                    comparison['players'].append(doc)
+                player_name = stats_doc.get('player_name') or metadata.get('name') or f'Player {requested_id}'
+                club = metadata.get('club') or metadata.get('team_name')
+                position = metadata.get('position') or metadata.get('detailed_position') or stats_doc.get('player_position')
+                age = metadata.get('age')
+
+                summary = {
+                    'goals': self._metric_value(stats_doc, 'goals', self._PLAYER_METRIC_ALIASES),
+                    'assists': self._metric_value(stats_doc, 'assists', self._PLAYER_METRIC_ALIASES),
+                    'appearances': self._metric_value(stats_doc, 'matchesPlayed', self._PLAYER_METRIC_ALIASES),
+                    'matches_played': self._metric_value(stats_doc, 'matchesPlayed', self._PLAYER_METRIC_ALIASES),
+                    'passes': self._metric_value(stats_doc, 'passes', self._PLAYER_METRIC_ALIASES),
+                    'successful_passes': self._metric_value(stats_doc, 'successfulPasses', self._PLAYER_METRIC_ALIASES),
+                    'pass_accuracy': self._metric_value(stats_doc, 'passAccuracy', self._PLAYER_METRIC_ALIASES),
+                    'passAccuracy': self._metric_value(stats_doc, 'passAccuracy', self._PLAYER_METRIC_ALIASES),
+                    'shots': self._metric_value(stats_doc, 'shots', self._PLAYER_METRIC_ALIASES),
+                    'shots_on_target': self._metric_value(stats_doc, 'shotsOnTarget', self._PLAYER_METRIC_ALIASES),
+                    'xG': self._metric_value(stats_doc, 'xG', self._PLAYER_METRIC_ALIASES),
+                    'xA': self._metric_value(stats_doc, 'xA', self._PLAYER_METRIC_ALIASES),
+                    'keyPasses': self._metric_value(stats_doc, 'keyPasses', self._PLAYER_METRIC_ALIASES),
+                    'progressivePasses': self._metric_value(stats_doc, 'progressivePasses', self._PLAYER_METRIC_ALIASES),
+                    'minutes_played': self._stat_value(stats_doc, 'minutes_played'),
+                    'club': club,
+                    'position': position,
+                    'age': age,
+                    'nationality': metadata.get('nationality'),
+                    'rating': self._stat_value(stats_doc, 'rating'),
+                }
+
+                comparison['players'].append(
+                    {
+                        'player_id': str(requested_id),
+                        'player': {
+                            'id': str(requested_id),
+                            'name': player_name,
+                            'club': club,
+                            'position': position,
+                            'age': age,
+                            'nationality': metadata.get('nationality'),
+                        },
+                        'summary': summary,
+                        'stats': stats_doc,
+                    }
+                )
+
+            comparison['metrics'] = [
+                {
+                    'metric': metric_name,
+                    'values': [
+                        self._metric_value(player_entry.get('stats', {}), metric_name, self._PLAYER_METRIC_ALIASES)
+                        for player_entry in comparison['players']
+                    ],
+                }
+                for metric_name in metric_names
+            ]
 
             return comparison
         except Exception as e:
             logger.error(f"Error comparing players: {e}")
-            return {'players': []}
+            return {'players': [], 'metrics': []}
 
     async def aggregate_player_stats(
         self,

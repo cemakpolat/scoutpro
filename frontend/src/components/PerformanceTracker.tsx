@@ -75,6 +75,21 @@ const deriveRatingFromRank = (rank: unknown): number => {
   return Number(Math.max(6.4, 8.8 - ((numericRank - 1) * 0.18)).toFixed(1));
 };
 
+const firstFiniteNumber = (...values: unknown[]): number | null => {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') {
+      continue;
+    }
+
+    const numericValue = Number(value);
+    if (Number.isFinite(numericValue)) {
+      return numericValue;
+    }
+  }
+
+  return null;
+};
+
 const PerformanceTracker: React.FC = () => {
   const [selectedPlayer, setSelectedPlayer] = useState('');
   const [timeframe, setTimeframe] = useState('season');
@@ -84,9 +99,8 @@ const PerformanceTracker: React.FC = () => {
   const [loading, setLoading] = useState(false);
 
   const { players: contextPlayers } = useData();
-  // Aggregate match-level stats keyed by Opta player_id for enriching metrics
-  const { data: playerStatsData } = useApi(
-    () => apiService.getPlayerStatisticsRealtime(500, 0, 'goals'),
+  const { data: playerRankings } = useApi(
+    () => apiService.getPlayerRankings('goals', 500),
     [],
   );
 
@@ -110,84 +124,114 @@ const PerformanceTracker: React.FC = () => {
   useEffect(() => {
     if (!selectedPlayer) {
       setPlayerMetrics(null);
+      setEventSource(null);
       return;
     }
 
     setLoading(true);
+    setEventSource(null);
 
     // Find the selected player in contextPlayers to get their Opta ID
     const ctxPlayer = (contextPlayers || []).find((p: any) => String(p.id) === String(selectedPlayer));
     const optaId = ctxPlayer?.opta_uid ? String(ctxPlayer.opta_uid).replace(/^p/, '') : null;
 
-    // Aggregate match-level stats from the stats feed for this player's Opta ID
-    const matchEntries: any[] = optaId
-      ? ((playerStatsData?.data || []).filter((e: any) => String(e.player_id) === optaId))
-      : [];
-
-    if (matchEntries.length > 0) {
-      const agg = matchEntries.reduce((acc: any, e: any) => ({
-        goals: acc.goals + (Number(e.goals) || 0),
-        assists: acc.assists + (Number(e.assists) || 0),
-        passes: acc.passes + (Number(e.passes) || 0),
-        passes_successful: acc.passes_successful + (Number(e.passes_successful) || 0),
-        shots: acc.shots + (Number(e.shots) || 0),
-        tackles: acc.tackles + (Number(e.tackles) || 0),
-        aerials: acc.aerials + (Number(e.aerials) || 0),
-        aerials_won: acc.aerials_won + (Number(e.aerials_won) || 0),
-      }), { goals: 0, assists: 0, passes: 0, passes_successful: 0, shots: 0, tackles: 0, aerials: 0, aerials_won: 0 });
-
-      const passAccuracy = agg.passes > 0 ? Math.round((agg.passes_successful / agg.passes) * 100) : 0;
-      const overall = Math.min(10, Math.max(5, passAccuracy / 10 + (agg.goals + agg.assists) * 0.5));
-      const formHistory = buildFormSeries(overall, agg.goals, agg.assists);
-
-      setPlayerMetrics({
-        overall,
-        goals: agg.goals,
-        assists: agg.assists,
-        xG: Math.max(0, agg.goals - 0.2),
-        xA: agg.assists,
-        passAccuracy,
-        dribbleSuccess: agg.shots > 0 ? Math.min(90, (agg.goals / agg.shots) * 100) : 50,
-        sprintSpeed: 0,
-        distanceCovered: 0,
-        tackles: agg.tackles,
-        aerialDuels: agg.aerials,
-        aerialWins: agg.aerials_won,
-        aerialAccuracy: agg.aerials > 0 ? Math.round((agg.aerials_won / agg.aerials) * 100) : 0,
-        form: formHistory,
-        trend: inferTrend(formHistory),
-        injuryRisk: 0,
-        workload: 0,
-        recoveryScore: 0,
-      });
-      setLoading(false);
-      return;
-    }
-
-    // Fall back to analytics API endpoints (may return empty for most players)
     Promise.all([
-      apiService.getPlayerDetailedStats(selectedPlayer).catch(() => null),
-      apiService.getPlayerStatisticsById(String(selectedPlayer)).catch(() => null),
+      apiService.getPlayerStatistics(selectedPlayer).catch(() => null),
+      optaId ? apiService.getPlayerDetailedStats(optaId).catch(() => null) : Promise.resolve(null),
       apiService.getPlayerInsightsAdvanced(selectedPlayer).catch(() => null),
-      apiService.getPlayer(selectedPlayer).catch(() => null),
-    ]).then(([detailedStatsResponse, statsResponse, insightsResponse, playerResponse]) => {
+    ]).then(([statsResponse, detailedStatsResponse, insightsResponse]) => {
+      const statsPayload = (statsResponse as any)?.data || {};
+      const statsData = statsPayload?.stats || {};
       const detailedStats = (detailedStatsResponse as any)?.data || {};
-      const statsData = (statsResponse as any)?.data || {};
       const insightsData = (insightsResponse as any)?.data || {};
-      const playerData = (playerResponse as any)?.data || {};
 
       const sourceInfo = (detailedStatsResponse as any)?.data?.event_source || {};
       setEventSource(sourceInfo);
 
-      const goals = Number(detailedStats.statistics?.shooting?.goals ?? statsData.goals ?? playerData.goals ?? 0);
-      const assists = Number(statsData.assists ?? playerData.assists ?? 0);
-      const shots = Number(detailedStats.statistics?.shooting?.total ?? statsData.shots ?? 0);
-      const passes = Number(detailedStats.statistics?.passing?.total ?? statsData.passes ?? 0);
-      const passAccuracy = Number(detailedStats.statistics?.passing?.accuracy ?? Math.round((Number(statsData.successful_passes || 0) / Math.max(1, passes)) * 100) ?? 0);
-      const tackles = Number(detailedStats.statistics?.defending?.tackles ?? 0);
-      const aerialDuels = Number(detailedStats.statistics?.aerials?.duels ?? 0);
-      const aerialWins = Number(detailedStats.statistics?.aerials?.won ?? 0);
-      const aerialAccuracy = Number(detailedStats.statistics?.aerials?.accuracy ?? 0);
+      const goals = firstFiniteNumber(
+        statsData.goals,
+        detailedStats.statistics?.shooting?.goals,
+        insightsData.goals,
+        0,
+      ) || 0;
+      const assists = firstFiniteNumber(
+        statsData.assists,
+        statsData.goal_assist,
+        insightsData.assists,
+        0,
+      ) || 0;
+      const shots = firstFiniteNumber(
+        statsData.shots,
+        statsData.total_shots,
+        detailedStats.statistics?.shooting?.total,
+        0,
+      ) || 0;
+      const passes = firstFiniteNumber(
+        statsData.passes,
+        statsData.total_passes,
+        detailedStats.statistics?.passing?.total,
+        0,
+      ) || 0;
+      const successfulPasses = firstFiniteNumber(
+        statsData.successful_passes,
+        statsData.passes_successful,
+        statsData.passes_completed,
+        detailedStats.statistics?.passing?.successful,
+        0,
+      ) || 0;
+      const passAccuracy = firstFiniteNumber(
+        statsData.passAccuracy,
+        statsData.pass_accuracy,
+        statsData.pass_success_rate,
+        detailedStats.statistics?.passing?.accuracy,
+        passes > 0 ? Math.round((successfulPasses / Math.max(1, passes)) * 100) : 0,
+      ) || 0;
+      const tackles = firstFiniteNumber(
+        statsData.tackles,
+        statsData.total_tackles,
+        detailedStats.statistics?.defending?.tackles,
+        0,
+      ) || 0;
+      const aerialDuels = firstFiniteNumber(
+        statsData.aerials,
+        statsData.total_aerial_duels,
+        detailedStats.statistics?.aerials?.duels,
+        0,
+      ) || 0;
+      const aerialWins = firstFiniteNumber(
+        statsData.aerials_won,
+        statsData.aerial_duels_won,
+        detailedStats.statistics?.aerials?.won,
+        0,
+      ) || 0;
+      const aerialAccuracy = firstFiniteNumber(
+        statsData.aerialDuelSuccessRate,
+        statsData.aerial_duel_success_rate,
+        detailedStats.statistics?.aerials?.accuracy,
+        aerialDuels > 0 ? Math.round((aerialWins / Math.max(1, aerialDuels)) * 100) : 0,
+      ) || 0;
+      const xG = firstFiniteNumber(
+        statsData.xG,
+        statsData.total_xg,
+        statsData.xg_total,
+        insightsData.xG,
+        insightsData.xg,
+        Math.max(0, goals - 0.2),
+      ) || 0;
+      const xA = firstFiniteNumber(
+        statsData.xA,
+        statsData.total_xa,
+        statsData.xa_total,
+        insightsData.xA,
+        insightsData.xa,
+        assists,
+      ) || 0;
+      const dribbleSuccess = firstFiniteNumber(
+        statsData.takeOnSuccessRate,
+        statsData.take_on_success_rate,
+        insightsData.dribbleSuccess,
+        shots > 0 ? Math.min(90, (goals / Math.max(1, shots)) * 100) : 50,
+      ) || 0;
 
       const overall = Math.min(10, Math.max(5, passAccuracy / 10 + (goals + assists) * 0.5));
       const formHistory = buildFormSeries(overall, goals, assists);
@@ -196,24 +240,24 @@ const PerformanceTracker: React.FC = () => {
         overall,
         goals,
         assists,
-        xG: Number(insightsData.xG ?? detailedStats.xG ?? Math.max(0, goals - 0.2)),
-        xA: Number(insightsData.xA ?? detailedStats.xA ?? assists),
+        xG,
+        xA,
         passAccuracy,
-        dribbleSuccess: shots > 0 ? Math.min(90, (goals / shots) * 100) : 50,
-        sprintSpeed: Number(insightsData.sprintSpeed ?? 0),
-        distanceCovered: Number(insightsData.distanceCovered ?? 0),
+        dribbleSuccess,
+        sprintSpeed: firstFiniteNumber(insightsData.sprintSpeed, 0) || 0,
+        distanceCovered: firstFiniteNumber(insightsData.distanceCovered, 0) || 0,
         tackles,
         aerialDuels,
         aerialWins,
         aerialAccuracy,
         form: formHistory,
         trend: inferTrend(formHistory),
-        injuryRisk: Number(insightsData.injuryRisk ?? 0),
-        workload: Number(insightsData.workload ?? 0),
-        recoveryScore: Number(insightsData.recoveryScore ?? insightsData.recovery ?? 0),
+        injuryRisk: firstFiniteNumber(insightsData.injuryRisk, 0) || 0,
+        workload: firstFiniteNumber(insightsData.workload, 0) || 0,
+        recoveryScore: firstFiniteNumber(insightsData.recoveryScore, insightsData.recovery, 0) || 0,
       });
     }).finally(() => setLoading(false));
-  }, [contextPlayers, selectedPlayer, playerStatsData]);
+  }, [contextPlayers, selectedPlayer]);
 
   const performanceMetrics = playerMetrics || {
     overall: 0,
@@ -305,16 +349,22 @@ const PerformanceTracker: React.FC = () => {
       ]
     : [];
 
-  // Performance comparison: use real player statistics leaderboard (sorted by goals)
-  const statsLeaderboard: any[] = playerStatsData?.data || [];
+  // Performance comparison: use season-level player rankings from statistics-service.
+  const statsLeaderboard: any[] = Array.isArray(playerRankings) ? playerRankings : [];
   const comparisonData = statsLeaderboard.slice(0, 5).map((player: any) => {
     const goals = Number(player.goals || 0);
     const assists = Number(player.assists || 0);
-    const passAcc = Number(player.pass_accuracy || 0);
-    const rating = Number(Math.min(9.5, 6.0 + goals * 0.5 + assists * 0.3 + (passAcc / 100) * 1.5).toFixed(1));
+    const passAcc = Number(player.passAccuracy || player.pass_accuracy || 0);
+    const rating = Number(
+      firstFiniteNumber(
+        player.rating,
+        deriveRatingFromRank(player.rank),
+        Math.min(9.5, 6.0 + goals * 0.5 + assists * 0.3 + (passAcc / 100) * 1.5),
+      )?.toFixed(1) || '0.0'
+    );
     const efficiency = clampPercentage((passAcc * 0.4) + (goals * 6) + (assists * 5));
     return {
-      player: player.player_name || `Player #${player.player_id}`,
+      player: player.player_name || player.name || `Player #${player.player_id}`,
       rating,
       goals,
       assists,

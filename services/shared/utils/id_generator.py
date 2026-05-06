@@ -56,6 +56,7 @@ _STRIP_CHARS_BY_ENTITY: dict[str, str] = {
     "event":       "",
     "competition": "cC",
     "season":      "",
+    "venue":       "vV",
 }
 
 
@@ -110,6 +111,10 @@ class ScoutProId:
     @staticmethod
     def season(provider: str, raw_id: str) -> int:
         return generate("season", provider, raw_id)
+
+    @staticmethod
+    def venue(provider: str, raw_id: str) -> int:
+        return generate("venue", provider, raw_id)
 
     @staticmethod
     def provider_numeric(entity: str, raw_id: str) -> str:

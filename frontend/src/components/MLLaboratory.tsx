@@ -16,10 +16,20 @@ import {
   TrendingUp,
   XCircle,
 } from 'lucide-react';
+import FeatureLensExplorer from './FeatureLensExplorer';
+import type { ModelCenterContext, ModelCenterTab } from './ModelCenter';
 import { useApi } from '../hooks/useApi';
 import apiService from '../services/api';
-import { MLAlgorithm, MLDataset, MLExperiment } from '../types';
+import { MLAlgorithm, MLDataset, MLDatasetFeatureInsights, MLExperiment } from '../types';
 import { exportService } from '../services/exportService';
+import type { BackgroundTask } from '../types/tasks';
+import {
+  deleteCustomFeatureLensPreset,
+  getStoredFeatureLensPresets,
+  prettifyLensToken,
+  saveCustomFeatureLensPreset,
+  stringArraysEqual,
+} from '../utils/featureLens';
 
 type TrainingConfig = {
   trainTestSplit: string;
@@ -27,14 +37,63 @@ type TrainingConfig = {
   optimizationMetric: string;
 };
 
-const MLLaboratory: React.FC = () => {
+interface MLLaboratoryProps {
+  onOpenModelCenter?: (tab: ModelCenterTab, context?: ModelCenterContext) => void;
+}
+
+function getExperimentDrilldown(experiment: MLExperiment): { label: string; tab: ModelCenterTab; context?: ModelCenterContext } {
+  const normalizedValue = `${experiment.algorithm} ${experiment.name}`.toLowerCase();
+
+  if (/(cluster|clustering|k-means|archetype)/.test(normalizedValue)) {
+    return { label: 'Open Cluster Explorer', tab: 'clusters' };
+  }
+
+  if (/(similar|similarity)/.test(normalizedValue)) {
+    return { label: 'Open Similar Players', tab: 'interactive', context: { interactivePanel: 'similar' } };
+  }
+
+  if (/(performance|fatigue|anomaly|role)/.test(normalizedValue)) {
+    return { label: 'Open Interactive Predictions', tab: 'interactive', context: { interactivePanel: 'performance' } };
+  }
+
+  if (/(match|outcome|forecast)/.test(normalizedValue)) {
+    return { label: 'Open Match Prediction', tab: 'match' };
+  }
+
+  if (/(xg|shot|threat|pass|sequence|event|possession)/.test(normalizedValue)) {
+    return {
+      label: 'Open Feature Lens',
+      tab: 'lens',
+      context: { lensPresetId: /(pass|sequence|possession)/.test(normalizedValue) ? 'buildup-passing' : 'shot-quality' },
+    };
+  }
+
+  if (/team/.test(normalizedValue)) {
+    return { label: 'Open Team Assessment', tab: 'team' };
+  }
+
+  return { label: 'Open Model Center', tab: 'navigator' };
+}
+
+const MLLaboratory: React.FC<MLLaboratoryProps> = ({ onOpenModelCenter }) => {
   const [selectedAlgorithm, setSelectedAlgorithm] = useState<string>('');
   const [selectedDataset, setSelectedDataset] = useState<string>('');
+  const [selectedEventFamily, setSelectedEventFamily] = useState<string>('all');
+  const [selectedTemporalScope, setSelectedTemporalScope] = useState<string>('all');
+  const [selectedEventType, setSelectedEventType] = useState<string>('all');
+  const [selectedInsightFields, setSelectedInsightFields] = useState<string[]>([]);
+  const [featureLensPresets, setFeatureLensPresets] = useState(() => getStoredFeatureLensPresets());
+  const [activePresetId, setActivePresetId] = useState<string | null>(null);
   const [isTraining, setIsTraining] = useState(false);
   const [trainingProgress, setTrainingProgress] = useState(0);
   const [trainingError, setTrainingError] = useState<string | null>(null);
   const [trainingResult, setTrainingResult] = useState<MLExperiment | null>(null);
+  const [trainingStatusMessage, setTrainingStatusMessage] = useState('');
+  const [activeTrainingTask, setActiveTrainingTask] = useState<BackgroundTask | null>(null);
   const [expandedExperimentId, setExpandedExperimentId] = useState<string | null>(null);
+  const [featureInsights, setFeatureInsights] = useState<MLDatasetFeatureInsights | null>(null);
+  const [featureInsightsLoading, setFeatureInsightsLoading] = useState(false);
+  const [featureInsightsError, setFeatureInsightsError] = useState<string | null>(null);
   const [trainingConfig, setTrainingConfig] = useState<TrainingConfig>({
     trainTestSplit: '80/20',
     crossValidation: '5-Fold',
@@ -66,57 +125,248 @@ const MLLaboratory: React.FC = () => {
     () => apiService.getMLExperiments(), []
   );
 
-  useEffect(() => {
-    if (!selectedAlgorithm && algorithms?.length) {
-      setSelectedAlgorithm(algorithms[0].id);
-    }
-  }, [algorithms, selectedAlgorithm]);
+  const eventFamilyOptions = useMemo(() => {
+    const values = new Set<string>();
+    (algorithms || []).forEach((algorithm) => (algorithm.eventFamilies || []).forEach((value) => values.add(value)));
+    (datasets || []).forEach((dataset) => (dataset.eventFamilies || []).forEach((value) => values.add(value)));
+    return Array.from(values).sort((left, right) => left.localeCompare(right));
+  }, [algorithms, datasets]);
+
+  const temporalScopeOptions = useMemo(() => {
+    const values = new Set<string>();
+    (algorithms || []).forEach((algorithm) => (algorithm.temporalScopes || []).forEach((value) => values.add(value)));
+    (datasets || []).forEach((dataset) => (dataset.temporalScopes || []).forEach((value) => values.add(value)));
+    return Array.from(values).sort((left, right) => left.localeCompare(right));
+  }, [algorithms, datasets]);
+
+  const filteredAlgorithms = useMemo(() => {
+    return (algorithms || []).filter((algorithm) => {
+      if (selectedEventFamily !== 'all' && !(algorithm.eventFamilies || []).includes(selectedEventFamily)) {
+        return false;
+      }
+
+      if (selectedTemporalScope !== 'all' && !(algorithm.temporalScopes || []).includes(selectedTemporalScope)) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [algorithms, selectedEventFamily, selectedTemporalScope]);
+
+  const filteredDatasets = useMemo(() => {
+    return (datasets || []).filter((dataset) => {
+      if (selectedEventFamily !== 'all' && !(dataset.eventFamilies || []).includes(selectedEventFamily)) {
+        return false;
+      }
+
+      if (selectedTemporalScope !== 'all' && !(dataset.temporalScopes || []).includes(selectedTemporalScope)) {
+        return false;
+      }
+
+      return true;
+    });
+  }, [datasets, selectedEventFamily, selectedTemporalScope]);
+
+  const selectedAlgorithmData = filteredAlgorithms.find((algorithm) => algorithm.id === selectedAlgorithm) || null;
+  const selectedDatasetData = filteredDatasets.find((dataset) => dataset.id === selectedDataset) || null;
+  const compatibleDatasetIds = selectedAlgorithmData?.supportedDatasetIds || [];
 
   useEffect(() => {
-    if (!selectedDataset && datasets?.length) {
-      setSelectedDataset(datasets[0].id);
+    if (filteredAlgorithms.length === 0) {
+      if (selectedAlgorithm) {
+        setSelectedAlgorithm('');
+      }
+      return;
     }
-  }, [datasets, selectedDataset]);
+
+    if (!selectedAlgorithm || !filteredAlgorithms.some((algorithm) => algorithm.id === selectedAlgorithm)) {
+      const initialAlgorithm = filteredAlgorithms.find((algorithm) => algorithm.trainable) || filteredAlgorithms[0];
+      setSelectedAlgorithm(initialAlgorithm.id);
+    }
+  }, [filteredAlgorithms, selectedAlgorithm]);
+
+  useEffect(() => {
+    if (!filteredDatasets.length) {
+      if (selectedDataset) {
+        setSelectedDataset('');
+      }
+      return;
+    }
+
+    if (!selectedAlgorithmData) {
+      if (!selectedDataset) {
+        setSelectedDataset(filteredDatasets[0].id);
+      }
+      return;
+    }
+
+    const recommendedDataset = filteredDatasets.find((dataset) => dataset.id === selectedAlgorithmData.recommendedDatasetId)
+      || filteredDatasets.find((dataset) => compatibleDatasetIds.includes(dataset.id))
+      || filteredDatasets[0];
+
+    if (!selectedDataset || (compatibleDatasetIds.length > 0 && !compatibleDatasetIds.includes(selectedDataset))) {
+      setSelectedDataset(recommendedDataset.id);
+    }
+  }, [compatibleDatasetIds, filteredDatasets, selectedAlgorithmData, selectedDataset]);
+
+  useEffect(() => {
+    setFeatureInsights(null);
+    setFeatureInsightsError(null);
+  }, [selectedDatasetData?.id]);
+
+  useEffect(() => {
+    if (!selectedDatasetData) {
+      setFeatureInsights(null);
+      setFeatureInsightsError(null);
+      return;
+    }
+
+    let cancelled = false;
+
+    const loadFeatureInsights = async () => {
+      setFeatureInsightsLoading(true);
+      setFeatureInsightsError(null);
+
+      try {
+        const response = await apiService.getMLDatasetFeatureInsights(selectedDatasetData.id, {
+          eventType: selectedEventType !== 'all' ? selectedEventType : undefined,
+          temporalScope: selectedTemporalScope !== 'all' ? selectedTemporalScope : undefined,
+          fields: selectedInsightFields.length > 0 ? selectedInsightFields : undefined,
+        });
+
+        if (!response.success) {
+          throw new Error(response.error.message);
+        }
+
+        if (cancelled) {
+          return;
+        }
+
+        const nextInsights = response.data;
+        setFeatureInsights(nextInsights);
+
+        if (selectedEventType !== 'all' && !nextInsights.availableEventTypes.includes(selectedEventType)) {
+          setSelectedEventType('all');
+        }
+
+        const availableFields = new Set(nextInsights.featureStats.map((entry) => entry.field));
+        const sanitizedRequestedFields = selectedInsightFields.filter((field) => availableFields.has(field));
+        const nextSelectedFields = (sanitizedRequestedFields.length > 0
+          ? sanitizedRequestedFields
+          : nextInsights.selectedFields.length > 0
+            ? nextInsights.selectedFields
+            : nextInsights.recommendedFields.slice(0, 4)
+        ).slice(0, 6);
+
+        if (!stringArraysEqual(selectedInsightFields, nextSelectedFields)) {
+          setSelectedInsightFields(nextSelectedFields);
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setFeatureInsightsError(error instanceof Error ? error.message : 'Failed to load feature insights');
+          setFeatureInsights(null);
+        }
+      } finally {
+        if (!cancelled) {
+          setFeatureInsightsLoading(false);
+        }
+      }
+    };
+
+    void loadFeatureInsights();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDatasetData, selectedEventType, selectedInsightFields, selectedTemporalScope]);
 
   const startTraining = async () => {
-    if (!selectedAlgorithm || !selectedDataset) {
-      setTrainingError('Select an algorithm and dataset before starting training.');
+    if (!selectedAlgorithmData) {
+      setTrainingError('Select an algorithm before starting training.');
+      return;
+    }
+
+    if (!selectedAlgorithmData.trainable) {
+      setTrainingError(selectedAlgorithmData.unavailableReason || `${selectedAlgorithmData.name} is not connected to a training pipeline yet.`);
+      return;
+    }
+
+    if (!selectedDatasetData) {
+      setTrainingError('Select a compatible dataset before starting training.');
       return;
     }
 
     setIsTraining(true);
-    setTrainingProgress(15);
+    setTrainingProgress(0);
+    setTrainingStatusMessage('Queueing background task...');
     setTrainingError(null);
     setTrainingResult(null);
+    setActiveTrainingTask(null);
 
     try {
-      setTrainingProgress(45);
-      const response = await apiService.trainModel(selectedAlgorithm, selectedDataset, trainingConfig);
+      const response = await apiService.trainModel(selectedAlgorithmData.id, selectedDatasetData.id, trainingConfig);
 
       if (!response.success) {
         throw new Error(response.error.message);
       }
 
-      setTrainingProgress(80);
+      const queuedTask = response.data?.task as BackgroundTask | undefined;
+      const queuedExperiment = response.data?.experiment as MLExperiment | undefined;
 
-      const experiment = (response.data?.experiment || response.data) as MLExperiment | undefined;
-      if (experiment) {
-        setTrainingResult(experiment);
-        setExpandedExperimentId(experiment.id);
+      if (!queuedTask?.task_id) {
+        throw new Error('Training task was queued without a task identifier.');
+      }
+
+      setActiveTrainingTask(queuedTask);
+      setTrainingProgress(Math.max(queuedTask.progress ?? 0, 5));
+      setTrainingStatusMessage(queuedTask.progress_msg || 'Queued');
+
+      if (queuedExperiment) {
+        setExpandedExperimentId(queuedExperiment.id);
       }
 
       await refetchExperiments();
+
+      const finishedTask = await apiService.pollTask(queuedTask.task_id, {
+        intervalMs: 2000,
+        timeoutMs: 30 * 60 * 1000,
+        onProgress: (task) => {
+          setActiveTrainingTask(task);
+          setTrainingProgress(task.progress);
+          setTrainingStatusMessage(task.progress_msg);
+        },
+      });
+
+      setActiveTrainingTask(finishedTask);
+
+      const latestExperiments = await apiService.getMLExperiments();
+      if (latestExperiments.success && latestExperiments.data) {
+        const completedExperiment = queuedExperiment
+          ? latestExperiments.data.find((experiment) => experiment.id === queuedExperiment.id)
+          : latestExperiments.data[0];
+
+        if (completedExperiment) {
+          setTrainingResult(completedExperiment);
+          setExpandedExperimentId(completedExperiment.id);
+        }
+      }
+
+      await refetchExperiments();
+
+      if (finishedTask.status === 'failed') {
+        throw new Error(finishedTask.error || 'Training failed');
+      }
+
       setTrainingProgress(100);
+      setTrainingStatusMessage(finishedTask.progress_msg || 'Done');
     } catch (error) {
       setTrainingError(error instanceof Error ? error.message : 'Training failed');
       setTrainingProgress(0);
+      setTrainingStatusMessage('');
     } finally {
       setIsTraining(false);
     }
   };
-
-  const selectedAlgorithmData = algorithms?.find((algorithm) => algorithm.id === selectedAlgorithm) || null;
-  const selectedDatasetData = datasets?.find((dataset) => dataset.id === selectedDataset) || null;
   const latestExperiment = trainingResult || experiments?.[0] || null;
 
   const completedExperiments = useMemo(
@@ -196,6 +446,21 @@ const MLLaboratory: React.FC = () => {
     }));
   };
 
+  const handleToggleInsightField = (field: string) => {
+    setActivePresetId(null);
+    setSelectedInsightFields((current) => {
+      if (current.includes(field)) {
+        return current.filter((entry) => entry !== field);
+      }
+
+      if (current.length >= 6) {
+        return [...current.slice(1), field];
+      }
+
+      return [...current, field];
+    });
+  };
+
   const handleExport = async () => {
     if (!experiments || experiments.length === 0) {
       alert('No experiments to export');
@@ -230,6 +495,45 @@ const MLLaboratory: React.FC = () => {
     }
   };
 
+  const handleApplyPreset = (presetId: string) => {
+    const preset = featureLensPresets.find((entry) => entry.id === presetId);
+    if (!preset) {
+      return;
+    }
+
+    setActivePresetId(preset.id);
+    setSelectedEventFamily(preset.eventFamily);
+    setSelectedTemporalScope(preset.temporalScope);
+    setSelectedEventType(preset.eventType || 'all');
+    setSelectedInsightFields(preset.fields.slice(0, 6));
+    if (preset.datasetId) {
+      setSelectedDataset(preset.datasetId);
+    }
+  };
+
+  const handleSavePreset = (name: string) => {
+    const nextPresetId = `custom-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')}`;
+    const nextPresets = saveCustomFeatureLensPreset({
+      id: nextPresetId,
+      name,
+      eventFamily: selectedEventFamily,
+      temporalScope: selectedTemporalScope,
+      eventType: selectedEventType,
+      datasetId: selectedDatasetData?.id,
+      fields: selectedInsightFields,
+    });
+    setFeatureLensPresets(nextPresets);
+    setActivePresetId(nextPresetId);
+  };
+
+  const handleDeletePreset = (presetId: string) => {
+    const nextPresets = deleteCustomFeatureLensPreset(presetId);
+    setFeatureLensPresets(nextPresets);
+    if (activePresetId === presetId) {
+      setActivePresetId(null);
+    }
+  };
+
   return (
     <div className="space-y-8">
       <div className="flex items-center justify-between">
@@ -252,6 +556,45 @@ const MLLaboratory: React.FC = () => {
         </div>
       </div>
 
+      <div className="rounded-xl border border-cyan-500/20 bg-cyan-500/5 px-4 py-3 text-sm text-slate-300">
+        ML Laboratory is the operational workspace for training pipelines, inspecting datasets, and reviewing experiment history. Use Model Center when you want to consume those models through team, match, player, or batch workflows.
+      </div>
+
+      <FeatureLensExplorer
+        title="Event & Feature Lens"
+        description="Narrow the model catalog by event family and temporal scope, then inspect how selectable numeric parameters move together inside the active dataset."
+        filteredAlgorithmsCount={filteredAlgorithms.length}
+        filteredDatasetsCount={filteredDatasets.length}
+        activeDatasetName={selectedDatasetData?.name}
+        eventFamilyOptions={eventFamilyOptions}
+        temporalScopeOptions={temporalScopeOptions}
+        selectedEventFamily={selectedEventFamily}
+        selectedTemporalScope={selectedTemporalScope}
+        selectedEventType={selectedEventType}
+        selectedInsightFields={selectedInsightFields}
+        featureInsights={featureInsights}
+        featureInsightsLoading={featureInsightsLoading}
+        featureInsightsError={featureInsightsError}
+        presets={featureLensPresets}
+        activePresetId={activePresetId}
+        onPresetApply={handleApplyPreset}
+        onPresetSave={handleSavePreset}
+        onPresetDelete={handleDeletePreset}
+        onEventFamilyChange={(value) => {
+          setActivePresetId(null);
+          setSelectedEventFamily(value);
+        }}
+        onTemporalScopeChange={(value) => {
+          setActivePresetId(null);
+          setSelectedTemporalScope(value);
+        }}
+        onEventTypeChange={(value) => {
+          setActivePresetId(null);
+          setSelectedEventType(value);
+        }}
+        onToggleField={handleToggleInsightField}
+      />
+
       {/* Experiment Setup */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Algorithm Selection */}
@@ -262,9 +605,12 @@ const MLLaboratory: React.FC = () => {
           </h3>
           {algorithmsLoading && <p className="text-slate-400">Loading algorithms...</p>}
           {algorithmsError && <p className="text-red-400">Error: {algorithmsError}</p>}
-          {!algorithmsLoading && !algorithmsError && algorithms && (
+          {!algorithmsLoading && !algorithmsError && filteredAlgorithms.length === 0 && (
+            <p className="text-slate-400">No algorithms match the current event lens.</p>
+          )}
+          {!algorithmsLoading && !algorithmsError && filteredAlgorithms.length > 0 && (
             <div className="space-y-3">
-              {algorithms.map((algorithm) => (
+              {filteredAlgorithms.map((algorithm) => (
                 <div
                   key={algorithm.id}
                   onClick={() => setSelectedAlgorithm(algorithm.id)}
@@ -274,11 +620,31 @@ const MLLaboratory: React.FC = () => {
                       : 'border-slate-700 hover:border-slate-600'
                   }`}
                 >
-                  <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center justify-between gap-2 mb-2">
                     <span className="font-semibold">{algorithm.name}</span>
-                    <span className="text-xs bg-slate-600 px-2 py-1 rounded">{algorithm.type}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs bg-slate-600 px-2 py-1 rounded">{algorithm.type}</span>
+                      <span className={`text-xs px-2 py-1 rounded border ${algorithm.trainable ? 'border-green-500/30 bg-green-500/15 text-green-300' : 'border-amber-500/30 bg-amber-500/15 text-amber-300'}`}>
+                        {algorithm.trainable ? 'Queueable' : 'Read only'}
+                      </span>
+                    </div>
                   </div>
                   <div className="text-sm text-slate-400 mb-2">{algorithm.description}</div>
+                  <div className="flex flex-wrap gap-2 mb-2">
+                    {(algorithm.eventFamilies || []).map((value) => (
+                      <span key={`${algorithm.id}-family-${value}`} className="text-[10px] px-2 py-1 rounded-full bg-slate-700 text-slate-300">
+                        {prettifyLensToken(value)}
+                      </span>
+                    ))}
+                    {(algorithm.temporalScopes || []).map((value) => (
+                      <span key={`${algorithm.id}-scope-${value}`} className="text-[10px] px-2 py-1 rounded-full bg-slate-900 border border-slate-600 text-slate-400">
+                        {prettifyLensToken(value)}
+                      </span>
+                    ))}
+                  </div>
+                  {!algorithm.trainable && algorithm.unavailableReason && (
+                    <div className="text-xs text-amber-300 mb-2">{algorithm.unavailableReason}</div>
+                  )}
                   <div className="grid grid-cols-3 gap-2 text-xs">
                     <div>
                       <div className="text-slate-500">Accuracy</div>
@@ -307,38 +673,76 @@ const MLLaboratory: React.FC = () => {
           </h3>
           {datasetsLoading && <p className="text-slate-400">Loading datasets...</p>}
           {datasetsError && <p className="text-red-400">Error: {datasetsError}</p>}
-          {!datasetsLoading && !datasetsError && datasets && (
+          {!datasetsLoading && !datasetsError && filteredDatasets.length === 0 && (
+            <p className="text-slate-400">No datasets match the current event lens.</p>
+          )}
+          {!datasetsLoading && !datasetsError && filteredDatasets.length > 0 && (
             <div className="space-y-3">
-              {datasets.map((dataset) => (
-                <div
-                  key={dataset.id}
-                  onClick={() => setSelectedDataset(dataset.id)}
-                  className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${
-                    selectedDataset === dataset.id
-                      ? 'border-green-500 bg-green-500/10'
-                      : 'border-slate-700 hover:border-slate-600'
-                  }`}
-                >
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="font-semibold text-sm">{dataset.name}</span>
-                    <span className="text-xs text-green-400">{dataset.quality}% quality</span>
-                  </div>
-                  <div className="text-xs text-slate-400 mb-2">{dataset.description}</div>
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <div className="text-slate-500">Size</div>
-                      <div className="font-bold">{dataset.size}</div>
+              {filteredDatasets.map((dataset) => {
+                const isCompatible = compatibleDatasetIds.length === 0 || compatibleDatasetIds.includes(dataset.id);
+                const isRecommended = selectedAlgorithmData?.recommendedDatasetId === dataset.id;
+
+                return (
+                  <div
+                    key={dataset.id}
+                    onClick={() => {
+                      if (isCompatible) {
+                        setSelectedDataset(dataset.id);
+                      }
+                    }}
+                    className={`p-4 rounded-lg border-2 transition-all ${
+                      !isCompatible
+                        ? 'border-slate-800 opacity-50 cursor-not-allowed'
+                        : selectedDataset === dataset.id
+                          ? 'border-green-500 bg-green-500/10 cursor-pointer'
+                          : 'border-slate-700 hover:border-slate-600 cursor-pointer'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-2 gap-2">
+                      <span className="font-semibold text-sm">{dataset.name}</span>
+                      <div className="flex items-center gap-2">
+                        {isRecommended && (
+                          <span className="text-[10px] px-2 py-1 rounded border border-blue-500/30 bg-blue-500/15 text-blue-300">
+                            Recommended
+                          </span>
+                        )}
+                        <span className="text-xs text-green-400">{dataset.quality}% quality</span>
+                      </div>
                     </div>
-                    <div>
-                      <div className="text-slate-500">Features</div>
-                      <div className="font-bold">{dataset.features}</div>
+                    <div className="text-xs text-slate-400 mb-2">{dataset.description}</div>
+                    <div className="flex flex-wrap gap-2 mb-2">
+                      {(dataset.eventFamilies || []).map((value) => (
+                        <span key={`${dataset.id}-family-${value}`} className="text-[10px] px-2 py-1 rounded-full bg-slate-700 text-slate-300">
+                          {prettifyLensToken(value)}
+                        </span>
+                      ))}
+                      {(dataset.temporalScopes || []).map((value) => (
+                        <span key={`${dataset.id}-scope-${value}`} className="text-[10px] px-2 py-1 rounded-full bg-slate-900 border border-slate-600 text-slate-400">
+                          {prettifyLensToken(value)}
+                        </span>
+                      ))}
                     </div>
+                    <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <div className="text-slate-500">Size</div>
+                        <div className="font-bold">{dataset.size}</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Features</div>
+                        <div className="font-bold">{dataset.features}</div>
+                      </div>
+                    </div>
+                    <div className="text-xs text-slate-500 mt-2">
+                      Updated: {dataset.lastUpdated}
+                    </div>
+                    {!isCompatible && selectedAlgorithmData && (
+                      <div className="text-[11px] text-amber-300 mt-2">
+                        Not compatible with {selectedAlgorithmData.name}.
+                      </div>
+                    )}
                   </div>
-                  <div className="text-xs text-slate-500 mt-2">
-                    Updated: {dataset.lastUpdated}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -407,9 +811,15 @@ const MLLaboratory: React.FC = () => {
                 </div>
               </div>
 
+              <div className={`p-4 rounded-lg border text-sm ${selectedAlgorithmData.trainable ? 'bg-blue-500/10 border-blue-500/30 text-blue-100' : 'bg-amber-500/10 border-amber-500/30 text-amber-100'}`}>
+                {selectedAlgorithmData.trainable
+                  ? 'Training runs as a background task. The job will continue even if you navigate away from this page.'
+                  : selectedAlgorithmData.unavailableReason || 'This algorithm is not connected to a trainable data pipeline yet.'}
+              </div>
+
               <button
                 onClick={startTraining}
-                disabled={isTraining || !selectedAlgorithmData || !selectedDatasetData}
+                disabled={isTraining || !selectedAlgorithmData?.trainable || !selectedDatasetData}
                 className="w-full flex items-center justify-center space-x-2 py-3 bg-purple-600 hover:bg-purple-700 disabled:bg-slate-600 rounded-lg font-semibold transition-colors"
               >
                 {isTraining ? (
@@ -420,17 +830,40 @@ const MLLaboratory: React.FC = () => {
                 ) : (
                   <>
                     <Play className="h-4 w-4" />
-                    <span>Start Training</span>
+                    <span>{selectedAlgorithmData.trainable ? 'Queue Training Job' : 'Training Unavailable'}</span>
                   </>
                 )}
               </button>
 
-              {(isTraining || trainingProgress === 100) && (
+              {(isTraining || trainingProgress === 100 || trainingProgress > 0) && (
                 <div className="w-full bg-slate-700 rounded-full h-2">
                   <div
                     className="bg-purple-400 h-2 rounded-full transition-all duration-500"
                     style={{ width: `${trainingProgress}%` }}
                   ></div>
+                </div>
+              )}
+
+              {(trainingStatusMessage || activeTrainingTask) && (
+                <div className="p-4 bg-slate-700 rounded-lg text-sm space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-white">Background Task</div>
+                    {activeTrainingTask && (
+                      <div className="text-xs text-slate-400">{activeTrainingTask.task_id.slice(0, 8)}...</div>
+                    )}
+                  </div>
+                  <div className="text-slate-300">{trainingStatusMessage || activeTrainingTask?.progress_msg}</div>
+                  {activeTrainingTask && (
+                    <div className={`text-xs capitalize ${
+                      activeTrainingTask.status === 'completed'
+                        ? 'text-green-400'
+                        : activeTrainingTask.status === 'failed'
+                          ? 'text-red-400'
+                          : 'text-blue-400'
+                    }`}>
+                      {activeTrainingTask.status}
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -476,6 +909,7 @@ const MLLaboratory: React.FC = () => {
               <tbody>
                 {experiments.map((experiment) => {
                   const isExpanded = expandedExperimentId === experiment.id;
+                  const drilldown = getExperimentDrilldown(experiment);
 
                   return (
                     <React.Fragment key={experiment.id}>
@@ -534,6 +968,17 @@ const MLLaboratory: React.FC = () => {
                                 </ul>
                               ) : (
                                 <div className="text-sm text-slate-400">No experiment insights were returned for this run.</div>
+                              )}
+
+                              {onOpenModelCenter && (
+                                <div className="pt-2">
+                                  <button
+                                    onClick={() => onOpenModelCenter(drilldown.tab, drilldown.context)}
+                                    className="inline-flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-2 text-sm font-medium text-cyan-200 transition-colors hover:bg-cyan-500/20"
+                                  >
+                                    {drilldown.label}
+                                  </button>
+                                </div>
                               )}
                             </div>
                           </td>

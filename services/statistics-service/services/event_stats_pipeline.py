@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from pymongo import MongoClient, UpdateOne
+from services.event_metric_utils import EventMetricAccumulator
 
 logger = logging.getLogger(__name__)
 
@@ -669,6 +670,7 @@ class EventStatsPipeline:
     def _compute_player_stats(
         self,
         events: List[F24EventAdapter],
+        raw_events: List[Dict[str, Any]],
         player_id: int,
         team_id: int,
     ) -> Dict[str, Any]:
@@ -707,7 +709,98 @@ class EventStatsPipeline:
         # 7. Goalkeeper (only contributes when the player has GK events)
         stats.update(_extract_goalkeeper_stats(events, player_id, team_id))
 
+        # 8. Provider-agnostic enriched event increments (xG, progressive passes,
+        # key passes, box entries, pressures, blocks, recoveries, etc.)
+        stats.update(self._aggregate_event_increments(raw_events))
+        self._normalize_primary_metrics(stats)
+
         return stats
+
+    @staticmethod
+    def _aggregate_event_increments(raw_events: List[Dict[str, Any]]) -> Dict[str, Any]:
+        totals: Dict[str, Any] = {}
+        for raw_event in raw_events:
+            increments = EventMetricAccumulator.build_increments(raw_event)
+            for key, value in increments.items():
+                if not isinstance(value, (int, float)):
+                    continue
+                totals[key] = totals.get(key, 0) + value
+
+        for key, value in list(totals.items()):
+            if isinstance(value, float):
+                totals[key] = round(value, 4)
+
+        return totals
+
+    @staticmethod
+    def _rate(numerator: Any, denominator: Any) -> float:
+        try:
+            denominator_value = float(denominator or 0)
+            if denominator_value <= 0:
+                return 0.0
+            return round(float(numerator or 0) / denominator_value * 100, 2)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _normalize_primary_metrics(cls, stats: Dict[str, Any]) -> None:
+        alias_pairs = {
+            "passes_total": "passes",
+            "passes_completed": "passes_successful",
+            "total_crosses": "crosses",
+            "successful_crosses": "crosses_successful",
+            "through_ball": "through_balls",
+            "through_ball_successful": "through_balls_successful",
+            "total_shots": "shots",
+            "total_tackles": "tackles",
+            "total_successful_tackles": "tackles_successful",
+            "total_ball_recovery": "ball_recoveries",
+            "total_interceptions": "interceptions",
+            "total_clearances": "clearances",
+            "total_aerial_duels": "aerials",
+            "aerial_duels_won": "aerials_won",
+            "total_take_ons": "take_ons",
+            "successful_take_ons": "take_ons_won",
+            "total_assists": "assists",
+            "xg_total": "total_xg",
+            "xa_total": "total_xa",
+            "games_played": "matches_played",
+        }
+
+        for source_key, target_key in alias_pairs.items():
+            if target_key not in stats and source_key in stats:
+                stats[target_key] = stats[source_key]
+
+        passes = stats.get("passes") or 0
+        passes_successful = stats.get("passes_successful") or 0
+        shots = stats.get("shots") or 0
+        shots_on_target = stats.get("shots_on_target") or 0
+        goals = stats.get("goals") or 0
+        big_chances = stats.get("big_chances") or 0
+        big_chances_scored = stats.get("big_chances_scored") or 0
+        take_ons = stats.get("take_ons") or 0
+        take_ons_won = stats.get("take_ons_won") or 0
+        duels = stats.get("duels") or stats.get("total_duels") or 0
+        duels_won = stats.get("duels_won") or stats.get("successful_duels") or 0
+        aerials = stats.get("aerials") or 0
+        aerials_won = stats.get("aerials_won") or 0
+        tackle_attempts = stats.get("tackle_attempts") or stats.get("tackles") or 0
+        tackles_successful = stats.get("tackles_successful") or 0
+        pass_length_total = stats.get("pass_length_total") or 0.0
+
+        stats["pass_accuracy"] = cls._rate(passes_successful, passes)
+        stats["pass_success_rate"] = stats["pass_accuracy"]
+        stats["shot_accuracy"] = cls._rate(shots_on_target, shots)
+        stats["conversion_rate"] = cls._rate(goals, shots)
+        stats["big_chance_conversion_rate"] = cls._rate(big_chances_scored, big_chances)
+        stats["progressive_pass_rate"] = cls._rate(stats.get("progressive_passes"), passes)
+        stats["take_on_success_rate"] = cls._rate(take_ons_won, take_ons)
+        stats["duel_success_rate"] = cls._rate(duels_won, duels)
+        stats["aerial_duel_success_rate"] = cls._rate(aerials_won, aerials)
+        stats["tackle_success_rate"] = cls._rate(tackles_successful, tackle_attempts)
+
+        if passes and pass_length_total and not stats.get("average_pass_length"):
+            stats["average_pass_length"] = round(pass_length_total / passes, 2)
 
     # ------------------------------------------------------------------
     # Public entry-point
@@ -762,13 +855,16 @@ class EventStatsPipeline:
 
             # Group by (player_id, team_id)
             player_buckets: Dict[Tuple[int, int], List[F24EventAdapter]] = defaultdict(list)
+            player_raw_buckets: Dict[Tuple[int, int], List[Dict[str, Any]]] = defaultdict(list)
             team_buckets: Dict[int, List[F24EventAdapter]] = defaultdict(list)
+            team_raw_buckets: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
 
             meta: Dict[int, Dict[str, Any]] = {}  # player_id → meta fields
 
             for ev_obj, ev_raw in zip(adapted, raw_events):
                 if ev_obj.playerID:
                     player_buckets[(ev_obj.playerID, ev_obj.teamID)].append(ev_obj)
+                    player_raw_buckets[(ev_obj.playerID, ev_obj.teamID)].append(ev_raw)
                     if ev_obj.playerID not in meta:
                         meta[ev_obj.playerID] = {
                             "competition_id": ev_raw.get("competition_id"),
@@ -777,13 +873,14 @@ class EventStatsPipeline:
                         }
                 if ev_obj.teamID:
                     team_buckets[ev_obj.teamID].append(ev_obj)
+                    team_raw_buckets[ev_obj.teamID].append(ev_raw)
 
             # ── Player statistics ──────────────────────────────────────────
             player_ops = []
             now = datetime.now(timezone.utc).isoformat()
 
             for (pid, tid), ev_list in player_buckets.items():
-                stats = self._compute_player_stats(ev_list, pid, tid)
+                stats = self._compute_player_stats(ev_list, player_raw_buckets[(pid, tid)], pid, tid)
                 opta_pid = str(pid)
                 opta_tid = str(tid)
 
@@ -829,18 +926,18 @@ class EventStatsPipeline:
 
             # ── Team statistics ────────────────────────────────────────────
             team_ops = []
+            team_docs: Dict[str, Dict[str, Any]] = {}
             for tid, ev_list in team_buckets.items():
                 opta_tid = str(tid)
                 if opta_tid not in team_sp_cache:
                     team_sp_cache[opta_tid] = self._resolve_scoutpro_team_id(opta_tid)
                 sp_team_id = team_sp_cache[opta_tid]
 
-                # Aggregate basic team counters from the adapted events
-                t_stats = self._aggregate_team_counters(ev_list)
+                t_stats = self._aggregate_team_counters(ev_list, team_raw_buckets.get(tid, []))
                 raw_sample = next(
                     (e for e in raw_events if str(e.get("team_id") or "") == opta_tid), {}
                 )
-                doc = {
+                team_docs[opta_tid] = {
                     "team_id": opta_tid,
                     "match_id": str(mid),
                     "scoutpro_team_id": sp_team_id,
@@ -849,6 +946,18 @@ class EventStatsPipeline:
                     "updated_at": now,
                     **t_stats,
                 }
+
+            total_match_passes = sum(doc.get("passes", 0) or 0 for doc in team_docs.values())
+            for opta_tid, doc in team_docs.items():
+                opponent = next((other for other_tid, other in team_docs.items() if other_tid != opta_tid), None)
+                doc["possession_percentage"] = round((doc.get("passes", 0) or 0) / total_match_passes * 100, 2) if total_match_passes else 0.0
+                if opponent:
+                    doc["goals_against"] = opponent.get("goals", 0) or 0
+                    doc["shots_against"] = opponent.get("shots", 0) or 0
+                    doc["shots_on_target_against"] = opponent.get("shots_on_target", 0) or 0
+                    doc["passes_against"] = opponent.get("passes", 0) or 0
+                    doc["total_xg_against"] = opponent.get("total_xg", 0.0) or 0.0
+
                 team_ops.append(UpdateOne(
                     {"team_id": opta_tid, "match_id": str(mid)},
                     {"$set": doc},
@@ -930,52 +1039,23 @@ class EventStatsPipeline:
 
             # ── Build per-team adapted event buckets ──────────────────────
             per_team: Dict[str, List[F24EventAdapter]] = defaultdict(list)
+            per_team_raw: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
             for ev_obj in adapted:
                 if ev_obj.teamID:
                     per_team[str(ev_obj.teamID)].append(ev_obj)
+            for raw_event in raw_events:
+                team_id = str(raw_event.get("team_id") or raw_event.get("teamID") or "")
+                if team_id:
+                    per_team_raw[team_id].append(raw_event)
 
-            def _team_counters(ev_list: List[F24EventAdapter]) -> Dict[str, int]:
-                c: Dict[str, int] = {
-                    "goals": 0, "shots": 0, "passes": 0, "passes_successful": 0,
-                    "tackles": 0, "interceptions": 0, "clearances": 0,
-                    "fouls": 0, "yellow_cards": 0, "red_cards": 0, "corners": 0,
-                }
-                for ev in ev_list:
-                    tname = str(ev._raw.get("type_name") or "").lower().strip()
-                    is_ok = ev.outcome == 1
-                    if tname in self._PASS_TYPES:
-                        c["passes"] += 1
-                        if is_ok:
-                            c["passes_successful"] += 1
-                    if tname in self._CORNER_TYPES:
-                        c["corners"] += 1
-                    if tname in self._SHOT_TYPES:
-                        c["shots"] += 1
-                        if tname == "goal" or ev._raw.get("is_goal"):
-                            c["goals"] += 1
-                    if tname in self._TACKLE_TYPES:
-                        c["tackles"] += 1
-                    if tname in self._INTERCEPTION_TYPES:
-                        c["interceptions"] += 1
-                    if tname in self._CLEARANCE_TYPES:
-                        c["clearances"] += 1
-                    if tname in self._FOUL_TYPES:
-                        c["fouls"] += 1
-                    if tname in self._CARD_TYPES:
-                        card_raw = str(ev._raw.get("card_type") or "").lower()
-                        if not card_raw:
-                            for q in ev.qEvents:
-                                if q.qualifierID in (32, 33):
-                                    card_raw = str(q.value).lower()
-                                    break
-                        if "yellow" in card_raw or "second" in card_raw:
-                            c["yellow_cards"] += 1
-                        elif "red" in card_raw:
-                            c["red_cards"] += 1
-                return c
-
-            home_c = _team_counters(per_team.get(home_team_id, []) if home_team_id else [])
-            away_c = _team_counters(per_team.get(away_team_id, []) if away_team_id else [])
+            home_c = self._aggregate_team_counters(
+                per_team.get(home_team_id, []) if home_team_id else [],
+                per_team_raw.get(home_team_id, []) if home_team_id else [],
+            )
+            away_c = self._aggregate_team_counters(
+                per_team.get(away_team_id, []) if away_team_id else [],
+                per_team_raw.get(away_team_id, []) if away_team_id else [],
+            )
 
             # ── Compute pass accuracy ─────────────────────────────────────
             def _pass_acc(c: Dict[str, int]) -> float:
@@ -1000,6 +1080,10 @@ class EventStatsPipeline:
                 # Shots
                 "home_shots": home_c["shots"],
                 "away_shots": away_c["shots"],
+                "home_shots_on_target": home_c.get("shots_on_target", 0),
+                "away_shots_on_target": away_c.get("shots_on_target", 0),
+                "home_xg": round(home_c.get("total_xg", 0.0), 4),
+                "away_xg": round(away_c.get("total_xg", 0.0), 4),
                 # Passing
                 "home_passes": home_c["passes"],
                 "away_passes": away_c["passes"],
@@ -1007,9 +1091,19 @@ class EventStatsPipeline:
                 "away_passes_successful": away_c["passes_successful"],
                 "home_pass_accuracy": _pass_acc(home_c),
                 "away_pass_accuracy": _pass_acc(away_c),
+                "home_progressive_passes": home_c.get("progressive_passes", 0),
+                "away_progressive_passes": away_c.get("progressive_passes", 0),
+                "home_passes_into_box": home_c.get("passes_into_box", 0),
+                "away_passes_into_box": away_c.get("passes_into_box", 0),
+                "home_key_passes": home_c.get("key_passes", 0),
+                "away_key_passes": away_c.get("key_passes", 0),
+                "home_through_balls": home_c.get("through_balls", 0),
+                "away_through_balls": away_c.get("through_balls", 0),
                 # Corners
                 "home_corners": home_c["corners"],
                 "away_corners": away_c["corners"],
+                "home_big_chances": home_c.get("big_chances", 0),
+                "away_big_chances": away_c.get("big_chances", 0),
                 # Defence
                 "home_tackles": home_c["tackles"],
                 "away_tackles": away_c["tackles"],
@@ -1017,6 +1111,10 @@ class EventStatsPipeline:
                 "away_interceptions": away_c["interceptions"],
                 "home_clearances": home_c["clearances"],
                 "away_clearances": away_c["clearances"],
+                "home_recoveries": home_c.get("recoveries", 0),
+                "away_recoveries": away_c.get("recoveries", 0),
+                "home_high_regains": home_c.get("high_regains", 0),
+                "away_high_regains": away_c.get("high_regains", 0),
                 # Discipline
                 "home_fouls": home_c["fouls"],
                 "away_fouls": away_c["fouls"],
@@ -1055,33 +1153,29 @@ class EventStatsPipeline:
     _FOUL_TYPES = {"foul"}
     _CARD_TYPES = {"card"}
 
-    def _aggregate_team_counters(self, events: List[F24EventAdapter]) -> Dict[str, Any]:
-        counters: Dict[str, Any] = {
-            "passes": 0, "passes_successful": 0, "shots": 0, "goals": 0,
-            "tackles": 0, "interceptions": 0, "clearances": 0,
-            "fouls": 0, "yellow_cards": 0, "red_cards": 0,
-            "total_events": len(events),
-        }
+    def _aggregate_team_counters(
+        self,
+        events: List[F24EventAdapter],
+        raw_events: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        counters: Dict[str, Any] = self._aggregate_event_increments(raw_events)
+        counters.setdefault("passes", 0)
+        counters.setdefault("passes_successful", counters.get("passes_completed", 0))
+        counters.setdefault("shots", 0)
+        counters.setdefault("goals", 0)
+        counters.setdefault("tackles", 0)
+        counters.setdefault("interceptions", 0)
+        counters.setdefault("clearances", 0)
+        counters.setdefault("fouls", 0)
+        counters.setdefault("yellow_cards", 0)
+        counters.setdefault("red_cards", 0)
+        counters["corners"] = 0
+        counters["total_events"] = len(events)
         for ev in events:
             tname = str(ev._raw.get("type_name") or "").lower().strip()
-            is_ok = ev.outcome == 1
-            if tname in self._PASS_TYPES:
-                counters["passes"] += 1
-                if is_ok:
-                    counters["passes_successful"] += 1
-            elif tname in self._SHOT_TYPES:
-                counters["shots"] += 1
-                if tname == "goal" or ev._raw.get("is_goal"):
-                    counters["goals"] += 1
-            elif tname in self._TACKLE_TYPES:
-                counters["tackles"] += 1
-            elif tname in self._INTERCEPTION_TYPES:
-                counters["interceptions"] += 1
-            elif tname in self._CLEARANCE_TYPES:
-                counters["clearances"] += 1
-            elif tname in self._FOUL_TYPES:
-                counters["fouls"] += 1
-            elif tname in self._CARD_TYPES:
+            if tname in self._CORNER_TYPES:
+                counters["corners"] += 1
+            elif tname in self._CARD_TYPES and not ev._raw.get("card_type"):
                 card_val = ""
                 for q in ev.qEvents:
                     if q.qualifierID in (32, 33):  # Opta card type qualifiers
@@ -1092,4 +1186,5 @@ class EventStatsPipeline:
                     counters["yellow_cards"] += 1
                 elif "red" in card_raw:
                     counters["red_cards"] += 1
+        self._normalize_primary_metrics(counters)
         return counters

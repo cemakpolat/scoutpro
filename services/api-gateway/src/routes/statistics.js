@@ -70,6 +70,44 @@ router.get('/team/:teamId', async (req, res) => {
   }
 });
 
+router.get('/player/:playerId/prediction', async (req, res) => {
+  try {
+    const payload = ensureSuccess(
+      await requestJson(statisticsServiceUrl, `/api/v2/statistics/player/${req.params.playerId}/prediction`, {
+        query: {
+          competition_id: req.query.competition_id,
+          season_id: req.query.season_id,
+        },
+      }),
+      'Failed to fetch player prediction'
+    );
+
+    res.json(unwrapPayload(payload));
+  } catch (error) {
+    console.error('Player prediction error:', error);
+    sendGatewayError(res, error, 'Failed to fetch player prediction');
+  }
+});
+
+router.get('/team/:teamId/prediction', async (req, res) => {
+  try {
+    const payload = ensureSuccess(
+      await requestJson(statisticsServiceUrl, `/api/v2/statistics/team/${req.params.teamId}/prediction`, {
+        query: {
+          competition_id: req.query.competition_id,
+          season_id: req.query.season_id,
+        },
+      }),
+      'Failed to fetch team prediction'
+    );
+
+    res.json(unwrapPayload(payload));
+  } catch (error) {
+    console.error('Team prediction error:', error);
+    sendGatewayError(res, error, 'Failed to fetch team prediction');
+  }
+});
+
 router.get('/rankings/players', async (req, res) => {
   try {
     const payload = ensureSuccess(
@@ -252,6 +290,20 @@ router.get('/match/:matchId', async (req, res) => {
   } catch (error) {
     console.error('Match statistics error:', error);
     sendGatewayError(res, error, 'Failed to fetch match statistics');
+  }
+});
+
+router.get('/match/:matchId/prediction', async (req, res) => {
+  try {
+    const payload = ensureSuccess(
+      await requestJson(statisticsServiceUrl, `/api/v2/statistics/match/${req.params.matchId}/prediction`, {}),
+      'Failed to fetch match prediction'
+    );
+
+    res.json(unwrapPayload(payload));
+  } catch (error) {
+    console.error('Match prediction error:', error);
+    sendGatewayError(res, error, 'Failed to fetch match prediction');
   }
 });
 
