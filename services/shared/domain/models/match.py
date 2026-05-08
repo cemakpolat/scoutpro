@@ -9,6 +9,8 @@ from typing import Optional, Dict, Any
 from enum import Enum
 from datetime import datetime
 
+from .event import DataFreshness
+
 
 class MatchStatus(Enum):
     """Match status"""
@@ -53,6 +55,9 @@ class ScoutProMatch:
     away_score: Optional[int] = None
     home_ht_score: Optional[int] = None  # Half-time score
     away_ht_score: Optional[int] = None
+    
+    # ====== DATA FRESHNESS ======
+    data_freshness: DataFreshness = DataFreshness.LIVE
 
     # ====== LIVE DATA (if match is live) ======
     current_minute: Optional[int] = None

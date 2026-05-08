@@ -17,9 +17,10 @@ import MLAnalysis from './MLAnalysis';
 import MatchPredictionWorkbench from './MatchPredictionWorkbench';
 import ModelCenterLens from './ModelCenterLens';
 import TaskQueue from './TaskQueue';
+import PlayerTrajectory from './PlayerTrajectory';
 import TeamAssessment from './TeamAssessment';
 
-export type ModelCenterTab = 'navigator' | 'team' | 'match' | 'clusters' | 'lens' | 'interactive' | 'batch';
+export type ModelCenterTab = 'navigator' | 'team' | 'match' | 'clusters' | 'lens' | 'interactive' | 'batch' | 'trajectory';
 export type ModelCenterInteractivePanel = 'similar' | 'performance';
 
 export interface ModelCenterContext {
@@ -70,6 +71,7 @@ const AREA_CARDS: AreaCard[] = [
       { label: 'Scouting Hub', tab: 'scouting' },
       { label: 'Player Comparison', tab: 'player-comparison' },
       { label: 'Performance Tracker', tab: 'performance-tracker' },
+      { label: 'Player Trajectory & Forecast', tab: 'trajectory' },
     ],
   },
   {
@@ -218,6 +220,7 @@ const ModelCenter: React.FC<ModelCenterProps> = ({
           { id: 'lens' as const, label: 'Feature Lens', icon: BarChart3 },
           { id: 'interactive' as const, label: 'Interactive Predictions', icon: Brain },
           { id: 'batch' as const, label: 'Batch Tasks', icon: ListChecks },
+          { id: 'trajectory' as const, label: 'Player Trajectory', icon: Activity },
         ].map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -402,6 +405,11 @@ const ModelCenter: React.FC<ModelCenterProps> = ({
           </div>
 
           <TaskQueue />
+        </div>
+      )}
+      {activeTab === 'trajectory' && (
+        <div className="space-y-6">
+          <PlayerTrajectory playerId={initialPlayerId} />
         </div>
       )}
     </div>

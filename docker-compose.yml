@@ -13,6 +13,7 @@ services:
       - JWT_SECRET=${JWT_SECRET:-scoutpro-dev-CHANGE-IN-PROD}
       - NODE_ENV=development
       - TASK_WORKER_URL=http://task-worker-service:8013
+      - BATCH_DATA_MANAGER_URL=http://batch-data-manager:5011
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - REPORT_SERVICE_URL=http://report-service:8009
     depends_on:
@@ -514,6 +515,29 @@ services:
         condition: service_started
     volumes:
       - ./services/task-worker-service:/app
+      - ./services/shared:/app/shared
+    networks:
+      - scoutpro-network
+    restart: unless-stopped
+
+  # ============ BATCH DATA MANAGER ============
+  batch-data-manager:
+    build:
+      context: ./services/batch-data-manager
+      dockerfile: Dockerfile
+    container_name: scoutpro-batch-data-manager
+    ports:
+      - "8200:5011"
+    environment:
+      - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
+      - TIMESCALEDB_URL=postgresql://scoutpro:${TIMESCALE_PASSWORD:-scoutpro123}@timescaledb:5432/scoutpro
+    depends_on:
+      mongo:
+        condition: service_started
+      timescaledb:
+        condition: service_started
+    volumes:
+      - ./services/batch-data-manager:/app
       - ./services/shared:/app/shared
     networks:
       - scoutpro-network

@@ -82,13 +82,24 @@ echo "========================================="
 echo "Creating Live Data Topics"
 echo "========================================="
 
-# Live data topics (higher partitions for throughput)
+# Live data topics (higher partitions for throughput, short retention)
 create_topic "match.live.updates" 10 1
 create_topic "match.live.raw" 10 1
 create_topic "match.live.normalized" 10 1
 create_topic "match.events.stream" 8 1
 create_topic "player.performance.live" 8 1
 create_topic "match.stats.windowed" 5 1
+
+echo ""
+echo "========================================="
+echo "Creating Batch/Historical Topics (Dual-Stream)"
+echo "========================================="
+
+# Batch data topics (durable queues, isolate from live traffic)
+create_topic "batch.historical.ingestion.requested" 3 1
+create_topic "batch.historical.matches" 5 1
+create_topic "batch.historical.events" 5 1
+create_topic "batch.historical.completed" 3 1
 
 echo ""
 echo "========================================="

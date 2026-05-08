@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import apiService from '../services/api';
 import { useApi } from '../hooks/useApi';
+import { DataIngestionDashboard } from './admin/DataIngestionDashboard';
 
 const formatDateTime = (value?: string) => {
   if (!value) {
@@ -51,6 +52,7 @@ const AdminConsole: React.FC = () => {
     { id: 'audit', label: 'Audit Logs', icon: Eye },
     { id: 'subscriptions', label: 'Subscriptions', icon: CreditCard },
     { id: 'system', label: 'System Health', icon: Activity },
+    { id: 'ingestion', label: 'Batch Data Manager', icon: Database },
   ];
 
   return (
@@ -420,6 +422,10 @@ const AdminConsole: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {activeSection === 'ingestion' && (
+        <DataIngestionDashboard />
       )}
         </>
       )}

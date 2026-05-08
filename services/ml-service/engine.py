@@ -12,6 +12,7 @@ from algorithms.xgot import ExpectedGoalsOnTargetModel
 from algorithms.pitch_control import PitchControlModel
 from algorithms.expected_threat import ExpectedThreatModel
 from algorithms.player_similarity import AdvancedPlayerSimilarityKNN
+from algorithms.trajectory import PlayerTrajectoryModel
 
 class AnalyticsEngine:
     """Central registry and execution engine for ML algorithms."""
@@ -43,6 +44,7 @@ class AnalyticsEngine:
         self.register_algorithm("pitch_control_nn", PitchControlModel())
         self.register_algorithm("expected_threat_model", ExpectedThreatModel())
         self.register_algorithm("advanced_player_similarity", AdvancedPlayerSimilarityKNN(n_neighbors=5))
+        self.register_algorithm("player_trajectory_forecaster", PlayerTrajectoryModel())
 
     def register_algorithm(self, name: str, algorithm: MLAlgorithm) -> None:
         self.algorithms[name] = algorithm

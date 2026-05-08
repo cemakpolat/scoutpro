@@ -3,7 +3,8 @@ Live Ingestion API Endpoints
 """
 from fastapi import APIRouter, HTTPException, Request, BackgroundTasks
 from typing import Dict, Any, List
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Literal
 import sys
 sys.path.append('/app')
 from shared.models.base import APIResponse
@@ -15,8 +16,14 @@ active_tasks = {}
 
 class EventsPayload(BaseModel):
     events: List[Dict[str, Any]]
-    source: str = "opta"
+    source: Literal["opta", "statsbomb", "custom"] = Field(default="opta", description="Provider source of the data")
     
+class HistoricalBatchPayload(BaseModel):
+    match_id: str
+    events: List[Dict[str, Any]]
+    source: Literal["opta", "statsbomb", "custom"] = Field(default="opta", description="Provider source of the data")
+    is_historical: bool = True
+
 async def process_batch_background(events: List[Dict[str, Any]], source: str, request: Request, match_id: str):
     processor = getattr(request.app.state, "processor", None)
     if processor:

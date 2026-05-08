@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 from datetime import date, datetime
 
+from .event import DataFreshness
+
 
 @dataclass
 class ScoutProPlayer:
@@ -46,6 +48,9 @@ class ScoutProPlayer:
     jersey_number: Optional[int] = None
     contract_until: Optional[date] = None
     market_value: Optional[int] = None  # In euros
+
+    # ====== DATA FRESHNESS ======
+    data_freshness: DataFreshness = DataFreshness.LIVE
 
     # ====== PROVIDER MAPPINGS ======
     provider_ids: Dict[str, str] = field(default_factory=dict)

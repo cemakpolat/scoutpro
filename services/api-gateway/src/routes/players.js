@@ -72,6 +72,7 @@ const {
 const playerServiceUrl = (process.env.PLAYER_SERVICE_URL || 'http://player-service:8000').replace(/\/$/, '');
 const analyticsServiceUrl = (process.env.ANALYTICS_SERVICE_URL || 'http://analytics-service:8012').replace(/\/$/, '');
 const statisticsServiceUrl = (process.env.STATISTICS_SERVICE_URL || 'http://statistics-service:8000').replace(/\/$/, '');
+const mlServiceUrl = (process.env.ML_SERVICE_URL || 'http://ml-service:8000').replace(/\/$/, '');
 const playerRequestTimeoutMs = Number(process.env.PLAYER_SERVICE_TIMEOUT_MS || 2500);
 const analyticsRequestTimeoutMs = Number(process.env.ANALYTICS_SERVICE_TIMEOUT_MS || 2500);
 
@@ -728,6 +729,28 @@ router.get('/:id/matches', async (req, res) => {
   } catch (error) {
     console.error('Player matches error:', error);
     sendGatewayError(res, error, 'Failed to fetch player matches');
+  }
+});
+
+
+/**
+ * [PHASE 3] Get player developmental trajectory from ml-service
+ */
+router.get('/:id/trajectory', async (req, res) => {
+  const { id } = req.params;
+  const { provider } = req.query; // e.g. ?provider=opta
+  
+  try {
+    const payload = ensureSuccess(
+      await requestJson(mlServiceUrl, `/api/v2/ml/players/${id}/trajectory`, {
+        query: provider ? { provider } : {}
+      }),
+      'Failed to fetch player trajectory from ML service'
+    );
+    res.json(unwrapPayload(payload) || {});
+  } catch (error) {
+    console.error(`Player trajectory error for ${id}:`, error);
+    sendGatewayError(res, error, 'Failed to fetch player trajectory');
   }
 });
 

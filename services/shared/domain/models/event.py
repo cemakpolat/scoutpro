@@ -97,6 +97,15 @@ class EventType(Enum):
             return 'other'
 
 
+class DataFreshness(str, Enum):
+    """
+    Data freshness states reflecting integration and validation level.
+    """
+    LIVE = "live"             # Coming from real-time stream
+    STALE = "stale"           # From live, but hasn't received updates in expected window
+    HISTORICAL = "historical" # Bulk imported from past seasons
+    VERIFIED = "verified"     # Post-match QA completed by provider
+
 class EventQuality(Enum):
     """
     Data richness/quality level
@@ -193,6 +202,9 @@ class ScoutProEvent:
     #   "missing_fields": [],
     #   "conflicting_fields": []
     # }
+
+    # ====== DATA FRESHNESS ======
+    data_freshness: DataFreshness = DataFreshness.LIVE
 
     # ====== CORRELATION (If merged from multiple providers) ======
     correlation: Optional[Dict[str, Any]] = None

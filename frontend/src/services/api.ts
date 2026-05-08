@@ -990,7 +990,7 @@ class ApiService {
     sortBy: string = 'goals'
   ): Promise<ApiResponse<any>> {
     const params = new URLSearchParams({
-      limit: Math.min(limit, 500).toString(),
+      limit: Math.min(limit, 200).toString(),
       skip: Math.max(skip, 0).toString(),
       sortBy: sortBy,
     });
@@ -1022,7 +1022,7 @@ class ApiService {
 
   async getMatchesEnriched(limit: number = 50, skip: number = 0): Promise<ApiResponse<any>> {
     const params = new URLSearchParams({
-      limit: Math.min(limit, 500).toString(),
+      limit: Math.min(limit, 200).toString(),
       skip: Math.max(skip, 0).toString(),
     });
     return this.request<any>(`/matches/enriched/list?${params.toString()}`);

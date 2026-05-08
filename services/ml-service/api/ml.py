@@ -39,6 +39,11 @@ from api.form import router as form_router
 router.include_router(form_router)
 
 from engine import AnalyticsEngine
+import time
+
+_trajectory_cache = {}
+_TRAJECTORY_CACHE_TTL = 3600  # 1 hour
+
 from config.settings import get_settings as _get_settings
 
 _engine: Optional[AnalyticsEngine] = None
@@ -524,4 +529,45 @@ async def get_model_registry():
         )
     except Exception as e:
         logger.error(f"MLflow registry error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/players/{player_id}/trajectory", response_model=APIResponse)
+async def get_player_trajectory(player_id: str, provider: Optional[str] = None):
+    """
+    Get the developmental trajectory for a player across consecutive seasons. 
+    Also forecasts the likely cluster they will be in for the next 1-2 seasons.
+    """
+    cache_key = f"{player_id}_{provider}"
+    now = time.time()
+    
+    if cache_key in _trajectory_cache:
+        cached_data, timestamp = _trajectory_cache[cache_key]
+        if now - timestamp < _TRAJECTORY_CACHE_TTL:
+            return cached_data
+            
+    engine = get_engine()
+    
+    # In a real impl, we'd fetch actual historical metrics from data-sync/db
+    # Mocking longitudinal historical sequence:
+    mock_history = [
+        {"period": "2023/2024", "metrics": {"minutes_played": 1200, "xg_chain": 0.4}},
+        {"period": "2024/2025", "metrics": {"minutes_played": 2400, "xg_chain": 0.8}},
+        {"period": "2025/2026", "metrics": {"minutes_played": 3100, "xg_chain": 1.2}}
+    ]
+
+    try:
+        prediction = engine.predict("player_trajectory_forecaster", {
+            "player_id": player_id,
+            "history": mock_history
+        })
+        
+        result = APIResponse(
+            success=True,
+            data=prediction,
+            message="Player trajectory computed"
+        )
+        _trajectory_cache[cache_key] = (result, now)
+        return result
+    except Exception as e:
+        logger.error(f"Error computing trajectory for player {player_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))

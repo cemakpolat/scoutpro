@@ -100,7 +100,7 @@ const PerformanceTracker: React.FC = () => {
 
   const { players: contextPlayers } = useData();
   const { data: playerRankings } = useApi(
-    () => apiService.getPlayerRankings('goals', 500),
+    () => apiService.getPlayerRankings('goals', 200),
     [],
   );
 
