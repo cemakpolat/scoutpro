@@ -11,6 +11,8 @@ from algorithms.fatigue import PhysicalFatiguePredictor
 from algorithms.xgot import ExpectedGoalsOnTargetModel
 from algorithms.pitch_control import PitchControlModel
 from algorithms.expected_threat import ExpectedThreatModel
+from algorithms.action_value import VaepActionValueModel
+from algorithms.market_value import MarketValueEstimator
 from algorithms.player_similarity import AdvancedPlayerSimilarityKNN
 from algorithms.trajectory import PlayerTrajectoryModel
 
@@ -43,6 +45,8 @@ class AnalyticsEngine:
         self.register_algorithm("xgot_finishing_model", ExpectedGoalsOnTargetModel())
         self.register_algorithm("pitch_control_nn", PitchControlModel())
         self.register_algorithm("expected_threat_model", ExpectedThreatModel())
+        self.register_algorithm("vaep_action_model", VaepActionValueModel())
+        self.register_algorithm("market_value_estimator", MarketValueEstimator())
         self.register_algorithm("advanced_player_similarity", AdvancedPlayerSimilarityKNN(n_neighbors=5))
         self.register_algorithm("player_trajectory_forecaster", PlayerTrajectoryModel())
 

@@ -135,8 +135,22 @@ async def get_team_insights(team_id: str, handler: AnalyticsHandler = Depends(ge
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.get("/scouting/team/{team_id}", summary="Get team scouting profile")
+async def get_team_scouting_profile(team_id: str, handler: AnalyticsHandler = Depends(get_analytics_handler)):
+    try:
+        return await handler.get_team_insights(team_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/insights/player/{player_id}", summary="Get player insights")
 async def get_player_insights(player_id: str, handler: AnalyticsHandler = Depends(get_analytics_handler)):
+    try:
+        return await handler.get_player_insights(player_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/scouting/player/{player_id}", summary="Get player scouting profile")
+async def get_player_scouting_profile(player_id: str, handler: AnalyticsHandler = Depends(get_analytics_handler)):
     try:
         return await handler.get_player_insights(player_id)
     except Exception as e:

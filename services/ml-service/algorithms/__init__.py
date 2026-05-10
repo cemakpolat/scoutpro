@@ -16,6 +16,8 @@ from .timeseries import TimeSeriesForecaster
 from .xgot import ExpectedGoalsOnTargetModel
 from .pitch_control import PitchControlModel
 from .expected_threat import ExpectedThreatModel
+from .action_value import VaepActionValueModel
+from .market_value import MarketValueEstimator
 
 __all__ = [
     "MLAlgorithm",
@@ -31,4 +33,6 @@ __all__ = [
     "ExpectedGoalsOnTargetModel",
     "PitchControlModel",
     "ExpectedThreatModel",
+    "VaepActionValueModel",
+    "MarketValueEstimator",
 ]

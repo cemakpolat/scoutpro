@@ -258,6 +258,10 @@ class ApiService {
     return this.request<any[]>('/market/predictions');
   }
 
+  async getMarketValuations(): Promise<ApiResponse<any[]>> {
+    return this.request<any[]>('/market/valuations');
+  }
+
   // Notification endpoints
   async getNotifications(): Promise<ApiResponse<Notification[]>> {
     return this.request<Notification[]>('/notifications');
@@ -715,8 +719,20 @@ class ApiService {
     return this.request<any>(`/v2/analytics/insights/team/${teamId}`);
   }
 
+  async getTeamScoutingProfile(teamId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/scouting/team/${teamId}`);
+  }
+
   async getPlayerInsightsAdvanced(playerId: string): Promise<ApiResponse<any>> {
     return this.request<any>(`/v2/analytics/insights/player/${playerId}`);
+  }
+
+  async getPlayerScoutingProfile(playerId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/v2/analytics/scouting/player/${playerId}`);
+  }
+
+  async getPlayerMarketValue(playerId: string): Promise<ApiResponse<any>> {
+    return this.request<any>(`/ml/players/${playerId}/market-value`);
   }
 
   async getPlayerSequenceInsights(playerId: string): Promise<ApiResponse<any>> {

@@ -548,6 +548,361 @@ class AnalyticsHandler:
 
         return 0.0
 
+    @classmethod
+    def _per_90(cls, value: Any, minutes_played: Any) -> float:
+        minutes = cls._to_float(minutes_played)
+        if minutes <= 0:
+            return 0.0
+        return round(cls._to_float(value) * 90.0 / minutes, 2)
+
+    @classmethod
+    def _per_match(cls, value: Any, matches_played: Any) -> float:
+        matches = cls._to_float(matches_played)
+        if matches <= 0:
+            return 0.0
+        return round(cls._to_float(value) / matches, 2)
+
+    @classmethod
+    def _safe_rate(cls, numerator: Any, denominator: Any) -> float:
+        denominator_value = cls._to_float(denominator)
+        if denominator_value <= 0:
+            return 0.0
+        return round(cls._to_float(numerator) / denominator_value * 100.0, 2)
+
+    @staticmethod
+    def _position_group(position: Any) -> str:
+        normalized = str(position or '').strip().lower()
+        if not normalized:
+            return 'outfield'
+        if normalized in {'gk', 'goalkeeper', 'keeper'} or 'goalkeeper' in normalized:
+            return 'goalkeeper'
+        if any(token in normalized for token in ('cb', 'centre-back', 'center-back', 'defender', 'fullback', 'left back', 'right back', 'wing-back', 'wing back')):
+            return 'defender'
+        if any(token in normalized for token in ('dm', 'cm', 'am', 'midfield', 'midfielder')):
+            return 'midfielder'
+        if any(token in normalized for token in ('winger', 'forward', 'striker', 'attacker', 'centre-forward', 'center-forward', 'cf')):
+            return 'forward'
+        return 'outfield'
+
+    @classmethod
+    def _prime_window_for_position(cls, position: Any) -> tuple[int, int]:
+        group = cls._position_group(position)
+        windows = {
+            'goalkeeper': (28, 33),
+            'defender': (25, 30),
+            'midfielder': (24, 29),
+            'forward': (23, 28),
+            'outfield': (24, 29),
+        }
+        return windows.get(group, (24, 29))
+
+    @classmethod
+    def _estimate_market_value_fallback(
+        cls,
+        player: Dict[str, Any],
+        stats: Dict[str, Any],
+        summary: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        age = summary.get('age') or player.get('age') or cls._derive_age(player.get('birth_date') or player.get('birthDate'))
+        goals = cls._to_float(summary.get('goals') or cls._extract_stat_value(stats, 'goals'))
+        assists = cls._to_float(summary.get('assists') or cls._extract_stat_value(stats, 'goal_assist', 'assists'))
+        total_xg = cls._extract_stat_value(stats, 'total_xg', 'xg_total')
+        progressive_passes = cls._extract_stat_value(stats, 'progressive_passes')
+        key_passes = cls._extract_stat_value(stats, 'key_passes')
+        minutes_played = cls._extract_stat_value(stats, 'minutes_played')
+        pass_accuracy = cls._pass_accuracy(stats)
+        position_group = cls._position_group(summary.get('position') or player.get('position'))
+        prime_start, prime_end = cls._prime_window_for_position(summary.get('position') or player.get('position'))
+
+        if age is None:
+            age_factor = 1.0
+        elif age < prime_start:
+            age_factor = 0.82 + max(0, age - 17) * 0.04
+        elif age <= prime_end:
+            age_factor = 1.16
+        else:
+            age_factor = max(0.58, 1.16 - (age - prime_end) * 0.08)
+
+        position_factor = {
+            'forward': 1.18,
+            'midfielder': 1.04,
+            'defender': 0.92,
+            'goalkeeper': 0.78,
+            'outfield': 1.0,
+        }.get(position_group, 1.0)
+        availability_factor = min(1.22, 0.65 + min(minutes_played, 3200.0) / 3200.0 * 0.57)
+        production_score = (
+            goals * 1.8
+            + assists * 1.25
+            + total_xg * 0.95
+            + progressive_passes * 0.05
+            + key_passes * 0.22
+            + pass_accuracy * 0.03
+        )
+        estimate = round(max(0.5, (1.5 + production_score) * age_factor * position_factor * availability_factor), 2)
+
+        if estimate < 5:
+            band = 'developmental'
+        elif estimate < 15:
+            band = 'established'
+        elif estimate < 30:
+            band = 'premium-starter'
+        else:
+            band = 'elite-asset'
+
+        return {
+            'estimateMillionEUR': estimate,
+            'displayValue': f'EUR {estimate:.1f}m',
+            'confidence': round(min(82.0, 55.0 + min(minutes_played, 3200.0) / 3200.0 * 27.0), 1),
+            'band': band,
+            'factors': {
+                'age': age,
+                'positionGroup': position_group,
+                'primeWindow': {'start': prime_start, 'end': prime_end},
+            },
+        }
+
+    @classmethod
+    def _build_development_curve(
+        cls,
+        player: Dict[str, Any],
+        summary: Dict[str, Any],
+        trajectory: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        position = summary.get('position') or player.get('position') or player.get('detailed_position') or player.get('detailedPosition')
+        age = summary.get('age') or player.get('age') or cls._derive_age(player.get('birth_date') or player.get('birthDate'))
+        prime_start, prime_end = cls._prime_window_for_position(position)
+
+        if age is None:
+            phase = 'unknown'
+        elif age < prime_start:
+            phase = 'pre-prime'
+        elif age <= prime_end:
+            phase = 'prime'
+        else:
+            phase = 'post-prime'
+
+        historical = trajectory.get('historical_trajectory') if isinstance(trajectory, dict) else []
+        forecast = trajectory.get('forecast') if isinstance(trajectory, dict) else []
+        current_cluster = historical[-1].get('cluster_name') if historical else None
+        next_cluster = forecast[0].get('predicted_cluster_name') if forecast else None
+
+        return {
+            'age': age,
+            'positionGroup': cls._position_group(position),
+            'phase': phase,
+            'primeWindow': {'start': prime_start, 'end': prime_end},
+            'yearsToPrime': max(prime_start - age, 0) if age is not None else None,
+            'yearsPastPrime': max(age - prime_end, 0) if age is not None else None,
+            'currentCluster': current_cluster,
+            'nextCluster': next_cluster,
+        }
+
+    @classmethod
+    def _build_player_scouting_profile(
+        cls,
+        player: Dict[str, Any],
+        stats: Dict[str, Any],
+        summary: Dict[str, Any],
+        trajectory: Dict[str, Any],
+        valuation: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        minutes_played = cls._extract_stat_value(stats, 'minutes_played')
+        matches_played = cls._extract_stat_value(stats, 'matches_played', 'games_played', 'appearances')
+        goals = cls._to_float(summary.get('goals') or cls._extract_stat_value(stats, 'goals'))
+        assists = cls._to_float(summary.get('assists') or cls._extract_stat_value(stats, 'goal_assist', 'assists'))
+        total_xg = cls._extract_stat_value(stats, 'total_xg', 'xg_total')
+        shots = cls._extract_stat_value(stats, 'shots')
+        key_passes = cls._extract_stat_value(stats, 'key_passes')
+        progressive_passes = cls._extract_stat_value(stats, 'progressive_passes')
+        final_third_entries = cls._extract_stat_value(stats, 'entered_final_third', 'final_third_entries')
+        box_entries = cls._extract_stat_value(stats, 'entered_box', 'box_entries')
+        pressures = cls._extract_stat_value(stats, 'pressures')
+        recoveries = cls._extract_stat_value(stats, 'recoveries', 'ball_recoveries')
+        interceptions = cls._extract_stat_value(stats, 'interceptions', 'total_interceptions')
+        tackles = cls._extract_stat_value(stats, 'tackles', 'total_tackles')
+        high_regains = cls._extract_stat_value(stats, 'high_regains')
+        corners_taken = cls._extract_stat_value(stats, 'total_corners', 'corners')
+        free_kicks_taken = cls._extract_stat_value(stats, 'total_free_kicks_taken')
+        set_play_assists = max(
+            cls._extract_stat_value(stats, 'assists_from_set_play'),
+            cls._extract_stat_value(stats, 'assists_from_corners') + cls._extract_stat_value(stats, 'assists_from_free_kick'),
+        )
+        corner_assists = cls._extract_stat_value(stats, 'assists_from_corners')
+        free_kick_assists = cls._extract_stat_value(stats, 'assists_from_free_kick')
+
+        progression_value = round(
+            cls._per_90(progressive_passes, minutes_played) * 2.6
+            + cls._per_90(final_third_entries, minutes_played) * 2.1
+            + cls._per_90(box_entries, minutes_played) * 4.0,
+            2,
+        )
+        defensive_actions = recoveries + interceptions + tackles
+
+        normalized_valuation = valuation if isinstance(valuation, dict) and valuation.get('estimateMillionEUR') is not None else cls._estimate_market_value_fallback(player, stats, summary)
+
+        return {
+            'chanceProfile': {
+                'goalsPer90': cls._per_90(goals, minutes_played),
+                'xgPer90': cls._per_90(total_xg, minutes_played),
+                'shotsPer90': cls._per_90(shots, minutes_played),
+                'shotConversionPct': cls._safe_rate(goals, shots),
+                'finishingDeltaVsXg': round(goals - total_xg, 2),
+            },
+            'ballProgression': {
+                'progressivePassesPer90': cls._per_90(progressive_passes, minutes_played),
+                'keyPassesPer90': cls._per_90(key_passes, minutes_played),
+                'finalThirdEntriesPer90': cls._per_90(final_third_entries, minutes_played),
+                'boxEntriesPer90': cls._per_90(box_entries, minutes_played),
+                'progressionValuePer90': progression_value,
+            },
+            'defensivePressure': {
+                'pressuresPer90': cls._per_90(pressures, minutes_played),
+                'recoveriesPer90': cls._per_90(recoveries, minutes_played),
+                'defensiveActionsPer90': cls._per_90(defensive_actions, minutes_played),
+                'highRegainsPer90': cls._per_90(high_regains, minutes_played),
+                'pressSuccessRatePct': cls._safe_rate(high_regains, pressures),
+            },
+            'setPieceImpact': {
+                'cornersTakenPer90': cls._per_90(corners_taken, minutes_played),
+                'freeKicksTakenPer90': cls._per_90(free_kicks_taken, minutes_played),
+                'setPlayAssists': int(round(set_play_assists)),
+                'cornerAssists': int(round(corner_assists)),
+                'freeKickAssists': int(round(free_kick_assists)),
+                'setPieceAssistSharePct': cls._safe_rate(set_play_assists, assists),
+            },
+            'developmentCurve': cls._build_development_curve(player, summary, trajectory),
+            'marketValue': normalized_valuation,
+            'sample': {
+                'minutesPlayed': round(minutes_played, 1),
+                'matchesPlayed': int(matches_played),
+            },
+        }
+
+    @classmethod
+    def _build_team_tactical_fingerprint(cls, stats: Dict[str, Any]) -> Dict[str, Any]:
+        matches_played = cls._extract_stat_value(stats, 'matches_played')
+        possession = cls._extract_stat_value(stats, 'possession_percentage')
+        pass_accuracy = cls._pass_accuracy(stats)
+        progressive_passes_per_match = cls._per_match(cls._extract_stat_value(stats, 'progressive_passes'), matches_played)
+        final_third_entries_per_match = cls._per_match(cls._extract_stat_value(stats, 'entered_final_third', 'final_third_entries'), matches_played)
+        pressures_per_match = cls._per_match(cls._extract_stat_value(stats, 'pressures'), matches_played)
+        high_regains_per_match = cls._per_match(cls._extract_stat_value(stats, 'high_regains'), matches_played)
+        xg_against_per_match = cls._per_match(cls._extract_stat_value(stats, 'total_xg_against', 'xg_against_total'), matches_played)
+
+        if possession >= 55 and pass_accuracy >= 82 and progressive_passes_per_match >= 14:
+            primary_style = 'possession-dominant'
+            in_possession = 'structured circulation'
+            out_of_possession = 'counter-press'
+        elif pressures_per_match >= 13 or high_regains_per_match >= 5:
+            primary_style = 'front-foot press'
+            in_possession = 'vertical support play'
+            out_of_possession = 'aggressive regain'
+        elif progressive_passes_per_match >= 16 and possession < 52:
+            primary_style = 'vertical transition'
+            in_possession = 'direct progression'
+            out_of_possession = 'mid-block jump'
+        elif xg_against_per_match <= 1.0 and possession < 50:
+            primary_style = 'low-block control'
+            in_possession = 'selective counters'
+            out_of_possession = 'compact block'
+        else:
+            primary_style = 'balanced hybrid'
+            in_possession = 'mixed build-up'
+            out_of_possession = 'situational press'
+
+        return {
+            'primaryStyle': primary_style,
+            'inPossession': in_possession,
+            'outOfPossession': out_of_possession,
+            'evidence': {
+                'possessionPct': round(possession, 2),
+                'passAccuracyPct': pass_accuracy,
+                'progressivePassesPerMatch': progressive_passes_per_match,
+                'finalThirdEntriesPerMatch': final_third_entries_per_match,
+                'pressuresPerMatch': pressures_per_match,
+                'highRegainsPerMatch': high_regains_per_match,
+            },
+        }
+
+    @classmethod
+    def _build_team_scouting_profile(
+        cls,
+        team: Dict[str, Any],
+        stats: Dict[str, Any],
+        summary: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        matches_played = cls._extract_stat_value(stats, 'matches_played')
+        goals = cls._extract_stat_value(stats, 'goals')
+        total_xg = cls._extract_stat_value(stats, 'total_xg', 'xg_total')
+        total_xg_against = cls._extract_stat_value(stats, 'total_xg_against', 'xg_against_total')
+        shots = cls._extract_stat_value(stats, 'shots')
+        shots_on_target = cls._extract_stat_value(stats, 'shots_on_target')
+        progressive_passes = cls._extract_stat_value(stats, 'progressive_passes')
+        final_third_entries = cls._extract_stat_value(stats, 'entered_final_third', 'final_third_entries')
+        box_entries = cls._extract_stat_value(stats, 'entered_box', 'box_entries')
+        pressures = cls._extract_stat_value(stats, 'pressures')
+        high_regains = cls._extract_stat_value(stats, 'high_regains')
+        corners = cls._extract_stat_value(stats, 'corners', 'total_corners')
+        free_kicks = cls._extract_stat_value(stats, 'total_free_kicks_taken')
+        set_play_assists = max(
+            cls._extract_stat_value(stats, 'assists_from_set_play'),
+            cls._extract_stat_value(stats, 'assists_from_corners') + cls._extract_stat_value(stats, 'assists_from_free_kick'),
+        )
+        chance_control = round(
+            cls._per_match(total_xg, matches_played) - cls._per_match(total_xg_against, matches_played),
+            2,
+        )
+        progression_value = round(
+            cls._per_match(progressive_passes, matches_played) * 0.9
+            + cls._per_match(final_third_entries, matches_played) * 0.45
+            + cls._per_match(box_entries, matches_played) * 1.2,
+            2,
+        )
+        pressures_per_match = cls._per_match(pressures, matches_played)
+
+        if pressures_per_match >= 15:
+            press_intensity = 'high'
+        elif pressures_per_match >= 9:
+            press_intensity = 'medium'
+        else:
+            press_intensity = 'low'
+
+        return {
+            'chanceProfile': {
+                'xgPerMatch': cls._per_match(total_xg, matches_played),
+                'xgAgainstPerMatch': cls._per_match(total_xg_against, matches_played),
+                'shotsPerMatch': cls._per_match(shots, matches_played),
+                'shotAccuracyPct': cls._safe_rate(shots_on_target, shots),
+                'chanceControlDelta': chance_control,
+            },
+            'progressionProfile': {
+                'progressivePassesPerMatch': cls._per_match(progressive_passes, matches_played),
+                'finalThirdEntriesPerMatch': cls._per_match(final_third_entries, matches_played),
+                'boxEntriesPerMatch': cls._per_match(box_entries, matches_played),
+                'progressionValuePerMatch': progression_value,
+            },
+            'pressingProfile': {
+                'pressuresPerMatch': pressures_per_match,
+                'highRegainsPerMatch': cls._per_match(high_regains, matches_played),
+                'pressSuccessRatePct': cls._safe_rate(high_regains, pressures),
+                'pressIntensity': press_intensity,
+            },
+            'setPieceProfile': {
+                'cornersPerMatch': cls._per_match(corners, matches_played),
+                'freeKicksPerMatch': cls._per_match(free_kicks, matches_played),
+                'setPlayAssists': int(round(set_play_assists)),
+                'setPieceAssistSharePct': cls._safe_rate(set_play_assists, goals),
+            },
+            'tacticalFingerprint': cls._build_team_tactical_fingerprint(stats),
+            'teamContext': {
+                'teamName': team.get('name'),
+                'matchesAnalyzed': int(matches_played),
+                'avgGoalsFor': summary.get('avgGoalsFor', 0.0),
+                'avgGoalsAgainst': summary.get('avgGoalsAgainst', 0.0),
+            },
+        }
+
     @staticmethod
     def _bucket_minutes(time_bucket: str) -> int:
         if not time_bucket:
@@ -1777,21 +2132,22 @@ class AnalyticsHandler:
         dashboard = await self.get_team_dashboard(team_id)
         summary = dashboard.get('summary', {})
         team = dashboard.get('team', {})
+        scouting_profile = self._build_team_scouting_profile(team, dashboard.get('statistics', {}), summary)
         insights = [
             {
-                'title': 'Recent Form',
-                'value': ''.join(summary.get('form', [])) or 'N/A',
-                'description': f"Recent results for {team.get('name', team_id)} across the latest tracked matches.",
+                'title': 'Tactical Fingerprint',
+                'value': scouting_profile['tacticalFingerprint']['primaryStyle'],
+                'description': 'Primary style label derived from possession, progression, and pressing output.',
             },
             {
-                'title': 'Attack vs Defence',
-                'value': f"{summary.get('avgGoalsFor', 0)} / {summary.get('avgGoalsAgainst', 0)}",
-                'description': 'Average goals scored and conceded per tracked match.',
+                'title': 'Chance Control',
+                'value': scouting_profile['chanceProfile']['chanceControlDelta'],
+                'description': 'Expected goals created minus expected goals conceded per match.',
             },
             {
-                'title': 'Squad Depth',
-                'value': summary.get('squadSize', 0),
-                'description': 'Number of players currently available in the team read model.',
+                'title': 'Set-Piece Threat',
+                'value': scouting_profile['setPieceProfile']['setPlayAssists'],
+                'description': 'Set-play assists captured by the enriched statistics layer.',
             },
         ]
 
@@ -1800,6 +2156,7 @@ class AnalyticsHandler:
             'team': team,
             'summary': summary,
             'insights': insights,
+            'scoutingProfile': scouting_profile,
             'last_updated': datetime.now().isoformat(),
         }
 
@@ -1807,21 +2164,40 @@ class AnalyticsHandler:
         dashboard = await self.get_player_dashboard(player_id)
         summary = dashboard.get('summary', {})
         player = dashboard.get('player', {})
+        trajectory_payload, valuation_payload = await asyncio.gather(
+            self._get_json(
+                f"{self.ml_service_url}/api/v2/ml/players/{player_id}/trajectory",
+                suppress_statuses=[404],
+            ),
+            self._get_json(
+                f"{self.ml_service_url}/api/v2/ml/players/{player_id}/market-value",
+                suppress_statuses=[404],
+            ),
+        )
+        trajectory = self._unwrap_data(trajectory_payload)
+        valuation = self._unwrap_data(valuation_payload)
+        scouting_profile = self._build_player_scouting_profile(
+            player,
+            dashboard.get('statistics', {}),
+            summary,
+            trajectory if isinstance(trajectory, dict) else {},
+            valuation if isinstance(valuation, dict) else {},
+        )
         insights = [
             {
-                'title': 'Role Projection',
-                'value': player.get('position') or player.get('detailed_position') or player.get('detailedPosition') or 'Unknown',
-                'description': 'Primary role inferred from the canonical player read model.',
+                'title': 'Prime Window',
+                'value': scouting_profile['developmentCurve']['phase'],
+                'description': 'Age-curve phase using position-specific prime windows and trajectory context.',
             },
             {
-                'title': 'Contribution Output',
-                'value': summary.get('goals', 0) + summary.get('assists', 0),
-                'description': 'Combined goals and assists from tracked statistics.',
+                'title': 'Progression Output',
+                'value': scouting_profile['ballProgression']['progressivePassesPer90'],
+                'description': 'Progressive passes per 90 from the enriched player statistics read model.',
             },
             {
-                'title': 'Distribution Quality',
-                'value': summary.get('passAccuracy', 0),
-                'description': 'Pass accuracy derived from tracked player statistics when available.',
+                'title': 'Estimated Market Value',
+                'value': scouting_profile['marketValue']['displayValue'],
+                'description': 'Heuristic valuation enriched with age, production, and availability signals.',
             },
         ]
 
@@ -1830,6 +2206,9 @@ class AnalyticsHandler:
             'player': player,
             'summary': summary,
             'insights': insights,
+            'trajectory': trajectory if isinstance(trajectory, dict) else {},
+            'valuation': scouting_profile['marketValue'],
+            'scoutingProfile': scouting_profile,
             'last_updated': datetime.now().isoformat(),
         }
 

@@ -4,6 +4,7 @@ import { useApi } from '../hooks/useApi';
 import apiService from '../services/api';
 import { Player, AIInsight } from '../types';
 import { deriveAge } from '../utils/dataTransformers';
+import { normalizePhaseLabel, resolveScoutingValuation, type PlayerScoutingPayload } from '../utils/scoutingData';
 import ModelCenterLens from './ModelCenterLens';
 import PlayerDetail from './PlayerDetail';
 import type { ModelCenterContext, ModelCenterTab } from './ModelCenter';
@@ -437,12 +438,35 @@ const buildRecommendationSummary = (player: ScoutingTargetView, positionLabel: s
   return `${lead} ${signals.slice(0, 3).join(', ')} make this profile worth immediate scouting review.`;
 };
 
+const buildScoutingSummary = (
+  player: ScoutingTargetView,
+  positionLabel: string,
+  snapshot?: PlayerScoutingPayload,
+): string => {
+  const phase = normalizePhaseLabel(snapshot?.scoutingProfile?.developmentCurve?.phase);
+  const valuation = resolveScoutingValuation(snapshot)?.displayValue;
+  const progressionValue = toFiniteNumber(snapshot?.scoutingProfile?.ballProgression?.progressionValuePer90);
+
+  if (phase || valuation || progressionValue > 0) {
+    const highlights = [
+      phase ? `${phase} development phase` : null,
+      valuation ? `model value ${valuation}` : null,
+      progressionValue > 0 ? `${progressionValue.toFixed(2)} progression value/90` : null,
+    ].filter((signal): signal is string => Boolean(signal));
+
+    return `${player.club} • ${player.displayPosition}. ${highlights.join(', ')} support this ${positionLabel.toLowerCase()} shortlist case.`;
+  }
+
+  return buildRecommendationSummary(player, positionLabel);
+};
+
 const buildRecommendation = (
   player: ScoutingTargetView,
   score: number,
   positionLabel: string,
   index: number,
   timestamp: string,
+  snapshot?: PlayerScoutingPayload,
 ): AIInsight => {
   const availableSignals = [
     player.rating > 0,
@@ -461,7 +485,7 @@ const buildRecommendation = (
     id: `scouting-reco-${player.id}-${index}`,
     type: 'recommendation',
     title: headline,
-    description: buildRecommendationSummary(player, positionLabel),
+    description: buildScoutingSummary(player, positionLabel, snapshot),
     confidence,
     relatedEntityId: player.id,
     relatedEntityType: 'player',
@@ -470,7 +494,8 @@ const buildRecommendation = (
       club: player.club,
       positionLabel: player.displayPosition,
       ageLabel: player.ageLabel,
-      marketValueLabel: player.marketValueLabel,
+      marketValueLabel: resolveScoutingValuation(snapshot)?.displayValue || player.marketValueLabel,
+      phaseLabel: normalizePhaseLabel(snapshot?.scoutingProfile?.developmentCurve?.phase),
     },
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -483,6 +508,7 @@ const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect, o
   const [ageRange, setAgeRange] = React.useState({ min: 16, max: 45 });
   const [selectedPlayer, setSelectedPlayer] = React.useState<Player | null>(null);
   const [showFeatureLens, setShowFeatureLens] = React.useState(false);
+  const [scoutingSnapshots, setScoutingSnapshots] = React.useState<Record<string, PlayerScoutingPayload>>({});
 
   const selectedPositionOption = React.useMemo(
     () => POSITION_OPTIONS.find((option) => option.value === selectedPosition) || POSITION_OPTIONS[0],
@@ -515,12 +541,45 @@ const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect, o
     [scoutingTargets, selectedPosition]
   );
 
+  React.useEffect(() => {
+    const idsToHydrate = rankedTargets.slice(0, 8).map(({ player }) => player.id).filter((playerId) => !scoutingSnapshots[playerId]);
+    if (!idsToHydrate.length) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    Promise.allSettled(idsToHydrate.map((playerId) => apiService.getPlayerScoutingProfile(playerId)))
+      .then((results) => {
+        if (cancelled) {
+          return;
+        }
+
+        setScoutingSnapshots((current) => {
+          const next = { ...current };
+
+          results.forEach((result, index) => {
+            if (result.status === 'fulfilled' && result.value.success && result.value.data) {
+              next[idsToHydrate[index]] = result.value.data as PlayerScoutingPayload;
+            }
+          });
+
+          return next;
+        });
+      })
+      .catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rankedTargets, scoutingSnapshots]);
+
   const aiRecommendations = React.useMemo<AIInsight[]>(() => {
     const timestamp = new Date().toISOString();
     return rankedTargets.slice(0, 5).map(({ player, score }, index) => (
-      buildRecommendation(player, score, selectedPositionOption.label, index, timestamp)
+      buildRecommendation(player, score, selectedPositionOption.label, index, timestamp, scoutingSnapshots[player.id])
     ));
-  }, [rankedTargets, selectedPositionOption.label]);
+  }, [rankedTargets, scoutingSnapshots, selectedPositionOption.label]);
 
   const aiLoading = targetsLoading;
   const shortlistCount = rankedTargets.filter(({ score }) => score >= 55).length;
@@ -720,6 +779,11 @@ const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect, o
                           <span className="text-xs bg-slate-900/60 text-slate-200 px-2 py-1 rounded">
                             {String(insight.data?.marketValueLabel || 'Value unavailable')}
                           </span>
+                          {insight.data?.phaseLabel ? (
+                            <span className="text-xs bg-cyan-500/10 text-cyan-200 px-2 py-1 rounded">
+                              {String(insight.data.phaseLabel)}
+                            </span>
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -809,6 +873,12 @@ const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect, o
           ) : visibleTargets.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {rankedTargets.map(({ player, score }) => (
+                (() => {
+                  const snapshot = scoutingSnapshots[player.id];
+                  const valuationLabel = resolveScoutingValuation(snapshot)?.displayValue || player.marketValueLabel;
+                  const phaseLabel = normalizePhaseLabel(snapshot?.scoutingProfile?.developmentCurve?.phase);
+
+                  return (
                 <div
                   key={player.id}
                   onClick={() => handlePlayerClick(player.raw)}
@@ -833,7 +903,10 @@ const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect, o
                       </div>
                       <div className="flex items-center flex-wrap gap-2 mt-2">
                         <span className="text-xs bg-blue-900/40 text-blue-300 px-2 py-1 rounded">{player.ageLabel}</span>
-                        <span className="text-xs bg-slate-800 text-slate-300 px-2 py-1 rounded">{player.marketValueLabel}</span>
+                        <span className="text-xs bg-slate-800 text-slate-300 px-2 py-1 rounded">{valuationLabel}</span>
+                        {phaseLabel ? (
+                          <span className="text-xs bg-cyan-500/10 text-cyan-200 px-2 py-1 rounded">{phaseLabel}</span>
+                        ) : null}
                         <span className="text-xs bg-slate-800 text-slate-300 px-2 py-1 rounded">
                           Rating {player.rating > 0 ? player.rating.toFixed(1) : '—'}
                         </span>
@@ -856,6 +929,8 @@ const ScoutingDashboard: React.FC<ScoutingDashboardProps> = ({ onPlayerSelect, o
                     </div>
                   </div>
                 </div>
+                  );
+                })()
               ))}
             </div>
           ) : (

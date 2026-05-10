@@ -40,6 +40,7 @@ router.include_router(form_router)
 
 from engine import AnalyticsEngine
 import time
+from datetime import datetime
 
 _trajectory_cache = {}
 _TRAJECTORY_CACHE_TTL = 3600  # 1 hour
@@ -94,11 +95,106 @@ _ALGORITHM_COLLECTION_MAP = {
     "tactical_role_classifier": "player_statistics",
     "performance_anomaly_detector": "player_statistics",
     "fatigue_risk_predictor": "player_statistics",
+    "market_value_estimator": "player_statistics",
+    "vaep_action_model": "match_events",
 }
 
 def _is_not_fitted_error(prediction: Dict[str, Any]) -> bool:
     msg = str(prediction.get("error", "")).lower()
     return any(phrase in msg for phrase in _NOT_FITTED_PHRASES)
+
+
+def _parse_date_value(value: Any) -> Optional[datetime]:
+    if value in (None, '', 'None'):
+        return None
+    text = str(value).replace('Z', '+00:00')
+    for candidate in (text, text.replace(' ', 'T')):
+        try:
+            parsed = datetime.fromisoformat(candidate)
+            return parsed.replace(tzinfo=None) if parsed.tzinfo is not None else parsed
+        except ValueError:
+            continue
+    return None
+
+
+def _derive_age_from_player(player: Dict[str, Any]) -> Optional[int]:
+    raw_age = player.get('age')
+    if raw_age not in (None, '', 'None'):
+        try:
+            return int(raw_age)
+        except (TypeError, ValueError):
+            pass
+
+    parsed_birth_date = _parse_date_value(
+        player.get('birth_date')
+        or player.get('birthDate')
+        or player.get('date_of_birth')
+    )
+    if not parsed_birth_date:
+        return None
+
+    today = datetime.utcnow()
+    age = today.year - parsed_birth_date.year - ((today.month, today.day) < (parsed_birth_date.month, parsed_birth_date.day))
+    return age if age >= 0 else None
+
+
+def _estimate_contract_years_remaining(player: Dict[str, Any]) -> float:
+    contract = player.get('contract') if isinstance(player.get('contract'), dict) else {}
+    expiry_value = (
+        player.get('contractExpiry')
+        or player.get('contract_expiry')
+        or player.get('contractEnd')
+        or player.get('contract_end')
+        or contract.get('expiryDate')
+    )
+    parsed_expiry = _parse_date_value(expiry_value)
+    if not parsed_expiry:
+        return 2.0
+
+    delta_days = (parsed_expiry.date() - datetime.utcnow().date()).days
+    return round(max(0.0, delta_days / 365.25), 2)
+
+
+def _player_candidate_ids(player_id: str, player: Dict[str, Any]) -> List[str]:
+    candidates: List[str] = []
+
+    def add(candidate: Any) -> None:
+        if candidate in (None, '', 'None'):
+            return
+        normalized = str(candidate).strip()
+        if normalized and normalized not in candidates:
+            candidates.append(normalized)
+
+    add(player_id)
+    provider_ids = player.get('provider_ids') or {}
+    if isinstance(provider_ids, dict):
+        add(provider_ids.get('opta'))
+    add(player.get('uID'))
+    add(player.get('player_id'))
+    add(player.get('id'))
+    return candidates
+
+
+def _stat_value(stats: Dict[str, Any], *keys: str) -> float:
+    for key in keys:
+        value = stats.get(key)
+        if value in (None, '', 'None'):
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def _stat_pass_accuracy(stats: Dict[str, Any]) -> float:
+    direct = _stat_value(stats, 'pass_accuracy', 'passAccuracy')
+    if direct:
+        return round(direct, 2)
+
+    accurate = _stat_value(stats, 'accurate_pass')
+    total = _stat_value(stats, 'total_pass')
+    return round(accurate / total * 100.0, 2) if total > 0 else 0.0
 
 @router.post("/engine/predict/{algorithm_name}", response_model=APIResponse)
 async def predict_with_engine(algorithm_name: str, input_data: Dict[str, Any]):
@@ -496,6 +592,96 @@ async def xg_model_status():
             message="xG model status retrieved",
         )
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/players/{player_id}/market-value", response_model=APIResponse)
+async def get_player_market_value(player_id: str):
+    """Estimate a player's market value from canonical player and statistics documents."""
+    url = os.getenv("MONGODB_URL", "mongodb://root:scoutpro123@mongo:27017/scoutpro")
+
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+
+        client = AsyncIOMotorClient(url, serverSelectionTimeoutMS=5000)
+        db = client.get_default_database()
+
+        player_lookup_values: List[Any] = [player_id]
+        if player_id.isdigit():
+            player_lookup_values.append(int(player_id))
+
+        player = await db["players"].find_one(
+            {
+                "$or": [
+                    {"id": {"$in": player_lookup_values}},
+                    {"player_id": {"$in": player_lookup_values}},
+                    {"uID": {"$in": player_lookup_values}},
+                    {"provider_ids.opta": {"$in": player_lookup_values}},
+                ]
+            },
+            {"_id": 0},
+        )
+
+        if not player:
+            client.close()
+            raise HTTPException(status_code=404, detail=f"Player {player_id} not found")
+
+        stats: Dict[str, Any] = {}
+        for candidate in _player_candidate_ids(player_id, player):
+            stats_lookup_values: List[Any] = [candidate]
+            if candidate.isdigit():
+                stats_lookup_values.append(int(candidate))
+            stats = await db["player_statistics"].find_one(
+                {
+                    "$or": [
+                        {"playerID": {"$in": stats_lookup_values}},
+                        {"player_id": {"$in": stats_lookup_values}},
+                        {"playerId": {"$in": stats_lookup_values}},
+                    ]
+                },
+                {"_id": 0},
+            ) or {}
+            if stats:
+                break
+
+        client.close()
+
+        features = {
+            'player_id': player_id,
+            'player_name': player.get('name'),
+            'position': player.get('position') or player.get('detailed_position') or player.get('detailedPosition'),
+            'age': _derive_age_from_player(player),
+            'minutes_played': _stat_value(stats, 'minutes_played'),
+            'matches_played': _stat_value(stats, 'matches_played', 'games_played', 'appearances'),
+            'goals': _stat_value(stats, 'goals'),
+            'assists': _stat_value(stats, 'goal_assist', 'assists'),
+            'total_xg': _stat_value(stats, 'total_xg', 'xg_total'),
+            'progressive_passes': _stat_value(stats, 'progressive_passes'),
+            'key_passes': _stat_value(stats, 'key_passes'),
+            'pressures': _stat_value(stats, 'pressures'),
+            'tackles': _stat_value(stats, 'tackles', 'total_tackles'),
+            'interceptions': _stat_value(stats, 'interceptions', 'total_interceptions'),
+            'pass_accuracy': _stat_pass_accuracy(stats),
+            'contract_years_remaining': _estimate_contract_years_remaining(player),
+        }
+        prediction = get_engine().predict('market_value_estimator', features)
+        if isinstance(prediction, dict) and 'error' in prediction:
+            raise HTTPException(status_code=400, detail=prediction['error'])
+
+        return APIResponse(
+            success=True,
+            data={
+                **prediction,
+                'player_id': player_id,
+                'player_name': player.get('name'),
+                'position': features['position'],
+            },
+            message='Player market value estimated',
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Market value estimation failed for player {player_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

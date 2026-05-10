@@ -399,6 +399,48 @@ const ALGORITHM_CATALOG = [
     },
   },
   {
+    id: 'vaep_action_model',
+    aliases: ['vaep-action-model', 'vaep-lite'],
+    name: 'VAEP Action Model',
+    type: 'Action Valuation',
+    description: 'VAEP-style event valuation for passes, carries, shots, and defensive actions.',
+    accuracy: 73.8,
+    speed: 'Fast',
+    interpretability: 'Medium',
+    bestFor: ['Action Value', 'Possession Impact'],
+    parameters: {
+      trainer: 'Heuristic Action Valuation',
+      source: 'match_events',
+    },
+    train: {
+      endpoint: '/api/v2/ml/engine/train/vaep_action_model',
+      supportedDatasetIds: ['ds-match-events'],
+      recommendedDatasetId: 'ds-match-events',
+      buildBody: (dataset) => ({ collection: dataset?.collection || 'match_events' }),
+    },
+  },
+  {
+    id: 'market_value_estimator',
+    aliases: ['market-value-estimator', 'market-value-model'],
+    name: 'Market Value Estimator',
+    type: 'Valuation Model',
+    description: 'Transfer-value estimator blending age, production, availability, and contract runway.',
+    accuracy: 76.1,
+    speed: 'Fast',
+    interpretability: 'Medium',
+    bestFor: ['Recruitment Valuation', 'Asset Prioritisation'],
+    parameters: {
+      trainer: 'Heuristic Regression',
+      source: 'player_statistics',
+    },
+    train: {
+      endpoint: '/api/v2/ml/engine/train/market_value_estimator',
+      supportedDatasetIds: ['ds-player-statistics'],
+      recommendedDatasetId: 'ds-player-statistics',
+      buildBody: (dataset) => ({ collection: dataset?.collection || 'player_statistics' }),
+    },
+  },
+  {
     id: 'advanced_player_similarity',
     aliases: ['advanced-player-similarity'],
     name: 'Advanced Player Similarity',
@@ -527,6 +569,14 @@ function inferAlgorithmEventFamilies(entry) {
     families.push('spatial');
   }
 
+  if (algorithmId.includes('vaep')) {
+    families.push('possession', 'defending');
+  }
+
+  if (algorithmId.includes('market') || algorithmId.includes('value')) {
+    families.push('player_form');
+  }
+
   if (algorithmId.includes('clustering') || algorithmId.includes('similarity')) {
     families.push('player_form');
   }
@@ -565,6 +615,14 @@ function inferAlgorithmTemporalScopes(entry) {
 
   if (algorithmId.includes('threat') || algorithmId.includes('pitch')) {
     scopes.push('sequence_window');
+  }
+
+  if (algorithmId.includes('vaep')) {
+    scopes.push('single_event', 'sequence_window');
+  }
+
+  if (algorithmId.includes('market') || algorithmId.includes('value')) {
+    scopes.push('historical_snapshot');
   }
 
   if (algorithmId.includes('outcome') || algorithmId.includes('match')) {

@@ -78,6 +78,8 @@ router.get('/', (req, res) => {
       overview: '/api/v2/analytics/dashboard/overview',
       teamDashboard: '/api/v2/analytics/dashboard/team/:team_id',
       playerDashboard: '/api/v2/analytics/dashboard/player/:player_id',
+      scoutingTeam: '/api/v2/analytics/scouting/team/:team_id',
+      scoutingPlayer: '/api/v2/analytics/scouting/player/:player_id',
       leagueTrends: '/api/v2/analytics/trends/league',
       playerRankings: '/api/v2/analytics/rankings/players',
       teamRankings: '/api/v2/analytics/rankings/teams',

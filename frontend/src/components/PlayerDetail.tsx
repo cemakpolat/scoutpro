@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { ArrowLeft, MapPin, Calendar, DollarSign, TrendingUp, Activity, Shield, Target, Zap, Users, Loader2, Download } from 'lucide-react';
 import apiService from '../services/api';
 import { deriveAge } from '../utils/dataTransformers';
+import { formatMarketValueCompact, normalizePhaseLabel, resolveScoutingValuation, type MarketValueEstimate, type PlayerScoutingPayload } from '../utils/scoutingData';
 import type { ModelCenterContext, ModelCenterTab } from './ModelCenter';
 
 interface Player {
@@ -84,10 +85,6 @@ interface InsightItem {
   value?: string | number;
   impact?: string;
   description?: string;
-}
-
-interface PlayerInsightsData {
-  insights: InsightItem[];
 }
 
 interface ExpectedMetricsData {
@@ -330,7 +327,7 @@ const normalizeHeatmap = (value: unknown): HeatmapData | null => {
 
 const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBack, onOpenModelCenter }) => {
   const [player, setPlayer] = useState(initialPlayer);
-  const [insights, setInsights] = useState<PlayerInsightsData | null>(null);
+  const [insights, setInsights] = useState<PlayerScoutingPayload | null>(null);
   const [isLoading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [, setEnhancedStats] = useState<unknown>(null);
@@ -340,6 +337,7 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
   const [sequenceInsights, setSequenceInsights] = useState<SequenceInsightsData | null>(null);
   const [formData, setFormData] = useState<FormDataSnapshot | null>(null);
   const [mlPredictions, setMlPredictions] = useState<MlPredictionsData | null>(null);
+  const [valuation, setValuation] = useState<MarketValueEstimate | null>(null);
 
   useEffect(() => {
     const fetchDetails = async () => {
@@ -348,9 +346,14 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
         const internalPlayerId = String(initialPlayer.id);
 
         // Fetch advanced player insights from API
-        const insightsRes = await apiService.getPlayerInsightsAdvanced(internalPlayerId);
+        const insightsRes = await apiService.getPlayerScoutingProfile(internalPlayerId);
         if (insightsRes.success && insightsRes.data) {
-          setInsights(insightsRes.data as PlayerInsightsData);
+          const scoutingPayload = insightsRes.data as PlayerScoutingPayload;
+          setInsights(scoutingPayload);
+          const inlineValuation = resolveScoutingValuation(scoutingPayload);
+          if (inlineValuation) {
+            setValuation(inlineValuation);
+          }
         }
 
         // Fetch full player data first so event analytics can use the provider ID namespace.
@@ -367,10 +370,11 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
 
         // Single bundle call: replaces 5 separate analytics requests.
         // First call computes and persists to MongoDB; subsequent calls return instantly.
-        const [bundleRes, formRes, sequenceRes] = await Promise.allSettled([
+        const [bundleRes, formRes, sequenceRes, valuationRes] = await Promise.allSettled([
           apiService.getPlayerAnalyticsBundle(eventAnalyticsPlayerId),
           fetch(`/api/ml/form/${internalPlayerId}`).then(r => r.json()).catch(() => null),
           apiService.getPlayerSequenceInsights(internalPlayerId),
+          apiService.getPlayerMarketValue(internalPlayerId),
         ]);
 
         if (bundleRes.status === 'fulfilled' && bundleRes.value.data) {
@@ -388,6 +392,10 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
 
         if (sequenceRes.status === 'fulfilled' && sequenceRes.value.data) {
           setSequenceInsights(sequenceRes.value.data as SequenceInsightsData);
+        }
+
+        if (valuationRes.status === 'fulfilled' && valuationRes.value.success && valuationRes.value.data) {
+          setValuation(valuationRes.value.data as MarketValueEstimate);
         }
 
         // ML Predictions — use real computed values from bundle
@@ -572,6 +580,44 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
     expectedMetrics && (expectedMetrics.xg > 0 || expectedMetrics.xa > 0 || expectedMetrics.shotsWithXg > 0 || expectedMetrics.passesWithXa > 0)
   );
   const expectedSummary = expectedMetricsHasSignal ? expectedMetrics : null;
+  const scoutingProfile = insights?.scoutingProfile ?? null;
+  const resolvedValuation = valuation ?? resolveScoutingValuation(insights);
+  const resolvedMarketValueLabel = resolvedValuation?.displayValue || (player.marketValue ? formatMarketValueCompact(player.marketValue) : '—');
+  const progressionValuePer90 = pickPreferredNumber(scoutingProfile?.ballProgression?.progressionValuePer90);
+  const progressivePassesPer90 = pickPreferredNumber(scoutingProfile?.ballProgression?.progressivePassesPer90);
+  const pressSuccessRate = pickPreferredNumber(scoutingProfile?.defensivePressure?.pressSuccessRatePct);
+  const setPlayAssists = pickPreferredNumber(scoutingProfile?.setPieceImpact?.setPlayAssists);
+  const valuationConfidence = pickPreferredNumber(resolvedValuation?.confidence);
+  const primePhaseLabel = normalizePhaseLabel(scoutingProfile?.developmentCurve?.phase);
+  const primeWindow = scoutingProfile?.developmentCurve?.primeWindow as { start?: unknown; end?: unknown } | undefined;
+  const trajectoryForecastLabel = typeof scoutingProfile?.developmentCurve?.nextCluster === 'string'
+    ? scoutingProfile.developmentCurve.nextCluster
+    : typeof (insights?.trajectory as { forecast?: Array<{ predicted_cluster_name?: string }> } | undefined)?.forecast?.[0]?.predicted_cluster_name === 'string'
+      ? (insights?.trajectory as { forecast?: Array<{ predicted_cluster_name?: string }> }).forecast?.[0]?.predicted_cluster_name || null
+      : null;
+  const scoutingSignalRows = [
+    resolvedValuation ? { label: 'Model Value', value: resolvedMarketValueLabel } : null,
+    primePhaseLabel ? { label: 'Prime Phase', value: primePhaseLabel } : null,
+    primeWindow?.start !== undefined && primeWindow?.end !== undefined
+      ? { label: 'Prime Window', value: `${primeWindow.start}-${primeWindow.end}` }
+      : null,
+    progressionValuePer90 != null && progressionValuePer90 > 0
+      ? { label: 'Progression Value /90', value: progressionValuePer90.toFixed(2) }
+      : null,
+    progressivePassesPer90 != null && progressivePassesPer90 > 0
+      ? { label: 'Progressive Passes /90', value: progressivePassesPer90.toFixed(2) }
+      : null,
+    pressSuccessRate != null && pressSuccessRate > 0
+      ? { label: 'Press Success', value: `${pressSuccessRate.toFixed(1)}%` }
+      : null,
+    setPlayAssists != null && setPlayAssists > 0
+      ? { label: 'Set-Play Assists', value: String(setPlayAssists) }
+      : null,
+    trajectoryForecastLabel ? { label: 'Trajectory', value: trajectoryForecastLabel } : null,
+    valuationConfidence != null && valuationConfidence > 0
+      ? { label: 'Valuation Confidence', value: `${valuationConfidence.toFixed(1)}%` }
+      : null,
+  ].filter((row): row is { label: string; value: string } => Boolean(row));
   const fallbackInsights: InsightItem[] = [
     {
       title: 'Profile Snapshot',
@@ -713,7 +759,7 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm font-medium text-slate-400">Market Value</p>
-                <p className="text-2xl font-bold text-white">{player.marketValue || '—'}</p>
+                <p className="text-2xl font-bold text-white">{resolvedMarketValueLabel}</p>
               </div>
               <DollarSign className="w-8 h-8 text-green-500" />
             </div>
@@ -832,6 +878,20 @@ const PlayerDetail: React.FC<PlayerDetailProps> = ({ player: initialPlayer, onBa
                   </div>
                   );
                 })}
+              </div>
+            )}
+
+            {scoutingSignalRows.length > 0 && (
+              <div className="mt-4 space-y-2">
+                <h4 className="text-sm font-medium text-slate-400 mb-2">Scouting Profile</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {scoutingSignalRows.map((signal) => (
+                    <div key={signal.label} className="rounded-lg border border-cyan-500/20 bg-cyan-500/5 px-3 py-3">
+                      <div className="text-xs uppercase tracking-wide text-slate-400">{signal.label}</div>
+                      <div className="mt-1 text-sm font-medium text-cyan-100">{signal.value}</div>
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
 

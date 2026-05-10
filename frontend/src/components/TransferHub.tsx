@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   DollarSign, TrendingUp, TrendingDown, AlertTriangle, Clock,
   Calendar, Eye, Download, RefreshCw
@@ -6,17 +6,23 @@ import {
 import { exportService } from '../services/exportService';
 import { useData } from '../context/DataContext';
 import apiService from '../services/api';
+import {
+  dedupeByPlayerId,
+  formatMarketValueCompact,
+  normalizePhaseLabel,
+  parseMarketValueToNumber,
+  resolveClubName,
+  resolveContractExpiry,
+  resolvePlayerId,
+  resolvePositionLabel,
+  resolveScoutingValuation,
+  toFiniteNumber,
+  type MarketValueEstimate,
+  type PlayerScoutingPayload,
+} from '../utils/scoutingData';
 
 const formatCurrency = (value: unknown): string => {
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return `€${Math.round(value / 1000000)}M`;
-  }
-
-  if (typeof value === 'string' && value.trim()) {
-    return value;
-  }
-
-  return 'N/A';
+  return formatMarketValueCompact(value);
 };
 
 const formatPercent = (value: unknown): number => {
@@ -28,76 +34,268 @@ const formatPercent = (value: unknown): number => {
   return Number.isFinite(parsed) ? (parsed > 1 ? parsed : Math.round(parsed * 100)) : 0;
 };
 
+interface HydratedTransferPlayer {
+  id: string;
+  player: Record<string, any>;
+  profile: PlayerScoutingPayload | null;
+  valuation: MarketValueEstimate | null;
+  currentValueNumeric: number;
+  currentValueLabel: string;
+  club: string;
+  position: string;
+  contractExpiry: string | null;
+}
+
+const getExpirySortValue = (value: string | null): number => {
+  if (!value) {
+    return Number.POSITIVE_INFINITY;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : Number.POSITIVE_INFINITY;
+};
+
+const buildHydratedTransferPlayer = (
+  player: Record<string, any>,
+  profile: PlayerScoutingPayload | null,
+): HydratedTransferPlayer | null => {
+  const id = resolvePlayerId(player);
+  if (!id) {
+    return null;
+  }
+
+  const valuation = resolveScoutingValuation(profile);
+  const currentValueRaw = player.marketValue ?? player.currentValue ?? player.value ?? player.estimatedFee;
+
+  return {
+    id,
+    player,
+    profile,
+    valuation,
+    currentValueNumeric: parseMarketValueToNumber(currentValueRaw),
+    currentValueLabel: formatCurrency(currentValueRaw),
+    club: resolveClubName(player),
+    position: resolvePositionLabel(player),
+    contractExpiry: resolveContractExpiry(player),
+  };
+};
+
 const TransferHub: React.FC = () => {
   const [selectedTab, setSelectedTab] = useState('market-watch');
   const [loading, setLoading] = useState(true);
   const [apiMarketTrends, setApiMarketTrends] = useState<any[]>([]);
   const [apiPredictions, setApiPredictions] = useState<any[]>([]);
   const [marketError, setMarketError] = useState('');
+  const [hydratedPlayers, setHydratedPlayers] = useState<HydratedTransferPlayer[]>([]);
 
   const { players: contextPlayers } = useData();
 
-  const loadMarketData = () => {
+  const loadMarketData = React.useCallback(async () => {
     setLoading(true);
     setMarketError('');
 
-    Promise.all([
-      apiService.getMarketTrends(),
-      apiService.getTransferPredictions(),
-    ]).then(([trends, predictions]) => {
-      setApiMarketTrends(trends.data || []);
-      setApiPredictions(predictions.data || []);
-    }).catch((error) => {
+    try {
+      const [trends, predictions, valuations] = await Promise.all([
+        apiService.getMarketTrends(),
+        apiService.getTransferPredictions(),
+        apiService.getMarketValuations(),
+      ]);
+
+      setApiMarketTrends(Array.isArray(trends.data) ? trends.data : []);
+      setApiPredictions(Array.isArray(predictions.data) ? predictions.data : []);
+
+      const expiringPlayers = [...contextPlayers]
+        .filter((player: any) => Boolean(resolveContractExpiry(player)))
+        .sort((left: any, right: any) => getExpirySortValue(resolveContractExpiry(left)) - getExpirySortValue(resolveContractExpiry(right)))
+        .slice(0, 8);
+
+      const valuationPlayers = Array.isArray(valuations.data) ? valuations.data : [];
+      const seedPlayers = dedupeByPlayerId([
+        ...valuationPlayers,
+        ...(expiringPlayers as Array<Record<string, any>>),
+      ]).slice(0, 18);
+
+      const scoutingResults = await Promise.allSettled(
+        seedPlayers.map(async (player) => {
+          const playerId = resolvePlayerId(player);
+          if (!playerId) {
+            return buildHydratedTransferPlayer(player, null);
+          }
+
+          const scoutingRes = await apiService.getPlayerScoutingProfile(playerId);
+          const profile = scoutingRes.success && scoutingRes.data
+            ? scoutingRes.data as PlayerScoutingPayload
+            : null;
+
+          return buildHydratedTransferPlayer(player, profile);
+        })
+      );
+
+      setHydratedPlayers(
+        scoutingResults.flatMap((result) => (
+          result.status === 'fulfilled' && result.value ? [result.value] : []
+        ))
+      );
+    } catch (error) {
       console.error('Failed to load transfer hub data:', error);
       setApiMarketTrends([]);
       setApiPredictions([]);
+      setHydratedPlayers([]);
       setMarketError('Transfer market data is unavailable right now.');
-    }).finally(() => setLoading(false));
-  };
+    } finally {
+      setLoading(false);
+    }
+  }, [contextPlayers]);
 
   useEffect(() => {
-    loadMarketData();
-  }, []);
+    void loadMarketData();
+  }, [loadMarketData]);
 
-  const transferRumors = apiPredictions.slice(0, 5).map((p: any) => ({
-        player: p.playerName || p.name || 'Unknown Player',
-        currentClub: p.currentClub || p.fromClub || 'Unknown',
-        targetClub: p.targetClub || p.toClub || 'TBD',
-        probability: formatPercent(p.probability || p.confidence || 0),
-        value: formatCurrency(p.estimatedFee || p.value),
-        status: formatPercent(p.probability || p.confidence || 0) > 70 ? 'hot' : formatPercent(p.probability || p.confidence || 0) > 40 ? 'warm' : 'cold',
-        deadline: p.deadline || '2026-06-30',
-        sources: p.sources || ['ScoutPro AI'],
+  const hydratedPlayersById = useMemo(
+    () => new Map(hydratedPlayers.map((entry) => [entry.id, entry])),
+    [hydratedPlayers]
+  );
+
+  const hydratedPlayersByName = useMemo(
+    () => new Map(
+      hydratedPlayers
+        .map((entry) => [String(entry.player.name || entry.profile?.player?.name || '').trim().toLowerCase(), entry] as const)
+        .filter(([name]) => Boolean(name))
+    ),
+    [hydratedPlayers]
+  );
+
+  const transferRumors = useMemo(() => apiPredictions.slice(0, 5).map((prediction: any) => {
+    const playerName = String(prediction.playerName || prediction.name || 'Unknown Player');
+    const matchedPlayer = hydratedPlayersByName.get(playerName.trim().toLowerCase());
+    const matchedValuation = matchedPlayer?.valuation;
+    const scoutingPhase = normalizePhaseLabel(matchedPlayer?.profile?.scoutingProfile?.developmentCurve?.phase);
+
+    return {
+      player: playerName,
+      currentClub: prediction.currentClub || prediction.fromClub || matchedPlayer?.club || 'Unknown',
+      targetClub: prediction.targetClub || prediction.toClub || 'TBD',
+      probability: formatPercent(prediction.probability || prediction.confidence || matchedValuation?.confidence || 0),
+      value: matchedValuation?.displayValue || formatCurrency(prediction.estimatedFee || prediction.value),
+      status: formatPercent(prediction.probability || prediction.confidence || matchedValuation?.confidence || 0) > 70 ? 'hot' : formatPercent(prediction.probability || prediction.confidence || matchedValuation?.confidence || 0) > 40 ? 'warm' : 'cold',
+      deadline: prediction.deadline || prediction.window || '2026-06-30',
+      sources: prediction.sources || ['ScoutPro AI'],
+      scoutingSignal: scoutingPhase || matchedValuation?.band || null,
+      dataSource: matchedPlayer ? 'Scouting profile' : 'Backend prediction',
+    };
+  }), [apiPredictions, hydratedPlayersByName]);
+
+  const valuationDrivenTrends = useMemo(() => {
+    if (!hydratedPlayers.length) {
+      return [];
+    }
+
+    const grouped = new Map<string, { currentTotal: number; projectedTotal: number; count: number }>();
+
+    hydratedPlayers.forEach((entry) => {
+      const key = entry.position || 'Unknown';
+      const group = grouped.get(key) || { currentTotal: 0, projectedTotal: 0, count: 0 };
+      const projectedValue = entry.valuation?.estimateMillionEUR
+        ? entry.valuation.estimateMillionEUR * 1_000_000
+        : parseMarketValueToNumber(entry.valuation?.displayValue);
+      group.currentTotal += entry.currentValueNumeric;
+      group.projectedTotal += projectedValue || entry.currentValueNumeric;
+      group.count += 1;
+      grouped.set(key, group);
+    });
+
+    return Array.from(grouped.entries())
+      .map(([position, values]) => {
+        const averageCurrent = values.count > 0 ? values.currentTotal / values.count : 0;
+        const averageProjected = values.count > 0 ? values.projectedTotal / values.count : 0;
+        const changePct = averageCurrent > 0
+          ? ((averageProjected - averageCurrent) / averageCurrent) * 100
+          : 0;
+
+        return {
+          position,
+          avgValue: formatCurrency(averageProjected || averageCurrent),
+          change: `${changePct >= 0 ? '+' : ''}${changePct.toFixed(1)}%`,
+          trend: changePct > 0 ? 'up' : changePct < 0 ? 'down' : 'stable',
+        };
+      })
+      .sort((left, right) => parseMarketValueToNumber(right.avgValue) - parseMarketValueToNumber(left.avgValue))
+      .slice(0, 5);
+  }, [hydratedPlayers]);
+
+  const marketTrends = valuationDrivenTrends.length > 0
+    ? valuationDrivenTrends
+    : apiMarketTrends.slice(0, 5).map((trend: any) => ({
+        position: trend.position || trend.name || 'Unknown',
+        avgValue: formatCurrency(trend.currentValue || trend.avgValue || trend.averageValue),
+        change: `${(trend.change || 0) > 0 ? '+' : ''}${Number(trend.change || 0).toFixed(1)}%`,
+        trend: (trend.change || 0) > 0 ? 'up' : (trend.change || 0) < 0 ? 'down' : 'stable',
       }));
 
-  const marketTrends = apiMarketTrends.slice(0, 5).map((t: any) => ({
-        position: t.position || t.name || 'Unknown',
-        avgValue: formatCurrency(t.currentValue || t.avgValue || t.averageValue),
-        change: `${(t.change || 0) > 0 ? '+' : ''}${Number(t.change || 0).toFixed(1)}%`,
-        trend: (t.change || 0) > 0 ? 'up' : (t.change || 0) < 0 ? 'down' : 'stable',
-      }));
-
-  const contractExpirations = contextPlayers.length > 0
-    ? contextPlayers
-        .filter((p: any) => p.contractEnd || p.contractExpiry || p.contract)
+  const contractExpirations = useMemo(() => contextPlayers.length > 0
+    ? [...contextPlayers]
+        .filter((player: any) => Boolean(resolveContractExpiry(player)))
+        .sort((left: any, right: any) => getExpirySortValue(resolveContractExpiry(left)) - getExpirySortValue(resolveContractExpiry(right)))
         .slice(0, 6)
-        .map((p: any) => ({
-          player: p.name,
-          club: p.club || p.team || 'Unknown',
-          expires: p.contractEnd || p.contractExpiry || p.contract || 'Unknown',
-          value: formatCurrency(p.marketValue || p.value),
-          status: new Date(p.contractEnd || p.contractExpiry || '2026-12-31') < new Date('2026-06-30') ? 'critical' : 'expiring',
-        }))
-    : [];
+        .map((player: any) => {
+          const playerId = resolvePlayerId(player);
+          const matchedPlayer = playerId ? hydratedPlayersById.get(playerId) : undefined;
+          const valuation = matchedPlayer?.valuation;
+          const expiry = resolveContractExpiry(player) || 'Unknown';
+          const phase = normalizePhaseLabel(matchedPlayer?.profile?.scoutingProfile?.developmentCurve?.phase);
 
-  const valuationPredictions = apiPredictions.slice(0, 4).map((p: any) => ({
-        player: p.playerName || p.name || 'Player',
-        current: formatCurrency(p.currentValue || p.value),
-        predicted: formatCurrency(p.predictedValue || p.estimatedFee),
-        confidence: formatPercent(p.confidence || p.probability || 0),
-        timeframe: p.timeframe || '12 months',
-        factors: p.factors || ['Performance', 'Age', 'Market Demand'],
-      }));
+          return {
+            player: player.name || 'Unknown Player',
+            club: resolveClubName(player),
+            expires: expiry,
+            value: valuation?.displayValue || formatCurrency(player.marketValue || player.value),
+            status: getExpirySortValue(expiry) < new Date('2026-06-30').getTime() ? 'critical' : 'expiring',
+            phase: phase || matchedPlayer?.valuation?.band || 'Model pending',
+          };
+        })
+    : [], [contextPlayers, hydratedPlayersById]);
+
+  const valuationPredictions = useMemo(() => {
+    if (hydratedPlayers.length > 0) {
+      return [...hydratedPlayers]
+        .filter((entry) => entry.valuation)
+        .sort((left, right) => {
+          const leftValue = left.valuation?.estimateMillionEUR ? left.valuation.estimateMillionEUR * 1_000_000 : parseMarketValueToNumber(left.valuation?.displayValue);
+          const rightValue = right.valuation?.estimateMillionEUR ? right.valuation.estimateMillionEUR * 1_000_000 : parseMarketValueToNumber(right.valuation?.displayValue);
+          return rightValue - leftValue;
+        })
+        .slice(0, 4)
+        .map((entry) => {
+          const phase = normalizePhaseLabel(entry.profile?.scoutingProfile?.developmentCurve?.phase);
+          const nextCluster = typeof entry.profile?.scoutingProfile?.developmentCurve?.nextCluster === 'string'
+            ? entry.profile.scoutingProfile.developmentCurve.nextCluster
+            : null;
+          const progressionValue = toFiniteNumber(entry.profile?.scoutingProfile?.ballProgression?.progressionValuePer90);
+
+          return {
+            player: String(entry.player.name || entry.profile?.player?.name || 'Player'),
+            current: entry.currentValueLabel,
+            predicted: entry.valuation?.displayValue || entry.currentValueLabel,
+            confidence: formatPercent(entry.valuation?.confidence || 0),
+            timeframe: phase === 'Pre Prime' ? 'Next 12 months' : nextCluster || 'Current window',
+            factors: [
+              phase,
+              entry.valuation?.band ? String(entry.valuation.band).replace(/-/g, ' ') : null,
+              progressionValue > 0 ? `${progressionValue.toFixed(2)} progression value/90` : null,
+            ].filter((factor): factor is string => Boolean(factor)),
+          };
+        });
+    }
+
+    return apiPredictions.slice(0, 4).map((prediction: any) => ({
+      player: prediction.playerName || prediction.name || 'Player',
+      current: formatCurrency(prediction.currentValue || prediction.value),
+      predicted: formatCurrency(prediction.predictedValue || prediction.estimatedFee),
+      confidence: formatPercent(prediction.confidence || prediction.probability || 0),
+      timeframe: prediction.timeframe || '12 months',
+      factors: prediction.factors || ['Performance', 'Age', 'Market Demand'],
+    }));
+  }, [apiPredictions, hydratedPlayers]);
 
   const transferAlerts = [
     transferRumors[0]
@@ -130,9 +328,16 @@ const TransferHub: React.FC = () => {
       : null,
   ].filter(Boolean) as Array<{ type: 'rumor' | 'contract' | 'value' | 'deadline'; message: string; time: string }>;
 
-  const totalMarketActivity = apiMarketTrends.reduce((sum, trend) => sum + (Number(trend.currentValue) || 0), 0);
+  const totalMarketActivity = hydratedPlayers.length > 0
+    ? hydratedPlayers.reduce((sum, entry) => {
+        const projectedValue = entry.valuation?.estimateMillionEUR
+          ? entry.valuation.estimateMillionEUR * 1_000_000
+          : parseMarketValueToNumber(entry.valuation?.displayValue);
+        return sum + (projectedValue || entry.currentValueNumeric);
+      }, 0)
+    : apiMarketTrends.reduce((sum, trend) => sum + (Number(trend.currentValue) || 0), 0);
   const averageTransferFee = apiPredictions.length > 0
-    ? apiPredictions.reduce((sum, prediction) => sum + (Number(prediction.estimatedFee) || 0), 0) / apiPredictions.length
+    ? transferRumors.reduce((sum, rumor) => sum + parseMarketValueToNumber(rumor.value), 0) / Math.max(transferRumors.length, 1)
     : 0;
 
   const handleExport = async () => {
@@ -418,9 +623,16 @@ const TransferHub: React.FC = () => {
                   <div className="text-sm text-slate-400">
                     Sources: {rumor.sources.join(', ')}
                   </div>
-                  <span className="rounded bg-slate-600 px-3 py-1 text-xs text-slate-200">
-                    Backend prediction
-                  </span>
+                    <div className="flex items-center gap-2">
+                      {rumor.scoutingSignal ? (
+                        <span className="rounded bg-cyan-500/10 px-3 py-1 text-xs text-cyan-200">
+                          {rumor.scoutingSignal}
+                        </span>
+                      ) : null}
+                      <span className="rounded bg-slate-600 px-3 py-1 text-xs text-slate-200">
+                        {rumor.dataSource}
+                      </span>
+                    </div>
                 </div>
               </div>
             )) : (
@@ -499,6 +711,7 @@ const TransferHub: React.FC = () => {
                   <th className="text-left py-3 px-2">Club</th>
                   <th className="text-left py-3 px-2">Expires</th>
                   <th className="text-left py-3 px-2">Market Value</th>
+                  <th className="text-left py-3 px-2">Scouting Phase</th>
                   <th className="text-left py-3 px-2">Status</th>
                 </tr>
               </thead>
@@ -509,6 +722,7 @@ const TransferHub: React.FC = () => {
                     <td className="py-3 px-2">{contract.club}</td>
                     <td className="py-3 px-2">{contract.expires}</td>
                     <td className="py-3 px-2 font-semibold text-green-400">{contract.value}</td>
+                    <td className="py-3 px-2 text-slate-300">{contract.phase}</td>
                     <td className="py-3 px-2">
                       <span className={`px-2 py-1 rounded text-xs ${
                         contract.status === 'critical' ? 'bg-red-600 text-red-100' :
@@ -520,7 +734,7 @@ const TransferHub: React.FC = () => {
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan={5} className="py-10 text-center text-slate-400">
+                    <td colSpan={6} className="py-10 text-center text-slate-400">
                       No contract expiry data available.
                     </td>
                   </tr>
