@@ -110,7 +110,15 @@ Data Sources (Opta/StatsBomb)
 ### Data Management
 
 ```bash
-./manage.sh seed           # Load sample data (teams, players, matches, events)
+# Auto-detect all years in /data/opta/ and seed
+./manage.sh seed
+
+# Seed specific years
+./manage.sh seed 2018                    # Single year
+./manage.sh seed 2016 2017 2018 2019     # Multiple years in sequence
+
+# Validation & monitoring
+./manage.sh status         # Check container health & data counts
 ./manage.sh validate       # Run end-to-end integration checks
 ```
 
@@ -248,14 +256,48 @@ For hot-reload during development, services with `volumes:` mounted in docker-co
 
 ## 📊 Data Pipeline
 
-The `./manage.sh seed` command runs a 4-phase pipeline:
+### Seeding Data with `./manage.sh seed`
+
+The seed command runs a 4-phase pipeline to load and process data:
 
 1. **Phase 1** - Load teams, players, matches (Opta F1/F40 files)
 2. **Phase 2** - Load match events (Opta F24 files)
 3. **Phase 3** - Load match events (StatsBomb CSV files)
 4. **Phase 4** - Compute aggregated statistics (player/team performance)
 
-Sample data location: `./data/opta/` and `./data/statsbomb/`
+#### Usage
+
+```bash
+# Auto-detect all year folders in /data/opta/ and seed them
+./manage.sh seed
+
+# Seed a single specific year
+./manage.sh seed 2019
+
+# Seed multiple years in order
+./manage.sh seed 2016 2017 2018 2019
+
+# Seed multiple years (any order)
+./manage.sh seed 2019 2018 2017
+```
+
+#### Features
+
+- ✅ **Multi-year support** - Automatically processes all year folders: 2016, 2017, 2018, 2019, etc.
+- ✅ **Error reporting** - Shows parsing errors per year and phase with actionable fix instructions
+- ✅ **Resumable** - Can retry failed years without reseeding successful ones
+- ✅ **Auto-detection** - `./manage.sh seed` scans `/data/opta/` for year folders
+
+#### Example: Adding New Data
+
+To add data for a new year:
+
+1. Create folder: `mkdir -p data/opta/2020`
+2. Place Opta F1, F9, F24, F40 XML files in that folder
+3. Place StatsBomb JSON files in a `statsbomb/` subfolder
+4. Run: `./manage.sh seed 2020` (will auto-detect and process)
+
+Data location: `./data/opta/{year}/` and `./data/statsbomb/`
 
 ## 🤝 Contributing
 
