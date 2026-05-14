@@ -32,3 +32,8 @@ __pycache__
 *.pyd
 .venv
 venv
+
+# Data folders (large Opta files)
+data/opta/2016/
+data/opta/2017/
+data/opta/2018/
