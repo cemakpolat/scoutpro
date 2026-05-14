@@ -32,13 +32,40 @@ export default defineConfig({
           if (id.includes('node_modules/recharts') || id.includes('node_modules/d3')) {
             return 'vendor-charts';
           }
+          // Vendor: Export/report generation
+          if (id.includes('node_modules/jspdf') || id.includes('node_modules/jspdf-autotable')) {
+            return 'vendor-pdf';
+          }
+          if (
+            id.includes('node_modules/html2canvas')
+            || id.includes('node_modules/stackblur-canvas')
+            || id.includes('node_modules/css-line-break')
+            || id.includes('node_modules/text-segmentation')
+          ) {
+            return 'vendor-capture';
+          }
           // Vendor: Other large libs
           if (id.includes('node_modules/lucide-react')) {
             return 'vendor-icons';
           }
-          // Feature: Analytics & ML
-          if (id.includes('/components/AnalyticsDashboard') || id.includes('/components/PerformanceTracker') || id.includes('/components/MLLaboratory')) {
-            return 'feature-analytics';
+          // Feature: Keep heavy top-level pages in isolated async chunks.
+          if (id.includes('/components/AnalyticsDashboard')) {
+            return 'feature-analytics-dashboard';
+          }
+          if (id.includes('/components/MLLaboratory')) {
+            return 'feature-ml-lab';
+          }
+          if (id.includes('/components/PerformanceTracker')) {
+            return 'feature-performance';
+          }
+          if (id.includes('/components/ModelCenter')) {
+            return 'feature-model-center';
+          }
+          if (id.includes('/components/TransferHub')) {
+            return 'feature-transfer';
+          }
+          if (id.includes('/components/ScoutingDashboard')) {
+            return 'feature-scouting';
           }
           // Feature: Video & Tactical
           if (id.includes('/components/VideoAnalysis') || id.includes('/components/TacticalAnalyzer')) {

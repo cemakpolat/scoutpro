@@ -531,14 +531,19 @@ services:
     environment:
       - MONGODB_URL=mongodb://root:${MONGO_ROOT_PASSWORD:-scoutpro123}@mongo:27017/scoutpro?authSource=admin
       - TIMESCALEDB_URL=postgresql://scoutpro:${TIMESCALE_PASSWORD:-scoutpro123}@timescaledb:5432/scoutpro
+      - DATA_SYNC_SERVICE_URL=http://data-sync-service:8012
+      - DATA_ROOT_PATTERN=/data/opta/{year}
     depends_on:
       mongo:
         condition: service_started
       timescaledb:
         condition: service_started
+      data-sync-service:
+        condition: service_started
     volumes:
       - ./services/batch-data-manager:/app
       - ./services/shared:/app/shared
+      - ./data:/data:ro
     networks:
       - scoutpro-network
     restart: unless-stopped

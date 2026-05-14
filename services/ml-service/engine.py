@@ -63,6 +63,14 @@ class AnalyticsEngine:
         import pymongo
         if name not in self.algorithms:
             return {"error": f"Algorithm '{name}' not registered"}
+        algorithm = self.algorithms[name]
+        if hasattr(algorithm, "train_from_mongo"):
+            return algorithm.train_from_mongo(
+                mongodb_url,
+                database=database,
+                collection=collection,
+                target_field=target_field,
+            )
         if target_field and hasattr(self.algorithms[name], "target_field"):
             self.algorithms[name].target_field = target_field
         client = pymongo.MongoClient(mongodb_url)

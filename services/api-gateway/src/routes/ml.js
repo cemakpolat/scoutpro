@@ -403,13 +403,13 @@ const ALGORITHM_CATALOG = [
     aliases: ['vaep-action-model', 'vaep-lite'],
     name: 'VAEP Action Model',
     type: 'Action Valuation',
-    description: 'VAEP-style event valuation for passes, carries, shots, and defensive actions.',
+    description: 'Supervised action-value regressor for passes, carries, shots, and defensive actions, with heuristic fallback until a trained artifact is available.',
     accuracy: 73.8,
     speed: 'Fast',
     interpretability: 'Medium',
     bestFor: ['Action Value', 'Possession Impact'],
     parameters: {
-      trainer: 'Heuristic Action Valuation',
+      trainer: 'GradientBoostingRegressor + DictVectorizer',
       source: 'match_events',
     },
     train: {
@@ -424,14 +424,14 @@ const ALGORITHM_CATALOG = [
     aliases: ['market-value-estimator', 'market-value-model'],
     name: 'Market Value Estimator',
     type: 'Valuation Model',
-    description: 'Transfer-value estimator blending age, production, availability, and contract runway.',
+    description: 'Supervised market-value regressor trained from labeled player valuations and joined player-statistics features, with heuristic fallback until fitted.',
     accuracy: 76.1,
     speed: 'Fast',
     interpretability: 'Medium',
     bestFor: ['Recruitment Valuation', 'Asset Prioritisation'],
     parameters: {
-      trainer: 'Heuristic Regression',
-      source: 'player_statistics',
+      trainer: 'GradientBoostingRegressor + DictVectorizer',
+      source: 'players + player_statistics',
     },
     train: {
       endpoint: '/api/v2/ml/engine/train/market_value_estimator',

@@ -44,6 +44,11 @@ MINIMAL_SERVICES=(
   redis
   data-provider
   data-sync-service
+  team-service
+  player-service
+  match-service
+  analytics-service
+  statistics-service
   api-gateway
   nginx
 )
@@ -204,15 +209,52 @@ cmd_clean() {
 }
 
 # =============================================================================
-# COMMAND: seed
-# 4-phase pipeline:
-#   1. OptaBatchSeeder: Opta F1/F40 (teams, players, matches)
-#   2. OptaBatchSeeder: Opta F24 (match events)
-#   3. OptaBatchSeeder: StatsBomb CSV (match events, appended)
-#   4. BatchAggregator: player/team statistics from all events
+# COMMAND: seed [year …]
+# Multi-year 4-phase pipeline:
+#   Phases 1-3 run for each season year (auto-detected or explicit):
+#     1. OptaBatchSeeder: Opta F1/F40 (teams, players, matches)
+#     2. OptaBatchSeeder: Opta F24 (match events)
+#     3. OptaBatchSeeder: StatsBomb CSV (match events, appended)
+#   Phase 4 runs once after all years are seeded:
+#     4. BatchAggregator: player/team statistics from all events
+#
+#   Usage:
+#     ./manage.sh seed              # auto-detect year folders in /data/opta/
+#     ./manage.sh seed 2019         # single explicit year
+#     ./manage.sh seed 2017 2018 2020 2021   # multiple explicit years
 # =============================================================================
 cmd_seed() {
   _banner
+
+  # ── setup error tracking ─────────────────────────────────────────────────
+  local SEED_ERROR_DIR
+  SEED_ERROR_DIR=$(mktemp -d) || { _err "Failed to create temp dir"; exit 1; }
+  trap "rm -rf '$SEED_ERROR_DIR'" EXIT
+
+  local -a SEED_YEARS=()
+  local -a YEAR_ERRORS_LIST=()  # Array to store error info per year
+
+  if [[ $# -gt 0 ]]; then
+    # Explicit years provided on the command line
+    SEED_YEARS=("$@")
+    _log "Seeding explicit years: ${SEED_YEARS[*]}"
+  else
+    # Auto-detect: list numeric sub-directories inside the container's /data/opta/
+    _log "Auto-detecting season year folders in /data/opta/ ..."
+    local detected
+    detected=$(docker-compose -f "$COMPOSE_FILE" exec -T data-sync-service \
+      sh -c 'ls -1d /data/opta/[0-9][0-9][0-9][0-9] 2>/dev/null | xargs -I{} basename {}' 2>/dev/null || true)
+
+    if [[ -z "$detected" ]]; then
+      _warn "No year folders found in /data/opta/ — falling back to SEASON_ID=${SEASON_ID}"
+      SEED_YEARS=("$SEASON_ID")
+    else
+      while IFS= read -r yr; do
+        [[ -n "$yr" ]] && SEED_YEARS+=("$yr")
+      done <<< "$detected"
+      _ok "Found year folders: ${SEED_YEARS[*]}"
+    fi
+  fi
 
   # ── pre-flight: check data-sync-service is reachable ─────────────────────
   _log "Checking data-sync-service health ..."
@@ -227,101 +269,165 @@ cmd_seed() {
 
   echo ""
   _log "Seeding pipeline: Local Opta + StatsBomb files → OptaBatchSeeder → MongoDB"
+  _log "Years to process: ${SEED_YEARS[*]}"
   echo ""
 
-  # ── Phase 1: OptaBatchSeeder (F1, F40) ───────────────────────────────────
-  echo "── Phase 1/4: OptaBatchSeeder (teams, players, matches) ──────────────"
-  docker-compose -f "$COMPOSE_FILE" exec -T data-sync-service python - <<'SEEDEOF'
+  local total_years=${#SEED_YEARS[@]}
+  local year_idx=0
+
+  for YEAR in "${SEED_YEARS[@]}"; do
+    year_idx=$((year_idx + 1))
+    local DATA_ROOT_YEAR="/data/opta/${YEAR}"
+
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    _log "Year ${year_idx}/${total_years}: ${YEAR}  (data: ${DATA_ROOT_YEAR})"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    # Check the year folder exists inside the container before running the seeder
+    if ! docker-compose -f "$COMPOSE_FILE" exec -T data-sync-service \
+        sh -c "test -d '${DATA_ROOT_YEAR}'" 2>/dev/null; then
+      _warn "Folder ${DATA_ROOT_YEAR} not found in container — skipping year ${YEAR}"
+      YEAR_ERRORS_LIST+=("${YEAR}:Data folder not found: ${DATA_ROOT_YEAR}")
+      echo ""
+      continue
+    fi
+
+    # ── Phase 1: F1 + F40 (teams, players, matches) ────────────────────────
+    echo "  ── Phase 1/3: OptaBatchSeeder F1+F40 (teams, players, matches) ──"
+    local P1_LOG="${SEED_ERROR_DIR}/year_${YEAR}_phase1.log"
+    docker-compose -f "$COMPOSE_FILE" exec -T data-sync-service python - \
+      "${DATA_ROOT_YEAR}" "${COMPETITION_ID}" "${YEAR}" 2>"${P1_LOG}" <<'SEEDEOF'
 import sys, os
 sys.path.insert(0, '/app')
+
+data_root      = sys.argv[1]
+competition_id = int(sys.argv[2])
+season_id      = int(sys.argv[3])
 
 try:
     from sync.batch_seeder import OptaBatchSeeder
     seeder = OptaBatchSeeder(
-        data_root=os.environ.get('DATA_ROOT', '/data/opta/2019'),
+        data_root=data_root,
         mongo_uri=os.environ.get('MONGODB_URL', 'mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin'),
         db_name='scoutpro',
-        competition_id=int(os.environ.get('COMPETITION_ID', 115)),
-        season_id=int(os.environ.get('SEASON_ID', 2019)),
+        competition_id=competition_id,
+        season_id=season_id,
     )
-    
-    print('[seed] Starting OptaBatchSeeder...')
-    seeder.seed_f1()    # Teams and matches
-    seeder.seed_f40()   # Players
+    print(f'[seed:{season_id}] Starting F1+F40 seeder (root={data_root}) ...')
+    seeder.seed_f1()
+    seeder.seed_f40()
     seeder.close()
-    
-    print('[seed] Phase 1 complete: teams, players, matches loaded')
+    print(f'[seed:{season_id}] Phase 1 complete: teams, players, matches loaded')
 except Exception as e:
-    print(f'[seed] ERROR: OptaBatchSeeder failed: {e}', file=sys.stderr)
+    print(f'[seed:{season_id}] ERROR: F1/F40 seeding failed: {e}', file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
     sys.exit(1)
 SEEDEOF
-  
-  if [[ $? -ne 0 ]]; then
-    _warn "OptaBatchSeeder failed (see logs above)"
-    return 1
-  fi
 
-  _ok "OptaBatchSeeder complete"
-  echo ""
+    local p1_status=$?
+    if [[ $p1_status -ne 0 ]]; then
+      _warn "Phase 1 (F1/F40) failed for year ${YEAR}"
+      if [[ -s "$P1_LOG" ]]; then
+        echo "" >&2
+        _warn "Error details:"
+        cat "$P1_LOG" | sed 's/^/    /' >&2
+        echo "" >&2
+        YEAR_ERRORS_LIST+=("${YEAR}:phase1")
+      fi
+      _log "Skipping remaining phases for year ${YEAR}"
+      echo ""
+      continue
+    fi
+    _ok "Year ${YEAR} — teams, players, matches loaded"
+    echo ""
 
-  # ── Phase 2: OptaBatchSeeder F24 (events) ───────────────────────────────
-  echo "── Phase 2/4: OptaBatchSeeder (events from F24) ───────────────────────"
-  docker-compose -f "$COMPOSE_FILE" exec -T data-sync-service python - <<'EVENTSEOF'
+    # ── Phase 2: F24 (events) ─────────────────────────────────────────────
+    echo "  ── Phase 2/3: OptaBatchSeeder F24 (match events) ────────────────"
+    local P2_LOG="${SEED_ERROR_DIR}/year_${YEAR}_phase2.log"
+    docker-compose -f "$COMPOSE_FILE" exec -T data-sync-service python - \
+      "${DATA_ROOT_YEAR}" "${COMPETITION_ID}" "${YEAR}" 2>"${P2_LOG}" <<'EVENTSEOF'
 import sys, os
 sys.path.insert(0, '/app')
+
+data_root      = sys.argv[1]
+competition_id = int(sys.argv[2])
+season_id      = int(sys.argv[3])
 
 try:
     from sync.batch_seeder import OptaBatchSeeder
     seeder = OptaBatchSeeder(
-        data_root=os.environ.get('DATA_ROOT', '/data/opta/2019'),
+        data_root=data_root,
         mongo_uri=os.environ.get('MONGODB_URL', 'mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin'),
         db_name='scoutpro',
-        competition_id=int(os.environ.get('COMPETITION_ID', 115)),
-        season_id=int(os.environ.get('SEASON_ID', 2019)),
+        competition_id=competition_id,
+        season_id=season_id,
     )
-
-    print('[seed] Loading events from F24 files...')
+    print(f'[seed:{season_id}] Loading events from F24 files ...')
     seeder.seed_f24()
     seeder.close()
-
-    print('[seed] Phase 2 complete: events loaded')
+    print(f'[seed:{season_id}] Phase 2 complete: F24 events loaded')
 except Exception as e:
-    print(f'[seed] WARNING: Event seeding failed: {e} (non-fatal)', file=sys.stderr)
+    print(f'[seed:{season_id}] WARNING: F24 seeding failed: {e}', file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
 EVENTSEOF
 
-  _ok "Events loaded"
-  echo ""
+    if [[ -s "$P2_LOG" ]]; then
+      _warn "Phase 2 (F24) had issues for year ${YEAR}:"
+      cat "$P2_LOG" | sed 's/^/    /'
+      YEAR_ERRORS_LIST+=("${YEAR}:phase2")
+      echo ""
+    else
+      _ok "Year ${YEAR} — F24 events loaded"
+      echo ""
+    fi
 
-  # ── Phase 3: StatsBomb CSV events ────────────────────────────────────────
-  echo "── Phase 3/4: OptaBatchSeeder (events from StatsBomb CSVs) ─────────────"
-  docker-compose -f "$COMPOSE_FILE" exec -T data-sync-service python - <<'SBEOF'
+    # ── Phase 3: StatsBomb CSV ────────────────────────────────────────────
+    echo "  ── Phase 3/3: OptaBatchSeeder StatsBomb CSVs ────────────────────"
+    local P3_LOG="${SEED_ERROR_DIR}/year_${YEAR}_phase3.log"
+    docker-compose -f "$COMPOSE_FILE" exec -T data-sync-service python - \
+      "${DATA_ROOT_YEAR}" "${COMPETITION_ID}" "${YEAR}" 2>"${P3_LOG}" <<'SBEOF'
 import sys, os
 sys.path.insert(0, '/app')
+
+data_root      = sys.argv[1]
+competition_id = int(sys.argv[2])
+season_id      = int(sys.argv[3])
 
 try:
     from sync.batch_seeder import OptaBatchSeeder
     seeder = OptaBatchSeeder(
-        data_root=os.environ.get('DATA_ROOT', '/data/opta/2019'),
+        data_root=data_root,
         mongo_uri=os.environ.get('MONGODB_URL', 'mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin'),
         db_name='scoutpro',
-        competition_id=int(os.environ.get('COMPETITION_ID', 115)),
-        season_id=int(os.environ.get('SEASON_ID', 2019)),
+        competition_id=competition_id,
+        season_id=season_id,
     )
-
-    print('[seed] Loading events from StatsBomb CSV files...')
+    print(f'[seed:{season_id}] Loading events from StatsBomb CSV files ...')
     seeder.seed_statsbomb()
     seeder.close()
-
-    print('[seed] Phase 3 complete: StatsBomb events loaded')
+    print(f'[seed:{season_id}] Phase 3 complete: StatsBomb events loaded')
 except Exception as e:
-    print(f'[seed] WARNING: StatsBomb seeding failed: {e} (non-fatal)', file=sys.stderr)
+    print(f'[seed:{season_id}] WARNING: StatsBomb seeding failed: {e}', file=sys.stderr)
+    import traceback
+    traceback.print_exc(file=sys.stderr)
 SBEOF
 
-  _ok "StatsBomb events loaded"
-  echo ""
+    if [[ -s "$P3_LOG" ]]; then
+      _warn "Phase 3 (StatsBomb) had issues for year ${YEAR}:"
+      cat "$P3_LOG" | sed 's/^/    /'
+      YEAR_ERRORS_LIST+=("${YEAR}:phase3")
+      echo ""
+    else
+      _ok "Year ${YEAR} — StatsBomb events loaded"
+      echo ""
+    fi
+  done  # end of year loop
 
-  # ── Phase 4: BatchAggregator (statistics) ────────────────────────────────
-  echo "── Phase 4/4: BatchAggregator (player/team statistics) ──────────────"
+  # ── Phase 4: BatchAggregator — runs once over all seeded data ────────────
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "── Phase 4/4: BatchAggregator (player/team statistics — all years) ──"
   docker-compose -f "$COMPOSE_FILE" exec -T statistics-service python - <<'STATSEOF'
 import sys, os
 sys.path.insert(0, '/app')
@@ -332,11 +438,9 @@ try:
         mongo_uri=os.environ.get('MONGODB_URL', 'mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin'),
         db_name='scoutpro',
     )
-
-    print('[seed] Starting BatchAggregator...')
+    print('[seed] Starting BatchAggregator (all years) ...')
     result = agg.run()
     agg.close()
-
     print(f'[seed] Phase 4 complete: player_statistics={result.get("player_docs",0)}, team_statistics={result.get("team_docs",0)}')
 except Exception as e:
     print(f'[seed] WARNING: BatchAggregator failed: {e} (non-fatal)', file=sys.stderr)
@@ -348,11 +452,37 @@ STATSEOF
   _log "Waiting 3 s for MongoDB to flush all writes ..."
   sleep 3
 
+  # ── Final Summary ─────────────────────────────────────────────────────────
+  echo ""
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  echo "SEEDING COMPLETE"
+  echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+  if [[ ${#YEAR_ERRORS_LIST[@]} -eq 0 ]]; then
+    _ok "✓ All years processed successfully"
+    echo ""
+    _ok "Seed complete for years: ${SEED_YEARS[*]}"
+  else
+    _warn "⚠ ${#YEAR_ERRORS_LIST[@]} issue(s) detected (see details above)"
+    echo ""
+    echo "Issues found in:"
+    for error_entry in "${YEAR_ERRORS_LIST[@]}"; do
+      local year="${error_entry%%:*}"
+      local phase="${error_entry#*:}"
+      echo "  • Year ${year} (${phase})"
+    done
+    echo ""
+    echo "FIX INSTRUCTIONS:"
+    echo "  1. Review the error details printed above"
+    echo "  2. Fix the corresponding data files (malformed JSON, missing fields, etc.)"
+    echo "  3. Re-run seeding for affected years: ./manage.sh seed 2016 2017"
+    echo ""
+  fi
+
   # ── Show data counts ──────────────────────────────────────────────────────
   cmd_status
 
   echo ""
-  _ok "Seed complete. Open http://localhost:80 to explore the data."
 }
 
 # =============================================================================
@@ -558,7 +688,7 @@ case "$CMD" in
   start)    cmd_start "$@" ;;
   stop)     cmd_stop     ;;
   clean)    cmd_clean    ;;
-  seed)     cmd_seed     ;;
+  seed)     cmd_seed "$@" ;;
   status)   cmd_status   ;;
   validate) cmd_validate ;;
   logs)     cmd_logs "$@" ;;
@@ -575,8 +705,10 @@ case "$CMD" in
     echo "  clean       Stop + wipe all volumes (destructive)"
     echo "  restart [mode] stop then start (same modes as start)"
     echo ""
-    echo "  seed        Trigger full data pipeline:"
-    echo "              data-provider → data-sync → Kafka → MongoDB"
+    echo "  seed [year …] Trigger full data pipeline per season year:"
+    echo "              (no args)  auto-detect year folders in /data/opta/"
+    echo "              2019       seed a single explicit year"
+    echo "              2017 2018 2020 2021  seed multiple explicit years"
     echo "  status      Show container health + MongoDB document counts"
     echo "  validate    End-to-end integration checks"
     echo ""

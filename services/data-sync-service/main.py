@@ -31,10 +31,11 @@ import asyncio
 import argparse
 import sys
 import os
+import uuid
 from pathlib import Path
 from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import Dict, List, Optional, Any
 
 # Add parent directories to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -43,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from motor.motor_asyncio import AsyncIOMotorClient
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from sync import (
     SyncScheduler,
@@ -127,6 +129,97 @@ _ENTITY_SYNCERS = {
     "matches": MatchSyncer,
     "events": EventBatchSyncer,
 }
+
+# ---------------------------------------------------------------------------
+# Multi-year batch seed — in-memory job store
+# ---------------------------------------------------------------------------
+
+_seed_jobs: Dict[str, Dict[str, Any]] = {}   # job_id -> job state
+
+
+class MultiYearSeedRequest(BaseModel):
+    years: List[int] = Field(..., description="Season years to seed, e.g. [2017, 2018, 2020]")
+    competition_id: int = Field(115, description="Opta competition ID")
+    data_root_pattern: str = Field(
+        "/data/opta/{year}",
+        description="Path template for year data. {year} is replaced with each season year.",
+    )
+    phases: List[str] = Field(
+        default=["f1", "f40", "f9", "f24", "statsbomb"],
+        description="Seeding phases to run. Subset of: f1, f40, f9, f24, statsbomb",
+    )
+
+
+async def _run_multi_year_seed(job_id: str, request: MultiYearSeedRequest) -> None:
+    """Background task: runs OptaBatchSeeder for each requested year."""
+    from sync.batch_seeder import OptaBatchSeeder
+
+    mongo_uri = os.getenv(
+        "MONGODB_URL",
+        "mongodb://root:scoutpro123@mongo:27017/scoutpro?authSource=admin",
+    )
+
+    job = _seed_jobs[job_id]
+    job["status"] = "in_progress"
+    job["started_at"] = datetime.now(timezone.utc).isoformat()
+
+    total_years = len(request.years)
+    completed_years = 0
+    year_results: List[Dict[str, Any]] = []
+
+    for year in request.years:
+        data_root = request.data_root_pattern.format(year=year)
+        year_entry: Dict[str, Any] = {
+            "year": year,
+            "data_root": data_root,
+            "status": "in_progress",
+            "phases_done": [],
+            "error": None,
+        }
+        job["year_results"].append(year_entry)
+
+        try:
+            root_path = Path(data_root)
+            if not root_path.exists():
+                year_entry["status"] = "skipped"
+                year_entry["error"] = f"Data folder not found: {data_root}"
+            else:
+                seeder = OptaBatchSeeder(
+                    data_root=data_root,
+                    mongo_uri=mongo_uri,
+                    competition_id=request.competition_id,
+                    season_id=year,
+                )
+                phase_map = {
+                    "f1": seeder.seed_f1,
+                    "f40": seeder.seed_f40,
+                    "f9": seeder.seed_f9,
+                    "f24": seeder.seed_f24,
+                    "statsbomb": seeder.seed_statsbomb,
+                }
+                for phase in request.phases:
+                    fn = phase_map.get(phase)
+                    if fn:
+                        await asyncio.get_event_loop().run_in_executor(None, fn)
+                        year_entry["phases_done"].append(phase)
+
+                seeder.close()
+                year_entry["status"] = "completed"
+
+        except Exception as exc:
+            year_entry["status"] = "failed"
+            year_entry["error"] = str(exc)
+
+        completed_years += 1
+        job["progress"] = int(completed_years / total_years * 100)
+        job["updated_at"] = datetime.now(timezone.utc).isoformat()
+        year_results.append(year_entry)
+
+    all_failed = all(y["status"] == "failed" for y in year_results)
+    any_failed = any(y["status"] in ("failed", "skipped") for y in year_results)
+    job["status"] = "failed" if all_failed else ("partial" if any_failed else "completed")
+    job["completed_at"] = datetime.now(timezone.utc).isoformat()
+    job["progress"] = 100
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +468,70 @@ async def sync_history():
         return {"history": records, "total": len(records)}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v2/batch/seed-years
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v2/batch/seed-years", status_code=202)
+async def seed_years(request: MultiYearSeedRequest):
+    """
+    Start a background job that seeds multiple season years from local data files.
+
+    Looks for data in ``data_root_pattern`` (default ``/data/opta/{year}``).
+    Runs OptaBatchSeeder phases (f1, f40, f9, f24, statsbomb) for each year
+    that has a matching data folder.
+
+    Returns immediately with a ``job_id`` you can poll via GET /api/v2/batch/seed-years/{job_id}.
+    """
+    if not request.years:
+        raise HTTPException(status_code=400, detail="'years' list must not be empty")
+
+    invalid_phases = set(request.phases) - {"f1", "f40", "f9", "f24", "statsbomb"}
+    if invalid_phases:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown phases: {sorted(invalid_phases)}. Valid: f1, f40, f9, f24, statsbomb",
+        )
+
+    job_id = f"seed-{uuid.uuid4().hex[:10]}"
+    now = datetime.now(timezone.utc).isoformat()
+
+    _seed_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "pending",
+        "progress": 0,
+        "years": request.years,
+        "competition_id": request.competition_id,
+        "phases": request.phases,
+        "data_root_pattern": request.data_root_pattern,
+        "year_results": [],
+        "created_at": now,
+        "updated_at": now,
+        "started_at": None,
+        "completed_at": None,
+    }
+
+    asyncio.create_task(_run_multi_year_seed(job_id, request))
+
+    return {"job_id": job_id, "status": "pending", "years": request.years}
+
+
+@app.get("/api/v2/batch/seed-years")
+async def list_seed_jobs():
+    """List all multi-year seed jobs (most recent first)."""
+    jobs = sorted(_seed_jobs.values(), key=lambda j: j.get("created_at", ""), reverse=True)
+    return {"jobs": jobs, "total": len(jobs)}
+
+
+@app.get("/api/v2/batch/seed-years/{job_id}")
+async def get_seed_job(job_id: str):
+    """Get status of a specific multi-year seed job."""
+    job = _seed_jobs.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail=f"Seed job '{job_id}' not found")
+    return job
 
 
 

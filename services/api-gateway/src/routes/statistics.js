@@ -33,17 +33,25 @@ router.get('/', (req, res) => {
 
 router.get('/player/:playerId', async (req, res) => {
   try {
-    const payload = ensureSuccess(
-      await requestJson(statisticsServiceUrl, `/api/v2/statistics/player/${req.params.playerId}`, {
-        query: {
-          competition_id: req.query.competition_id,
-          season_id: req.query.season_id,
-          per_90: req.query.per_90,
-        },
-      }),
-      'Failed to fetch player statistics'
-    );
+    const result = await requestJson(statisticsServiceUrl, `/api/v2/statistics/player/${req.params.playerId}`, {
+      query: {
+        competition_id: req.query.competition_id,
+        season_id: req.query.season_id,
+        per_90: req.query.per_90,
+      },
+    });
 
+    // Return empty stats when player has no data yet instead of propagating 404
+    if (result.status === 404) {
+      return res.status(200).json({
+        player_id: req.params.playerId,
+        available: false,
+        message: 'No statistics available yet for this player.',
+        statistics: null,
+      });
+    }
+
+    const payload = ensureSuccess(result, 'Failed to fetch player statistics');
     res.json(unwrapPayload(payload));
   } catch (error) {
     console.error('Player statistics error:', error);

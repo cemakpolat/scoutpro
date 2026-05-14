@@ -60,10 +60,18 @@ router.get('/:id/detailed-stats', async (req, res) => {
       .findOne({ _id: playerId });
     
     if (!stats) {
-      return res.status(404).json({
-        error: 'Detailed statistics not found',
+      return res.status(200).json({
         player_id: playerId,
-        message: 'This player may not have events evaluated yet. Run event aggregation pipeline.'
+        available: false,
+        message: 'No detailed statistics available yet. Run the event aggregation pipeline.',
+        event_source: { primary_source: 'none', all_sources: [], event_coverage: 'No events' },
+        statistics: {
+          passing:   { total: 0, successful: 0, accuracy: 0 },
+          shooting:  { total: 0, goals: 0, onTarget: 0 },
+          aerials:   { duels: 0, won: 0, accuracy: 0 },
+          defending: { tackles: 0, tackles_successful: 0 }
+        },
+        last_updated: null
       });
     }
     
