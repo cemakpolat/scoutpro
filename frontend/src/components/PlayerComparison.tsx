@@ -44,14 +44,6 @@ function firstDefinedValue<T>(...values: Array<T | null | undefined | ''>): T | 
   return null;
 }
 
-function unwrapNestedData<T>(payload: unknown): T | null {
-  if (payload && typeof payload === 'object' && 'data' in (payload as Record<string, unknown>)) {
-    return ((payload as Record<string, unknown>).data ?? null) as T | null;
-  }
-
-  return (payload ?? null) as T | null;
-}
-
 function buildFallbackSummary(player: any) {
   return {
     goals: toNumericValue(firstDefinedValue(player?.goals, player?.stats?.goals)) || 0,
@@ -363,24 +355,25 @@ const PlayerComparison: React.FC = () => {
       });
 
       const comparisonResponse = await apiService.comparePlayers(playerIds);
-      const playerSequencePromises = comparisonTargets.map((target) => apiService.getPlayerSequenceInsights(target.comparisonId));
-      const sequenceResponses = await Promise.allSettled(playerSequencePromises);
+      const coverageResponse = await apiService.getPlayerSequenceCoverage(playerIds);
       const comparisonData = comparisonResponse.success ? comparisonResponse.data : null;
       const payloadPlayers = Array.isArray(comparisonData?.players) ? comparisonData.players : [];
+      const coverageItems = coverageResponse.success ? coverageResponse.data?.items || [] : [];
+      const coverageById = new Map(
+        coverageItems
+          .filter((item: any) => item?.player_id)
+          .map((item: any) => [String(item.player_id), item])
+      );
       const metricLookup = new Map(
         (Array.isArray(comparisonData?.metrics) ? comparisonData.metrics : []).map((metric: any) => [metric.metric, metric.values || []])
       );
       
       // Build comparison payload from real data
-      const players = comparisonTargets.map((target, idx) => {
+      const players = comparisonTargets.map((target) => {
         const comparisonEntry = payloadPlayers.find(
           (entry: any) => String(entry.player_id || entry.player?.id || '') === target.comparisonId
         );
-        const sequenceResponse = sequenceResponses[idx];
-        const sequenceData = sequenceResponse.status === 'fulfilled' && sequenceResponse.value.success
-          ? unwrapNestedData<Record<string, any>>(sequenceResponse.value.data)
-          : null;
-        const sequenceSummary = sequenceData?.summary || null;
+        const sequenceSummary = coverageById.get(target.comparisonId) || null;
         const comparisonSummary = comparisonEntry?.summary || {};
         const fallbackSummary = buildFallbackSummary(target.sourcePlayer || target.playerCard);
         const goals = toNumericValue(firstDefinedValue(comparisonSummary.goals, fallbackSummary.goals)) || 0;
@@ -403,7 +396,7 @@ const PlayerComparison: React.FC = () => {
         );
         const shots = toNumericValue(firstDefinedValue(comparisonSummary.shots, comparisonSummary.total_shots, fallbackSummary.shots)) || 0;
         const rating = toNumericValue(firstDefinedValue(comparisonSummary.rating, comparisonSummary.avg_rating, fallbackSummary.rating)) || 0;
-        const hasSequenceData = Number(sequenceSummary?.matchesAnalyzed || 0) > 0;
+        const hasSequenceData = sequenceSummary?.hasCoverage === true;
         const playerCard = target.playerCard;
         
         return {

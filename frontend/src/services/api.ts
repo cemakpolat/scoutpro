@@ -27,10 +27,12 @@ import { API_BASE_URL } from '../config/api';
 class ApiService {
   private baseUrl: string;
   private apiKey: string;
+  private readonly defaultTimeoutMs: number;
 
   constructor() {
     this.baseUrl = API_BASE_URL;
     this.apiKey = import.meta.env.VITE_API_KEY || '';
+    this.defaultTimeoutMs = Number(import.meta.env.VITE_API_TIMEOUT_MS || 15000);
   }
 
   private normalizeRequestBody(body: RequestInit['body'], contentType: string | null): RequestInit['body'] {
@@ -52,6 +54,10 @@ class ApiService {
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
+    const controller = new AbortController();
+    const timeoutMs = Number.isFinite(this.defaultTimeoutMs) ? this.defaultTimeoutMs : 15000;
+    const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
     try {
       const url = `${this.baseUrl}${endpoint}`;
       const headers = new Headers(options.headers);
@@ -74,6 +80,7 @@ class ApiService {
         ...options,
         headers,
         body,
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -115,11 +122,18 @@ class ApiService {
       return {
         success: false,
         error: {
-          code: 'NETWORK_ERROR',
-          message: error instanceof Error ? error.message : 'Network request failed',
+          code: error instanceof DOMException && error.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK_ERROR',
+          message:
+            error instanceof DOMException && error.name === 'AbortError'
+              ? `Request timed out after ${timeoutMs}ms`
+              : error instanceof Error
+                ? error.message
+                : 'Network request failed',
           details: error
         }
       };
+    } finally {
+      window.clearTimeout(timeoutId);
     }
   }
 

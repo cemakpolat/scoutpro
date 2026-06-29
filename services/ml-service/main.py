@@ -19,6 +19,7 @@ logger = setup_logger(settings.service_name, settings.log_level)
 stream_processor = None
 _startup_errors: list[str] = []
 _models_ready = False
+_pretrain_on_startup = os.getenv("ML_PRETRAIN_ON_STARTUP", "false").lower() in {"1", "true", "yes", "on"}
 
 _ALLOWED_ORIGINS = [
     o.strip()
@@ -71,19 +72,22 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Model pre-load skipped: {e}")
 
-        try:
-            from api.ml import get_engine
-            engine = get_engine()
-            logger.info("Pre-training AnalyticsEngine algorithms...")
-            result = engine.train_from_mongo("player_clustering", settings.mongodb_url, collection="player_features")
-            logger.info(f"Clustering trained: {result}")
-            result = engine.train_from_mongo("goals_regression", settings.mongodb_url, collection="player_statistics", target_field="goals")
-            logger.info(f"Goals regression trained: {result}")
-            _models_ready = True
-        except Exception as e:
-            err = f"Engine pre-training failed: {e}"
-            logger.warning(err)
-            _startup_errors.append(err)
+        if _pretrain_on_startup:
+            try:
+                from api.ml import get_engine
+                engine = get_engine()
+                logger.info("Pre-training AnalyticsEngine algorithms...")
+                result = engine.train_from_mongo("player_clustering", settings.mongodb_url, collection="player_features")
+                logger.info(f"Clustering trained: {result}")
+                result = engine.train_from_mongo("goals_regression", settings.mongodb_url, collection="player_statistics", target_field="goals")
+                logger.info(f"Goals regression trained: {result}")
+                _models_ready = True
+            except Exception as e:
+                err = f"Engine pre-training failed: {e}"
+                logger.warning(err)
+                _startup_errors.append(err)
+        else:
+            logger.info("Skipping AnalyticsEngine pre-training on startup (ML_PRETRAIN_ON_STARTUP=false)")
 
         logger.info(f"{settings.service_name} started successfully")
 

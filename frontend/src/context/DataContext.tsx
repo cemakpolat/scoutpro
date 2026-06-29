@@ -140,7 +140,7 @@ export function DataProvider({ children }: DataProviderProps) {
     () => apiService.getPlayers(), []
   );
   const { data: matchesData, loading: matchesLoading, error: matchesError, refetch: refetchMatches } = useApi(
-    () => apiService.getMatches({ limit: 400 }), []
+    () => apiService.getMatches({ limit: 120 }), []
   );
   const { data: teamsData, loading: teamsLoading, error: teamsError, refetch: refetchTeams } = useApi(
     () => apiService.getTeams(), []

@@ -51,6 +51,8 @@ class MongoPlayerRepository(IPlayerRepository):
         - Removes _id (not in model)
         - Removes duplicate 'id' when 'scoutpro_id' is present (Pydantic v2 alias conflict)
         - Converts BSON Int64 / int scoutpro_id to str (Player.id is declared as str)
+        - Maps batch_seeder snake_case field names to the Player model's camelCase aliases
+          (e.g. first_name → first, last_name → last, birth_date → birthDate, etc.)
         """
         doc = dict(doc)
         doc.pop('_id', None)
@@ -59,6 +61,23 @@ class MongoPlayerRepository(IPlayerRepository):
         # Motor returns BSON Int64 as Python int; Player.id is str
         if 'scoutpro_id' in doc and not isinstance(doc['scoutpro_id'], str):
             doc['scoutpro_id'] = str(doc['scoutpro_id'])
+
+        # batch_seeder stores snake_case; Player model reads camelCase aliases.
+        # Only copy if the target alias key is not already present.
+        _alias_map = {
+            'first_name': 'first',
+            'last_name': 'last',
+            'birth_date': 'birthDate',
+            'preferred_foot': 'preferredFoot',
+            'detailed_position': 'detailedPosition',
+            'raw_position': 'rawPosition',
+            'team_name': 'teamName',
+            'team_id': 'teamID',
+        }
+        for src, dst in _alias_map.items():
+            if dst not in doc and src in doc:
+                doc[dst] = doc[src]
+
         return doc
 
     def _normalize_identity_value(self, value: Any) -> str:
@@ -288,8 +307,12 @@ class MongoPlayerRepository(IPlayerRepository):
 
             if 'search' in filters and filters['search']:
                 search_value = filters['search']
+                # batch_seeder stores first_name / last_name (snake_case); also
+                # check the camelCase aliases (first / last) for forward compat.
                 query['$or'] = [
                     {'name': {'$regex': search_value, '$options': 'i'}},
+                    {'first_name': {'$regex': search_value, '$options': 'i'}},
+                    {'last_name': {'$regex': search_value, '$options': 'i'}},
                     {'first': {'$regex': search_value, '$options': 'i'}},
                     {'last': {'$regex': search_value, '$options': 'i'}},
                     {'club': {'$regex': search_value, '$options': 'i'}},
@@ -332,8 +355,10 @@ class MongoPlayerRepository(IPlayerRepository):
             search_filter = {
                 '$or': [
                     {'name': {'$regex': query, '$options': 'i'}},
+                    {'first_name': {'$regex': query, '$options': 'i'}},
+                    {'last_name': {'$regex': query, '$options': 'i'}},
                     {'first': {'$regex': query, '$options': 'i'}},
-                    {'last': {'$regex': query, '$options': 'i'}}
+                    {'last': {'$regex': query, '$options': 'i'}},
                 ]
             }
 

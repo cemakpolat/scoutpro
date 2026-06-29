@@ -246,11 +246,9 @@ function AppContent() {
         return (
           <ModelCenter
             onNavigate={setActiveTab}
-            initialTab={modelCenterState.tab}
+            initialTab={modelCenterState.tab as any}
             initialPlayerId={modelCenterState.playerId}
-            initialMatchId={modelCenterState.matchId}
             initialTeamId={modelCenterState.teamId}
-            initialInteractivePanel={modelCenterState.interactivePanel}
             initialLensPresetId={modelCenterState.lensPresetId}
           />
         );

@@ -32,6 +32,9 @@ class Settings(BaseSettings):
     video_service_url: str = "http://video-service:8011"
     statistics_service_url: str = "http://statistics-service:8000"
 
+    # Task execution
+    task_max_concurrency: int = 4
+
     class Config:
         env_file = ".env"
         extra = "ignore"

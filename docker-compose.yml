@@ -260,6 +260,7 @@ services:
       - AWS_SECRET_ACCESS_KEY=${MINIO_ROOT_PASSWORD:-minioadmin123}
       - SERVICE_NAME=ml-service
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - ML_PRETRAIN_ON_STARTUP=${ML_PRETRAIN_ON_STARTUP:-false}
     depends_on:
       mongo:
         condition: service_started
@@ -506,6 +507,7 @@ services:
       - REPORT_SERVICE_URL=http://report-service:8009
       - EXPORT_SERVICE_URL=http://export-service:8010
       - STATISTICS_SERVICE_URL=http://statistics-service:8000
+      - TASK_MAX_CONCURRENCY=${TASK_MAX_CONCURRENCY:-4}
     depends_on:
       kafka:
         condition: service_healthy

@@ -46,31 +46,13 @@ except ImportError:
     # Fallback for testing or alternative import paths
     from utilities.position_mapper import standardize_position
 
-logger = logging.getLogger(__name__)
+# Reuse the canonical type map from the shared parser rather than duplicating it.
+try:
+    from shared.parsers.parser import OPTA_F24_TYPE_MAP as _OPTA_TYPE_MAP
+except ImportError:
+    from parsers.parser import OPTA_F24_TYPE_MAP as _OPTA_TYPE_MAP
 
-# Opta F24 type_id → canonical name.
-# Mirrors OPTA_F24_TYPE_MAP used by the shared parser.
-_OPTA_TYPE_MAP: Dict[int, str] = {
-    1: "pass", 2: "offside_pass", 3: "take_on", 4: "foul", 5: "out",
-    6: "corner_awarded", 7: "tackle", 8: "interception", 9: "turnover",
-    10: "save", 11: "claim", 12: "clearance", 13: "miss", 14: "post",
-    15: "attempt_saved", 16: "goal", 17: "card", 18: "player_off",
-    19: "player_on", 20: "player_changed_position", 21: "player_retired",
-    22: "player_returns", 23: "player_becomes_goalkeeper",
-    24: "goalkeeper_becomes_player", 25: "condition_change",
-    27: "start_delay", 28: "end_delay", 30: "end", 32: "start_period",
-    34: "end_period", 35: "stop_page_play", 37: "resume", 38: "temp_goal",
-    40: "goal_confirmed", 41: "ball_recovery", 43: "blocked_pass",
-    44: "pre_match", 45: "formation", 48: "punch", 49: "good_skill",
-    50: "deleted_event", 51: "fifty_fifty", 52: "failed_to_block",
-    53: "pre_match_pass", 54: "aerial_lost", 55: "challenge",
-    56: "ball_touch", 57: "error", 58: "dispossessed", 59: "fifty_fifty",
-    60: "keeper_pickup", 61: "chance_missed", 63: "keeper_saves",
-    64: "possession", 65: "good_skill", 67: "blocked_pass",
-    68: "attempt_blocked", 70: "goalkeeper_save", 71: "good_skill",
-    73: "block", 74: "blocked_shot", 75: "dribble", 76: "error",
-    77: "keeper_sweeper",
-}
+logger = logging.getLogger(__name__)
 _GOAL_TYPE_IDS = {16, 40}
 
 
@@ -228,7 +210,10 @@ class OptaBatchSeeder:
 
         for md in match_data_list:
             md_attrs = md.get("@attributes", {})
-            match_uid = md_attrs.get("uID", "")
+            # F1 match UIDs carry a leading "g" (e.g. "g1080974").  Strip it so
+            # the stored uID is a plain numeric string and matches the bare IDs
+            # that F24 game_attrs.id and match_events.matchID carry.
+            match_uid = md_attrs.get("uID", "").lstrip("gG")
             if not match_uid:
                 continue
 
@@ -476,7 +461,9 @@ class OptaBatchSeeder:
 
     def seed_f9(self) -> None:
         """Ingest F9 feed: match lineup and half-time / full-time score."""
-        pattern = f"f9_{self.competition_id}_{self.season_id}_*"
+        # Files may be named f9_115_2019 (season-wide) or f9_115_2019_<match_id>
+        # (per-match).  Use a prefix glob without a mandatory trailing separator.
+        pattern = f"f9_{self.competition_id}_{self.season_id}*"
         files = list(self.data_root.glob(pattern))
         if not files:
             logger.warning("seed_f9: no files matching %s in %s", pattern, self.data_root)
@@ -507,8 +494,16 @@ class OptaBatchSeeder:
         md = md_list[0]
 
         md_attrs = md.get("@attributes", {})
-        match_uid = md_attrs.get("uID", "")
+        # F9 MatchData elements sometimes carry a uID attribute; if not, fall
+        # back to the SoccerDocument-level uID.  Both may carry an Opta prefix
+        # ("g…" for match, "f…" for fixture) — strip it so the value aligns
+        # with the bare numeric uIDs stored by _upsert_f1.
+        match_uid = md_attrs.get("uID", "").lstrip("gGfF")
         if not match_uid:
+            doc_uid = root.get("@attributes", {}).get("uID", "")
+            match_uid = doc_uid.lstrip("gGfF")
+        if not match_uid:
+            logger.warning("_build_f9_update: could not determine match_uid from %s", filename)
             return None
 
         team_data_list = _as_list(md.get("TeamData", []))

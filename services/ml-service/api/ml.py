@@ -207,29 +207,11 @@ async def predict_with_engine(algorithm_name: str, input_data: Dict[str, Any]):
             error_msg = str(prediction["error"])
 
             if _is_not_fitted_error(prediction):
-                # Attempt auto-train from MongoDB before giving up
-                settings = _get_settings()
-                collection = _ALGORITHM_COLLECTION_MAP.get(algorithm_name, "player_statistics")
-                try:
-                    train_result = engine.train_from_mongo(
-                        algorithm_name, settings.mongodb_url, collection=collection
-                    )
-                    if "error" not in train_result:
-                        prediction = engine.predict(algorithm_name, input_data)
-                        if isinstance(prediction, dict) and "error" not in prediction:
-                            return APIResponse(
-                                success=True,
-                                data={"algorithm": algorithm_name, "prediction": prediction},
-                                message=f"Prediction successful for {algorithm_name}",
-                            )
-                except Exception as train_err:
-                    logger.warning(f"Auto-train failed for {algorithm_name}: {train_err}")
-
-                # Return graceful 200 — model not yet trainable (not enough data)
+                # Keep predictions non-blocking: training is handled asynchronously by task workers.
                 return APIResponse(
                     success=False,
                     data={"algorithm": algorithm_name, "available": False, "reason": error_msg},
-                    message=f"{algorithm_name} requires additional training data.",
+                    message=f"{algorithm_name} is not fitted yet. Queue a training task and retry.",
                 )
 
             raise HTTPException(status_code=400, detail=error_msg)

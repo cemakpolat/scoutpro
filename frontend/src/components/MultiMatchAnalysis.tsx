@@ -230,7 +230,7 @@ const MultiMatchAnalysis: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement>(null);
 
   const { matches, teams, players } = useData();
-  const { data: analysisMatchesData, loading: analysisMatchesLoading, refetch: refetchAnalysisMatches } = useApi(
+  const { data: analysisMatchesData, loading: analysisMatchesLoading } = useApi(
     () => apiService.getMatches(analysisMatchFilters),
     [],
   );
@@ -435,7 +435,6 @@ const MultiMatchAnalysis: React.FC = () => {
     setIsAnalyzing(true);
     setAnalysisError(null);
     try {
-      await refetchAnalysisMatches();
       setAppliedAnalysis({ matchIds: [...selectedMatches], analysisType });
 
       const response = await apiService.getMultiMatchAnalytics(selectedMatches);
@@ -610,7 +609,6 @@ const MultiMatchAnalysis: React.FC = () => {
               >
                 <option value="comparative">Comparative</option>
                 <option value="trend">Trend</option>
-                <option value="pattern">Pattern Recognition</option>
                 <option value="predictive">Predictive</option>
               </select>
               <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
@@ -645,63 +643,23 @@ const MultiMatchAnalysis: React.FC = () => {
         </div>
       )}
 
-      {hasAppliedSelection && (
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <div className="bg-slate-800 rounded-xl p-6">
-            <h3 className="text-xl font-semibold mb-6 flex items-center">
-              <Target className="h-6 w-6 mr-2 text-purple-400" />
-              Pattern Recognition
-            </h3>
-            {patterns.length > 0 ? (
-              <div className="space-y-4">
-                {patterns.map((pattern, index) => (
-                  <div key={index} className="p-4 bg-slate-700 rounded-lg">
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="font-semibold">{pattern.pattern}</span>
-                      <div className="flex items-center space-x-2">
-                        <span className={`px-2 py-1 rounded text-xs ${
-                          pattern.impact === 'High' ? 'bg-red-600 text-red-100' : 'bg-yellow-600 text-yellow-100'
-                        }`}>
-                          {pattern.impact}
-                        </span>
-                        <span className={`text-sm ${
-                          pattern.trend === 'increasing' ? 'text-green-400' : pattern.trend === 'decreasing' ? 'text-red-400' : 'text-slate-400'
-                        }`}>
-                          {pattern.trend === 'increasing' ? '↗' : pattern.trend === 'decreasing' ? '↘' : '→'}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <span className="text-slate-400 text-sm">Frequency</span>
-                      <span className="font-bold text-blue-400">{pattern.frequency}</span>
-                    </div>
+      {hasAppliedSelection && keyInsights.length > 0 && (
+        <div className="bg-slate-800 rounded-xl p-6">
+          <h3 className="text-xl font-semibold mb-6 flex items-center">
+            <Zap className="h-6 w-6 mr-2 text-yellow-400" />
+            Key Insights
+          </h3>
+          <div className="space-y-4">
+            {keyInsights.map((insight, index) => (
+              <div key={index} className="p-4 bg-slate-700 rounded-lg">
+                <div className="flex items-start space-x-3">
+                  <div className="w-6 h-6 bg-yellow-600 rounded-full flex items-center justify-center text-xs font-bold">
+                    {index + 1}
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
-                No event-driven patterns were generated for the selected matches.
-              </div>
-            )}
-          </div>
-
-          <div className="bg-slate-800 rounded-xl p-6">
-            <h3 className="text-xl font-semibold mb-6 flex items-center">
-              <Zap className="h-6 w-6 mr-2 text-yellow-400" />
-              Key Insights
-            </h3>
-            <div className="space-y-4">
-              {keyInsights.map((insight, index) => (
-                <div key={index} className="p-4 bg-slate-700 rounded-lg">
-                  <div className="flex items-start space-x-3">
-                    <div className="w-6 h-6 bg-yellow-600 rounded-full flex items-center justify-center text-xs font-bold">
-                      {index + 1}
-                    </div>
-                    <p className="text-sm text-slate-300 flex-1">{insight}</p>
-                  </div>
+                  <p className="text-sm text-slate-300 flex-1">{insight}</p>
                 </div>
-              ))}
-            </div>
+              </div>
+            ))}
           </div>
         </div>
       )}

@@ -1515,6 +1515,8 @@ class AnalyticsHandler:
                 'coverageState': 'sequence-ready' if has_coverage else 'profile-only',
                 'matchesAnalyzed': matches_analyzed,
                 'totalSequences': total_sequences,
+                'directAttacks': self._to_int(summary.get('directAttacks')),
+                'boxEntries': self._to_int(summary.get('boxEntries')),
                 'shotEndings': self._to_int(summary.get('shotEndings')),
                 'goals': self._to_int(summary.get('goals')),
             }

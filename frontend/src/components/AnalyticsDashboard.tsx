@@ -5,7 +5,6 @@ import {
   Users,
   Activity,
   Brain,
-  Calendar,
   Loader2,
   Trophy,
   Target,
@@ -62,8 +61,6 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onOpenModelCent
   const summary = dashboardData?.summary || dashboardData?.data || {};
   const topPlayers = dashboardData?.topPlayers || [];
   const topTeams = dashboardData?.topTeams || [];
-  const recentMatches = dashboardData?.recentMatches || [];
-  const predictionSummary = dashboardData?.predictions || {};
   const trendLimit = timeframe === 'week' ? 4 : timeframe === 'month' ? 6 : 12;
 
   const trendRows = useMemo(
@@ -93,29 +90,6 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onOpenModelCent
     completedPasses: toNumber(team.passes_completed),
     passCompletion: team.passes ? Math.round((toNumber(team.passes_completed) / Math.max(toNumber(team.passes), 1)) * 100) : 0,
   }));
-
-  const snapshotCards = [
-    {
-      label: 'Predictions Generated',
-      value: formatMetric(predictionSummary.total ?? summary.transferPredictions),
-      tone: 'text-purple-400',
-    },
-    {
-      label: 'Accuracy Score',
-      value: formatMetric(predictionSummary.accuracy ?? summary.modelAccuracy, 2),
-      tone: 'text-green-400',
-    },
-    {
-      label: 'Live Matches',
-      value: formatMetric(summary.liveMatches),
-      tone: 'text-blue-400',
-    },
-    {
-      label: 'Response Time',
-      value: summary.responseTime != null ? `${formatMetric(summary.responseTime)}ms` : '—',
-      tone: 'text-yellow-400',
-    },
-  ];
 
   return (
     <div className="space-y-8">
@@ -365,49 +339,6 @@ const AnalyticsDashboard: React.FC<AnalyticsDashboardProps> = ({ onOpenModelCent
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="bg-slate-800 rounded-xl p-6">
-          <h3 className="text-xl font-semibold mb-6 flex items-center">
-            <Calendar className="h-6 w-6 mr-2 text-yellow-400" />
-            Recent Match Feed
-          </h3>
-          {recentMatches.length > 0 ? (
-            <div className="space-y-4">
-              {recentMatches.slice(0, 5).map((match: any) => (
-                <div key={match.id} className="rounded-lg bg-slate-700 p-4">
-                  <div className="mb-2 flex items-center justify-between">
-                    <span className="font-medium">{formatMatchLabel(match)}</span>
-                    <span className="text-sm text-yellow-400">{match.status || 'unknown'}</span>
-                  </div>
-                  <div className="flex justify-between text-sm text-slate-400">
-                    <span>{formatMetric(match.home_score)} - {formatMetric(match.away_score)}</span>
-                    <span>{formatMetric(match.date)}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="rounded-lg bg-slate-700 px-4 py-10 text-center text-slate-400">
-              No recent matches are available from the analytics backend yet.
-            </div>
-          )}
-        </div>
-
-        <div className="bg-slate-800 rounded-xl p-6">
-          <h3 className="text-xl font-semibold mb-6 flex items-center">
-            <Brain className="h-6 w-6 mr-2 text-purple-400" />
-            Prediction Snapshot
-          </h3>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {snapshotCards.map((card) => (
-              <div key={card.label} className="rounded-lg border border-slate-700 bg-slate-700/80 p-4">
-                <div className="text-sm text-slate-400">{card.label}</div>
-                <div className={`mt-2 text-2xl font-bold ${card.tone}`}>{card.value}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
     </div>
   );
 };

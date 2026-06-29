@@ -38,6 +38,9 @@ class TaskConsumer:
         self._consumer: AIOKafkaConsumer | None = None
         self._producer: AIOKafkaProducer | None = None
         self._handlers = self._build_handlers()
+        self._consume_task: asyncio.Task | None = None
+        self._inflight_tasks: set[asyncio.Task] = set()
+        self._task_semaphore = asyncio.Semaphore(max(1, int(getattr(settings, "task_max_concurrency", 4))))
 
     def _build_handlers(self):
         s = self._settings
@@ -69,17 +72,30 @@ class TaskConsumer:
         await self._consumer.start()
         await self._producer.start()
         logger.info("TaskConsumer started, listening on topic '%s'", self._settings.kafka_tasks_topic)
-        asyncio.create_task(self._consume_loop())
+        self._consume_task = asyncio.create_task(self._consume_loop())
 
     async def stop(self) -> None:
+        if self._consume_task:
+            self._consume_task.cancel()
+            try:
+                await self._consume_task
+            except asyncio.CancelledError:
+                pass
+
+        if self._inflight_tasks:
+            await asyncio.gather(*self._inflight_tasks, return_exceptions=True)
+
         if self._consumer:
             await self._consumer.stop()
         if self._producer:
             await self._producer.stop()
 
-    async def _consume_loop(self) -> None:
-        async for msg in self._consumer:
-            envelope: Dict[str, Any] = msg.value
+    def _track_inflight_task(self, task: asyncio.Task) -> None:
+        self._inflight_tasks.add(task)
+        task.add_done_callback(self._inflight_tasks.discard)
+
+    async def _process_message(self, envelope: Dict[str, Any]) -> None:
+        async with self._task_semaphore:
             task_id = envelope.get("task_id", "unknown")
             task_type = envelope.get("task_type", "")
             payload = envelope.get("payload", {})
@@ -87,7 +103,7 @@ class TaskConsumer:
             handler_key = TASK_HANDLERS.get(task_type)
             if not handler_key:
                 logger.warning("Unknown task_type '%s' for task %s — skipping", task_type, task_id)
-                continue
+                return
 
             handler = self._handlers[handler_key]
             logger.info("Dispatching task %s (type=%s)", task_id, task_type)
@@ -109,3 +125,9 @@ class TaskConsumer:
                         "error": task.get("error"),
                     },
                 )
+
+    async def _consume_loop(self) -> None:
+        async for msg in self._consumer:
+            envelope: Dict[str, Any] = msg.value
+            task = asyncio.create_task(self._process_message(envelope))
+            self._track_inflight_task(task)

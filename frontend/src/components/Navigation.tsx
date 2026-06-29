@@ -32,10 +32,6 @@ const Navigation: React.FC<NavigationProps> = ({ activeTab, setActiveTab, notifi
     { id: 'analytics', label: 'Analytics Lab', icon: BarChart3 },
     { id: 'model-center', label: 'Model Center', icon: Cpu },
     { id: 'ml-lab', label: 'ML Laboratory', icon: TrendingUp },
-    { id: 'data-management', label: 'Data Management', icon: Database },
-    { id: 'data-importer', label: 'Data Import/Export', icon: Upload },
-    { id: 'tactical-analyzer', label: 'Tactical Analyzer', icon: Layers },
-    { id: 'performance-tracker', label: 'Performance Tracker', icon: LineChart },
     { id: 'admin', label: 'Admin Console', icon: Shield },
   ];
 

@@ -379,19 +379,34 @@ class MongoMatchRepository(IMatchRepository):
             query = {}
 
             if 'competition_id' in filters and filters['competition_id']:
-                # competitionID may be stored as string ('c115') or int; accept both
-                cid = filters['competition_id']
+                # Accept both camelCase (competitionID) and snake_case (competition_id)
+                # so queries work regardless of which form batch_seeder stored.
+                cid = str(filters['competition_id'])
+                cid_values: list = [cid]
                 try:
-                    query['competitionID'] = {'$in': [str(cid), int(cid)]}
+                    cid_values.append(int(cid))
                 except (ValueError, TypeError):
-                    query['competitionID'] = str(cid)
+                    pass
+                query.setdefault('$and', []).append({
+                    '$or': [
+                        {'competitionID': {'$in': cid_values}},
+                        {'competition_id': {'$in': cid_values}},
+                    ]
+                })
 
             if 'season_id' in filters and filters['season_id']:
-                sid = filters['season_id']
+                sid = str(filters['season_id'])
+                sid_values: list = [sid]
                 try:
-                    query['seasonID'] = {'$in': [str(sid), int(sid)]}
+                    sid_values.append(int(sid))
                 except (ValueError, TypeError):
-                    query['seasonID'] = str(sid)
+                    pass
+                query.setdefault('$and', []).append({
+                    '$or': [
+                        {'seasonID': {'$in': sid_values}},
+                        {'season_id': {'$in': sid_values}},
+                    ]
+                })
 
             if 'status' in filters and filters['status']:
                 query['status'] = filters['status']
@@ -607,14 +622,28 @@ class MongoMatchRepository(IMatchRepository):
         normalized = dict(doc)
         normalized.pop('_id', None)
         normalized.pop('f9_summary', None)  # strip heavy blob
+        # batch_seeder stores both 'id' (ScoutPro integer) and 'uID' (Opta string).
+        # Match.id uses alias="uID"; having both in the dict causes a Pydantic
+        # alias-conflict error.  Remove 'id' so the alias always wins.
+        if 'uID' in normalized:
+            normalized.pop('id', None)
 
         field_aliases = {
+            # batch_seeder F40 enrichment stores home_team_name / away_team_name (snake_case)
+            'home_team_name': 'homeTeamName',
+            'away_team_name': 'awayTeamName',
+            # legacy alias kept for backward compatibility
             'home_team': 'homeTeamName',
             'away_team': 'awayTeamName',
             'home_team_id': 'homeTeamID',
             'away_team_id': 'awayTeamID',
             'home_score': 'homeScore',
             'away_score': 'awayScore',
+            # batch_seeder F1 stores competition_id / season_id (snake_case)
+            'competition_id': 'competitionID',
+            'season_id': 'seasonID',
+            # batch_seeder may store match_day (snake_case)
+            'match_day': 'matchDay',
         }
         for source_field, target_field in field_aliases.items():
             if target_field not in normalized and normalized.get(source_field) is not None:

@@ -75,6 +75,20 @@ class MongoTeamRepository(ITeamRepository):
 
         return {'$or': or_clauses} if or_clauses else {'uID': str(team_id)}
 
+    @staticmethod
+    def _prepare_doc_for_team(doc: Dict[str, Any]) -> Dict[str, Any]:
+        """Sanitize a raw MongoDB team document before passing to Team().
+
+        - Removes _id (not in model)
+        - Removes 'id' (ScoutPro integer) when 'uID' is present to avoid the
+          Pydantic alias-conflict error (Team.id uses alias='uID').
+        """
+        doc = dict(doc)
+        doc.pop('_id', None)
+        if 'uID' in doc:
+            doc.pop('id', None)
+        return doc
+
     async def _resolve_team_doc(self, team_id: str) -> Optional[Dict[str, Any]]:
         return await self.teams_collection.find_one(self._build_team_lookup_query(team_id))
 
@@ -117,8 +131,7 @@ class MongoTeamRepository(ITeamRepository):
                     doc = await self.teams_collection.find_one({"_id": ObjectId(team_id)})
 
             if doc:
-                if '_id' in doc:
-                    doc.pop('_id')
+                doc = self._prepare_doc_for_team(doc)
                 return Team(**doc)
 
             return None
@@ -138,17 +151,27 @@ class MongoTeamRepository(ITeamRepository):
                 query['league'] = filters['league']
 
             if 'competition_id' in filters and filters['competition_id']:
-                query['competitionID'] = int(filters['competition_id'])
+                # batch_seeder stores competition_id (snake_case); accept both forms
+                cid = str(filters['competition_id'])
+                cid_values: list = [cid]
+                try:
+                    cid_values.append(int(cid))
+                except (ValueError, TypeError):
+                    pass
+                query.setdefault('$and', []).append({
+                    '$or': [
+                        {'competitionID': {'$in': cid_values}},
+                        {'competition_id': {'$in': cid_values}},
+                    ]
+                })
 
             cursor = self.teams_collection.find(query).limit(limit)
             docs = await cursor.to_list(length=limit)
 
             teams = []
             for doc in docs:
-                if '_id' in doc:
-                    doc.pop('_id')
                 try:
-                    teams.append(Team(**doc))
+                    teams.append(Team(**self._prepare_doc_for_team(doc)))
                 except Exception as e:
                     logger.warning(f"Skipping invalid team doc: {e}")
                     continue
@@ -173,10 +196,8 @@ class MongoTeamRepository(ITeamRepository):
 
             teams = []
             for doc in docs:
-                if '_id' in doc:
-                    doc.pop('_id')
                 try:
-                    teams.append(Team(**doc))
+                    teams.append(Team(**self._prepare_doc_for_team(doc)))
                 except Exception as e:
                     logger.warning(f"Skipping invalid team doc: {e}")
                     continue

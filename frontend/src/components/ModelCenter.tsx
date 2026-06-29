@@ -13,14 +13,12 @@ import {
   Users,
 } from 'lucide-react';
 import ClusteringExplorer from './ClusteringExplorer';
-import MLAnalysis from './MLAnalysis';
-import MatchPredictionWorkbench from './MatchPredictionWorkbench';
 import ModelCenterLens from './ModelCenterLens';
 import TaskQueue from './TaskQueue';
 import PlayerTrajectory from './PlayerTrajectory';
 import TeamAssessment from './TeamAssessment';
 
-export type ModelCenterTab = 'navigator' | 'team' | 'match' | 'clusters' | 'lens' | 'interactive' | 'batch' | 'trajectory';
+export type ModelCenterTab = 'navigator' | 'team' | 'clusters' | 'lens' | 'batch' | 'trajectory';
 export type ModelCenterInteractivePanel = 'similar' | 'performance';
 
 export interface ModelCenterContext {
@@ -35,9 +33,7 @@ interface ModelCenterProps {
   onNavigate: (tab: string) => void;
   initialTab?: ModelCenterTab;
   initialPlayerId?: string;
-  initialMatchId?: string;
   initialTeamId?: string;
-  initialInteractivePanel?: ModelCenterInteractivePanel;
   initialLensPresetId?: string;
 }
 
@@ -60,35 +56,30 @@ const AREA_CARDS: AreaCard[] = [
     id: 'player',
     title: 'Player Assessment',
     status: 'live',
-    description: 'Player profiles already expose tactical role clustering, fatigue risk, anomaly detection, rolling form, and expected metrics.',
+    description: 'Player profiles expose tactical role clustering, anomaly detection, rolling form, and expected metrics.',
     highlights: [
       'Open player detail pages to see actionable ML cards next to event-driven analytics.',
-      'Use Player Comparison for live similar-player search backed by the ML similarity endpoints.',
-      'Use Performance Tracker for trend and form monitoring across the squad.',
+      'Use Player Comparison for similar-player search backed by ML similarity endpoints.',
     ],
     actions: [
       { label: 'Player Profiles', tab: 'players' },
       { label: 'Scouting Hub', tab: 'scouting' },
       { label: 'Player Comparison', tab: 'player-comparison' },
-      { label: 'Performance Tracker', tab: 'performance-tracker' },
-      { label: 'Player Trajectory & Forecast', tab: 'trajectory' },
+      { label: 'Player Trajectory', tab: 'trajectory' },
     ],
   },
   {
     id: 'match',
     title: 'Match Assessment',
     status: 'live',
-    description: 'Match analysis already exists across shot maps, tactical metrics, sequence insights, and multi-match pattern analysis, and Model Center now adds a first scenario-based prediction tab.',
+    description: 'Match analysis covers shot maps, tactical metrics, sequence insights, and multi-match comparative and trend analysis.',
     highlights: [
       'Match Analysis shows tactical metrics, possession sequences, and shot-map level chance quality.',
-      'Multi-Match Analysis already supports comparative, trend, pattern, and predictive views.',
-      'Model Center now adds a standalone match outcome scenario form on top of the analysis stack.',
+      'Multi-Match Analysis supports comparative, trend, and predictive views.',
     ],
     actions: [
-      { label: 'Open Match Predictor', tab: 'match' },
       { label: 'Match Analysis', tab: 'match-analysis' },
       { label: 'Multi-Match Analysis', tab: 'multi-match' },
-      { label: 'Tactical Analyzer', tab: 'tactical-analyzer' },
     ],
   },
   {
@@ -119,7 +110,6 @@ const AREA_CARDS: AreaCard[] = [
     ],
     actions: [
       { label: 'Open ML Laboratory', tab: 'ml-lab' },
-      { label: 'Data Management', tab: 'data-management' },
     ],
   },
 ];
@@ -143,9 +133,7 @@ const ModelCenter: React.FC<ModelCenterProps> = ({
   onNavigate,
   initialTab = 'navigator',
   initialPlayerId,
-  initialMatchId,
   initialTeamId,
-  initialInteractivePanel,
   initialLensPresetId,
 }) => {
   const [activeTab, setActiveTab] = useState<ModelCenterTab>(initialTab);
@@ -155,7 +143,7 @@ const ModelCenter: React.FC<ModelCenterProps> = ({
   }, [initialTab]);
 
   const handleAction = (tab: string) => {
-    if (tab === 'navigator' || tab === 'team' || tab === 'match' || tab === 'clusters' || tab === 'lens' || tab === 'interactive' || tab === 'batch') {
+    if (tab === 'navigator' || tab === 'team' || tab === 'clusters' || tab === 'lens' || tab === 'batch' || tab === 'trajectory') {
       setActiveTab(tab as ModelCenterTab);
       return;
     }
@@ -215,10 +203,8 @@ const ModelCenter: React.FC<ModelCenterProps> = ({
         {[
           { id: 'navigator' as const, label: 'Assessment Navigator', icon: Target },
           { id: 'team' as const, label: 'Team Assessment', icon: Users },
-          { id: 'match' as const, label: 'Match Prediction', icon: Target },
           { id: 'clusters' as const, label: 'Clustering Explorer', icon: Brain },
           { id: 'lens' as const, label: 'Feature Lens', icon: BarChart3 },
-          { id: 'interactive' as const, label: 'Interactive Predictions', icon: Brain },
           { id: 'batch' as const, label: 'Batch Tasks', icon: ListChecks },
           { id: 'trajectory' as const, label: 'Player Trajectory', icon: Activity },
         ].map(({ id, label, icon: Icon }) => (
@@ -303,14 +289,7 @@ const ModelCenter: React.FC<ModelCenterProps> = ({
                     onClick={() => setActiveTab('team')}
                     className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-left text-sm text-slate-200 transition-colors hover:border-cyan-400 hover:text-white"
                   >
-                    <span>Open the new Team Assessment surface</span>
-                    <ArrowRight className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('match')}
-                    className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-left text-sm text-slate-200 transition-colors hover:border-cyan-400 hover:text-white"
-                  >
-                    <span>Run a match prediction scenario</span>
+                    <span>Open Team Assessment</span>
                     <ArrowRight className="h-4 w-4" />
                   </button>
                   <button
@@ -321,31 +300,17 @@ const ModelCenter: React.FC<ModelCenterProps> = ({
                     <ArrowRight className="h-4 w-4" />
                   </button>
                   <button
-                    onClick={() => setActiveTab('lens')}
-                    className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-left text-sm text-slate-200 transition-colors hover:border-cyan-400 hover:text-white"
-                  >
-                    <span>Open the reusable feature lens</span>
-                    <ArrowRight className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => setActiveTab('interactive')}
-                    className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-left text-sm text-slate-200 transition-colors hover:border-cyan-400 hover:text-white"
-                  >
-                    <span>Run an interactive prediction now</span>
-                    <ArrowRight className="h-4 w-4" />
-                  </button>
-                  <button
                     onClick={() => setActiveTab('batch')}
                     className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-left text-sm text-slate-200 transition-colors hover:border-cyan-400 hover:text-white"
                   >
-                    <span>Queue a background clustering or prediction task</span>
+                    <span>Queue a background batch task</span>
                     <ArrowRight className="h-4 w-4" />
                   </button>
                   <button
                     onClick={() => onNavigate('ml-lab')}
                     className="flex w-full items-center justify-between rounded-lg border border-slate-700 bg-slate-900 px-4 py-3 text-left text-sm text-slate-200 transition-colors hover:border-cyan-400 hover:text-white"
                   >
-                    <span>Open ML Laboratory to train or inspect experiments</span>
+                    <span>Open ML Laboratory</span>
                     <ArrowRight className="h-4 w-4" />
                   </button>
                 </div>
@@ -357,37 +322,9 @@ const ModelCenter: React.FC<ModelCenterProps> = ({
 
       {activeTab === 'team' && <TeamAssessment initialTeamId={initialTeamId} />}
 
-      {activeTab === 'match' && <MatchPredictionWorkbench initialMatchId={initialMatchId} />}
-
       {activeTab === 'clusters' && <ClusteringExplorer initialPlayerId={initialPlayerId} />}
 
       {activeTab === 'lens' && <ModelCenterLens initialPresetId={initialLensPresetId} />}
-
-      {activeTab === 'interactive' && (
-        <div className="space-y-6">
-          <div className="flex flex-col gap-4 rounded-xl border border-slate-700 bg-slate-800 p-5 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <h2 className="text-xl font-semibold text-white">Interactive Predictions</h2>
-              <p className="mt-1 text-sm text-slate-400">
-                Use the currently connected prediction and similarity endpoints directly here. Training stays in ML Laboratory.
-              </p>
-            </div>
-            <button
-              onClick={() => onNavigate('ml-lab')}
-              className="inline-flex items-center gap-2 rounded-lg bg-cyan-500 px-4 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-cyan-400"
-            >
-              Open ML Laboratory
-              <ArrowRight className="h-4 w-4" />
-            </button>
-          </div>
-
-          <MLAnalysis
-            showTrainingPanel={false}
-            initialPanel={initialInteractivePanel}
-            initialPlayerId={initialPlayerId}
-          />
-        </div>
-      )}
 
       {activeTab === 'batch' && (
         <div className="space-y-6">
